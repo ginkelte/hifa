@@ -1,3 +1,10 @@
+## [0.1.2](https://github.com/ginkelte/hifa/compare/v0.1.1...v0.1.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* **release:** release a skipped push within six hours ([#4](https://github.com/ginkelte/hifa/issues/4)) ([b7942ba](https://github.com/ginkelte/hifa/commit/b7942badb5d42e9878101d3343e38227c667a083))
+
 ## [0.1.1](https://github.com/ginkelte/hifa/compare/v0.1.0...v0.1.1) (2026-11-11)
 
 
