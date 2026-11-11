@@ -272,9 +272,9 @@ resulting conflicts are recorded instead of silently resolved.
 
 | | |
 |---|---|
-| **17** documents | [`specs/`](specs/) — one contract per component plus the vertical spec |
-| **108** Gherkin scenarios | executable acceptance criteria, [`specs/acceptance/`](specs/acceptance/) |
-| **36** decisions | [`specs/DECISIONS.md`](specs/DECISIONS.md) — who wins on a conflict, and why |
+| **18** documents | [`specs/`](specs/) — one contract per component plus the vertical spec |
+| **101** Gherkin scenarios | executable acceptance criteria, [`specs/acceptance/`](specs/acceptance/) |
+| **39** decisions | [`specs/DECISIONS.md`](specs/DECISIONS.md) — who wins on a conflict, and why |
 | **0** silent drifts | `scripts/spec_contract_check.py --all` compares the spec's DDL with `sqlite_master` in CI |
 
 | File | Contents |
@@ -337,6 +337,59 @@ git push -u origin feat/<topic>
 Good first issues are labelled `Docs` and `Improvement`; anything touching `domain/` or the schema
 needs its spec first (§3 of `AGENTS.md`).
 
+### Releases
+
+A release is a consequence of a merge, not a task. `.github/workflows/release.yml` runs on every push
+to `main` and the commit messages decide the number:
+
+1. a conventional commit lands on `main` through a squash merge (`feat: …`, `fix: …` — the table and
+   the bump each type produces are in §9 of [`AGENTS.md`](AGENTS.md));
+2. the job reads the commits since the last tag, computes the next version and, when there is something
+   to release, writes `version = "X.Y.Z"` in `pyproject.toml`, regenerates `CHANGELOG.md`, pushes one
+   signed commit `chore(release): X.Y.Z [skip ci]`, signs the tag `vX.Y.Z` on that commit and publishes
+   the GitHub Release;
+3. that single commit is the only write to `main` that skips review: it enters through the admin bypass
+   of the ruleset (D-039, SPEC-110 §2.7.1). Branches, PRs, reviews and the `test`/`firmas` checks are
+   unchanged for everyone else, and a `docs:`- or `test:`-only merge releases nothing at all.
+
+`CHANGELOG.md` is **machine-owned**. The job regenerates it from the commits, so a hand edit is
+overwritten by the next release and a hand-written heading ends up duplicating the generated one. To
+change a changelog entry, change the commit message it came from.
+
+The version has one origin: the literal in `pyproject.toml`, written by that release commit, and
+`hifa --version` reads the installed metadata — the tag, the literal and the reported version agree:
+
+```bash
+git fetch --tags origin
+git show vX.Y.Z:pyproject.toml | grep '^version'   # version = "X.Y.Z"
+hifa --version                                     # hifa X.Y.Z
+git verify-tag vX.Y.Z                              # Good "git" signature for hifa-release
+```
+
+Preview a release without writing anything — the dispatch input is `dry_run`, and it defaults to
+`true`:
+
+```bash
+gh workflow run release.yml -f dry_run=true    # prints "next release version is X.Y.Z"
+gh run watch                                   # step 9 asserts that nothing was written
+```
+
+The job needs two repository secrets, by name: `HIFA_RELEASE_TOKEN` (the admin PAT that pushes the
+commit, the tag and the Release) and `HIFA_RELEASE_SIGNING_KEY` (the private half of the `hifa-release`
+signing key). Neither value belongs in the repository. Without them the run fails before any write with
+`release_token_missing` or `release_signing_key_missing`.
+
+Two failures are repaired by hand and **never** by re-running the job (SPEC-110 §5.4, §5.5):
+
+- **a release commit on `main` with no tag** — tag that commit, don't re-run: the second run recomputes
+  the same version and prepends a duplicate changelog heading.
+  `git tag -s -m "vX.Y.Z" vX.Y.Z <sha> && git verify-tag vX.Y.Z && git push origin refs/tags/vX.Y.Z`,
+  then `gh release create vX.Y.Z --title vX.Y.Z --notes-file <(git log -1 --format=%b <sha>)`;
+- **a tag with no GitHub Release** — `gh release create` for that tag, using the body of its release
+  commit as the notes. A re-run answers `There are no relevant changes` and creates nothing.
+
+A published tag is never moved, deleted or re-created. An unsigned tag is reported, not repaired.
+
 ## Roadmap
 
 Tracked in the project's own tracker, which is this project — dogfooding is the only honest way to
@@ -375,7 +428,7 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 |---|---|
 | Tests | **845** passing (unit, integration, e2e CLI and web) |
 | Code | ~10.7k lines in `src/`, ~9.4k in `tests/` |
-| Specs | 17 documents · 108 Gherkin scenarios · 36 recorded decisions |
+| Specs | 18 documents · 101 Gherkin scenarios · 39 recorded decisions |
 | Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `serve` (board, list, detail, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |

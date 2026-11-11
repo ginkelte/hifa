@@ -4,12 +4,11 @@ title: System architecture
 component: support
 status: approved
 version: 3
-spec_revision: 6
+spec_revision: 8
 depends_on: []
 implements:
   - pyproject.toml
   - .importlinter
-  - src/hifa/__init__.py
 acceptance: specs/acceptance/000-system-architecture.feature
 owner: Ginkelte
 created: 2026-11-08
@@ -72,9 +71,24 @@ is `6`.
 
 ## 3. Data it touches
 
-**N/A in this component.** SPEC-000 neither reads nor writes tables: it governs `pyproject.toml`,
-`.importlinter` and `src/hifa/__init__.py`. The schema, its invariants and the migrations belong to
-SPEC-010 §3; data access exists only in `adapters/sqlite/` (A3).
+**N/A in this component.** SPEC-000 neither reads nor writes tables. It governs two files:
+
+| File | What this spec owns | What it does not own |
+|---|---|---|
+| `pyproject.toml` | the packaging keys: `[build-system].build-backend`, `hatchling` in `requires`, `[project]` name/description/readme/`requires-python`/dependencies/extras/scripts, `[tool.hatch.build.targets.wheel]`, `[tool.ruff]`, `[tool.pytest.ini_options]` | the version-producing keys — `[project].version` (the **literal**, written only by the release job) and the absence of `dynamic`, of `hatch-vcs` and `setuptools-scm` in `[build-system].requires`, of `[tool.hatch.version]`, of the `python-semantic-release` row in `[dependency-groups].dev` and of `[tool.semantic_release]`, which belong to SPEC-110 §2.1/§2.5/§2.8 by **D-038** and **D-039** |
+| `.importlinter` | all of it | nothing |
+
+- **`src/hifa/__init__.py` is not governed here at all**: by D-038 the module is SPEC-110's contract in
+  full (SPEC-110 §2.1), which is why it is absent from this spec's `implements:`.
+- **`implements:` is glob-based**, so `pyproject.toml` legitimately appears in the `implements:` of
+  both specs. The attribution of a diff is by **key**, not by file: a change inside a key listed in
+  SPEC-110 §2.9 needs a SPEC-110 `spec_revision` bump, any other change in the file needs a SPEC-000
+  `spec_revision` bump, and moving a key from one column to the other needs both (D-038). The
+  `specs/INDEX.md` row of each spec repeats which part it claims, so the rule is applied without
+  reading prose.
+
+The schema, its invariants and the migrations belong to SPEC-010 §3; data access exists only in
+`adapters/sqlite/` (A3).
 
 ## 4. Business rules
 
@@ -263,7 +277,11 @@ Coverage of the requirements that have no scenario of their own (they are verifi
 
 1. `pyproject.toml` with `requires-python = ">=3.11"`, entrypoint `hifa = "hifa.cli.main:app"`,
    extras `web = [fastapi, uvicorn[standard], jinja2]`, base deps `typer`, `pydantic`,
-   `markdown-it-py`, `python-ulid` (REQ-N007; no third-party sanitizer, D-020).
+   `markdown-it-py`, `python-ulid` (REQ-N007; no third-party sanitizer, D-020). The distribution
+   `version` is a **literal** in `[project]` written only by the release job
+   (`chore(release): X [skip ci]`): its value, its bump and the ban on deriving it from git belong to
+   SPEC-110 §2.1/§2.5.2 (D-038, **D-039**) — the backend must not carry `hatch-vcs`, `setuptools-scm`,
+   `dynamic` or `[tool.hatch.version]`.
 2. Create the tree of §4.3 with empty modules that respect the allowed imports.
 3. `.importlinter` with the `domain`, `app` and `web` contracts (A1, A2, P8/D-032).
 4. `scripts/spec_contract_check.py` implemented before writing features.
@@ -284,6 +302,27 @@ Multi-tenant, auth, sync, plugins, AI, binary attachments, notifications, webhoo
 
 ## Notes
 
+- spec_revision 8 (2026-11-11): **the version key is a literal again, and this spec's packaging contract
+  follows (D-039).** SPEC-110 `version: 2` replaces `python-semantic-release` with the npm
+  `semantic-release` engine and re-adds `[project] version = "X.Y.Z"` as the only product version
+  literal, written by the release job. The consequence for this spec is a *narrowing of what it must
+  not own*: the version-producing keys are now the literal plus the **absence** of `dynamic`,
+  `hatch-vcs` and `setuptools-scm` in `[build-system].requires`, `[tool.hatch.version]`,
+  `[dependency-groups].dev` and `[tool.semantic_release]` — all of them SPEC-110 §2.1/§2.5/§2.8. §3's
+  table and §8 step 1 say so, and the drift rule of D-038 is unchanged (a diff inside a SPEC-110 key needs a SPEC-110
+  `spec_revision` bump; any other diff needs one here). **No public contract change: `version` stays at
+  3** — same backend (`hatchling`), same base dependencies, same extras, same entrypoint.
+- spec_revision 7 (2026-11-11): **the version keys of the packaging contract belong to SPEC-110
+  (D-038).** §3 no longer claims all of `pyproject.toml` / `src/hifa/__init__.py`: SPEC-000 keeps the
+  backend, the base dependencies, the extras, the entrypoint, `wheel.packages` and the tool config,
+  and `src/hifa/__init__.py` leaves `implements:` altogether (D-038 gives the module to SPEC-110 in
+  full, so claiming it here was a second owner of the same file);
+  SPEC-110 §2.1/§2.9 owns `[project].dynamic` (and the absence of `[project].version`), `hatch-vcs`,
+  `[tool.hatch.version]`, `[dependency-groups].dev`, `[tool.semantic_release]` and the `__version__`
+  symbol. §8 step 1 now says so explicitly and points at SPEC-110 §2.1. Drift on the shared file is
+  attributed by key (D-038). **No public contract change: `version` stays at 3** — same backend, same
+  dependencies, same extras, same entrypoint. *(The version-key column was rewritten by
+  spec_revision 8 / D-039; the split itself stands.)*
 - spec_revision 6 (2026-11-11): **the dependency contract covers the web edge (D-032).** §8 step 3
   names three `.importlinter` contracts — `domain`, `app` and `web` — so the dashboard can never
   import the CLI (P8, D-032). No public contract change: `version` stays at 3.

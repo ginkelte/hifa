@@ -80,6 +80,14 @@ P1-P9 are normative and bind every change, exactly like A1-A8. A PR that violate
 7. PR with: what changes, which spec it touches, how it was verified (real commands and their output).
 8. If the change alters stack, structure, commands or schema → **update `AGENTS.md`, `README.md`
    and `specs/INDEX.md` in the same PR**.
+9. **Releases are automatic and the maintainer is not the trigger.** Merging a commit whose type
+   carries a version (see §9) makes the `Release` workflow derive the next version, rewrite the
+   `version` literal in `pyproject.toml`, regenerate `CHANGELOG.md`, sign the tag `vX.Y.Z` with the
+   `hifa-release` identity and publish the GitHub Release (SPEC-110). Two consequences worth knowing
+   before you push: `CHANGELOG.md` is **machine-owned** (never hand-edit it, and never write a header
+   above it), and `main` is PR-only **except for that release commit**, which the job pushes with the
+   admin bypass of D-039 — it skips the PR and the `required_status_checks`. Use
+   `workflow_dispatch` with `dry_run` (its default) to see the plan without writing anything.
 
 ## 7. Verification (canonical commands)
 
@@ -125,7 +133,24 @@ declared in the docs against the real Typer commands, and declared tables agains
   Vichoko is Spanish. Historical review reports under `specs/reviews/` keep their original language
   as dated evidence. Existing specs and docs are translated as they are revised; new files and any
   modified text are English from now on (D-024, migration tracked as accepted debt in D-033).
-- Commits: `type(scope): message` (`feat`, `fix`, `docs`, `test`, `refactor`, `chore`).
+- Commits: `type(scope): message`, Conventional Commits. The type decides the version, so this table
+  **is** the release contract — it must stay equivalent to `releaseRules` in `.releaserc.json`
+  (SPEC-110 §2.5, R15). Changing one without the other desynchronises the engine from the
+  documentation, which is how a project ends up cutting patch releases from the `chore:` commits it
+  documents as "no release". The engine keeps the **highest** release among all rules that match, so
+  order does not change the outcome — but the set of types must be identical.
+
+  | Commit | Version |
+  |---|---|
+  | any type with a `BREAKING CHANGE:` footer | **major** |
+  | `feat` | minor |
+  | `fix`, `style`, `refactor`, `perf`, `build`, `ci`, `chore`, `revert` | patch |
+  | `revert` produced by `git revert` (`Revert "…"`) | patch |
+  | `docs`, `test` | none — no release |
+
+  A `!` in the header (`feat!:`) is **not** a breaking marker for this engine: the preset's header
+  pattern does not parse it, and the commit is dropped from the changelog. Always use the footer.
+  `docs:`/`test:` merges still land in `main`; they simply produce no release.
 
 ## 10. Prohibitions
 

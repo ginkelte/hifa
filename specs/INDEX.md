@@ -4,8 +4,9 @@ Source of truth for `hifa`. The code is derived: every spec must allow its **com
 regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Template: [`_template.md`](./_template.md).
 
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
-**11 approved specs**. Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md)
-(**36 decisions: D-001 … D-036**). Reports in [`reviews/`](./reviews/).
+**11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 2` / `spec_revision: 4`
+after the engine change of D-039). Accepted debt P-01…P-09 in
+[`DECISIONS.md`](./DECISIONS.md) (**39 decisions: D-001 … D-039**). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035):** the canonical seed is
 `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · Done(5.0) ·
@@ -45,7 +46,7 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
 
 | ID | Component | Spec | Governs (`implements`) | Depends on | Status |
 |---|---|---|---|---|---|
-| 000 | System architecture | [000-system-architecture.md](./000-system-architecture.md) | `pyproject.toml`, `.importlinter` | — | approved |
+| 000 | System architecture | [000-system-architecture.md](./000-system-architecture.md) | `pyproject.toml` (**packaging keys except the version-producing ones**, D-038/D-039), `.importlinter` (`src/hifa/__init__.py` is not claimed here: D-038 gives it to SPEC-110) | — | approved |
 | 001 | **Vertical v1 spec (MVP)** | [001-mvp-v1.md](./001-mvp-v1.md) + [tasks](./001-mvp-v1.tasks.md) | the whole MVP (scope + AC) | 000…100 | approved |
 | 010 | Data model | [010-data-model.md](./010-data-model.md) | `adapters/sqlite/migrations/*.sql`, `migrate.py`, `connection.py` | 000 | approved |
 | 020 | Domain core | [020-domain-core.md](./020-domain-core.md) | `domain/**`, `tests/unit/domain/**` | 000, 010 | approved |
@@ -57,6 +58,7 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
 | 080 | Import / export | [080-transfer-csv-json.md](./080-transfer-csv-json.md) | `app/transfer.py`, `adapters/sqlite/transfer_sql.py` | 040 | approved |
 | 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | approved |
 | 100 | Config and bootstrap | [100-config-bootstrap.md](./100-config-bootstrap.md) | `config.py`, `app/teams.py::bootstrap`, `cli/commands/db.py` | 010, 040 | approved |
+| 110 | Semantic release pipeline | [110-release.md](./110-release.md) | `.github/workflows/release.yml`, `.github/release/tag-message.sh`, `.releaserc.json`, `package.json`, `package-lock.json`, `CHANGELOG.md`, `.github/signers/**`, `pyproject.toml` (the `version` literal and the version-producing keys, D-038/D-039), `src/hifa/__init__.py`, `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py` | 000, 050 | draft (`version: 2`, `spec_revision: 4`: npm `semantic-release` engine, literal version, `v0.1.0` bootstrap — D-039) |
 
 ## Dependency graph
 
@@ -67,6 +69,13 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
                              │        ├──▶ 090 (search)
                              └────────┴──▶ 100 (config/bootstrap)
 ```
+
+`110` (release) sits outside the runtime chain: it depends on `000` (packaging) and `050`
+(`hifa --version`), governs no module of `src/` other than the `__version__` symbol, and is the only
+spec that governs CI (D-039). It is also the only component that writes to `main` without a pull
+request: one `chore(release): X [skip ci]` commit per release, pushed through the ruleset's admin
+bypass (D-039), while `pull_request`, `required_status_checks`, `non_fast_forward` and `deletion` stay
+enforced for every other actor (D-036).
 
 ## Acceptance criteria
 

@@ -828,3 +828,321 @@ just configured.
 **History.** The published history starts at a single signed initial commit dated 2026-11-11, which
 carries the complete tree of the project. A public repository is a release, not a diary: the history
 that starts here is the one a reader can navigate.
+
+## D-037 — A release is a signed tag; the pipeline writes no commit to `main`
+**Date:** 2026-11-11 · **Wins:** SPEC-110 §2 (new component) · **Touches:** `specs/110-release.md`,
+`specs/INDEX.md`, `pyproject.toml`, `src/hifa/__init__.py`, `.github/workflows/release.yml`,
+`.github/signers/allowed_signers`, `AGENTS.md` §6, `README.md` "Contributing"
+
+HIFA-22 defines the release flow as: derive the version from the commit log, **bump the version in
+`pyproject.toml` and commit it**, update the changelog, tag, and publish a GitHub Release. The second
+clause cannot execute on this repository. `main` is enforced PR-only by the ruleset `main is PR-only`
+with `current_user_can_bypass: never` (D-036): a push of a commit to `main` is rejected by GitHub
+with *"Changes must be made through a pull request"* and *"2 of 2 required status checks are
+expected"*, there is no force-push and no deletion, and only squash merges are accepted. A job that
+commits and pushes a version bump therefore fails at the push, on every release, after having already
+computed the version.
+
+The second measured contradiction is inside the repository: the project carried **two** version
+literals in different places and with different owners — `pyproject.toml:7` (`version = "0.1.0"`, the
+distribution version) and `src/hifa/__init__.py:5` (`__version__ = "0.1.0"`, the value that
+`hifa --version` prints, imported by `cli/main.py`). Both agreed by luck, not by construction:
+nothing derived one from the other, and a release that bumped one would have left the other behind,
+so the tag and `hifa --version` could disagree with the wheel.
+
+**Candidates, evaluated against the ruleset:**
+
+| Design | Mechanism | Verdict |
+|---|---|---|
+| **(a) tag-only, dynamic version** | `pyproject.toml` goes `dynamic = ["version"]` + `hatch-vcs`; the tag is the only source; the job creates a signed tag and the GitHub Release, and commits nothing; `hifa --version` reads `importlib.metadata.version("hifa")` | **chosen** |
+| (b) push the bump to `main` | the job writes `version` and pushes to `main` | rejected: the ruleset rejects the push (*"Changes must be made through a pull request"*), and every release would end red after doing the work |
+| (c) bot PR with the bump | the job opens a PR with a signed bump commit, a human merges it, a second run tags | rejected as the default: two steps and two runs per release, a second signed commit per release, a PR whose only content is a number that the tag already contains, and a merge gate that can stay open indefinitely while the version is decided |
+
+**Resolution.** SPEC-110 defines design (a):
+
+- **The tag is the single source.** `vX.Y.Z` (annotated, SSH-signed) is the only artefact that
+  carries a version; `pyproject.toml` declares `dynamic = ["version"]` and the build backend derives
+  the distribution version from the tag; `src/hifa/__init__.py` derives `__version__` from the
+  installed metadata and contains no literal. The two-literal state is gone, not synchronised.
+- **The pipeline writes no commit.** The release workflow triggers on `push` to `main` and on manual
+  dispatch, and the only ref it pushes is `refs/tags/vX.Y.Z`. No `git commit`, no branch push, no run
+  of the release tool in write mode (R11 of SPEC-110).
+- **The changelog is the GitHub Release body.** A `CHANGELOG.md` in the tree would require a bot
+  commit and a PR per release — the same wall as (b). The notes are generated from the commit range
+  with the sections and bullet shape fixed by SPEC-110 §2.6, so "the changelog groups by type" stays
+  true without a file that can drift.
+- **`python-semantic-release` is a calculator, not a publisher.** It is a development dependency
+  (never runtime), used read-only (`--print*` with `--no-commit --no-tag --no-changelog --no-push
+  --no-vcs-release`); the tag and the Release are created by the job, because the tool would write the
+  version into the tree and produce an unsigned tag.
+- **`allow_zero_version = true` is mandatory.** Measured on `python-semantic-release 10.7.0`: with the
+  key unset, a `feat`, a `fix` and a `feat!` on the `0.x` line all resolve to `1.0.0`; with it set,
+  they resolve to `0.2.0`, `0.1.1` and `1.0.0`. The issue's acceptance criteria (`feat` ⇒ `0.x.0`,
+  `fix` ⇒ patch, breaking ⇒ major) only hold with that key, so the default configuration contradicts
+  the requirement.
+- **The first tag is manual and signed.** The published history is a single non-conventional commit,
+  which yields `0.0.0` — no release, forever. The maintainer creates `v0.1.0` once, on that commit,
+  with the same SSH key (§5.2 of SPEC-110). The job never invents a first tag: a tag is an assertion
+  about what shipped, and a bot has nothing to assert on a history it cannot read semantically.
+- **Signing stays SSH and single-allowlist.** The private key lives in the repository secret
+  `HIFA_RELEASE_SIGNING_KEY`; its public half is a line in `.github/signers/allowed_signers` with
+  principal `hifa-release`. The `firmas` job verifies commits with that file and the release job
+  verifies tags with it: one allowlist, two checks. A missing secret fails the run; an unsigned tag
+  is never created as a fallback.
+
+**What loses, and why.** HIFA-22 loses its "bump the version in `pyproject.toml` and commit" clause:
+the mechanism it prescribes is the one the repository forbids, so the issue is wrong about the *how*
+and right about the *what* (a version derived from the log, a changelog, a tag, a Release). The
+version literal in `pyproject.toml` loses to the tag (SPEC-000 §8 step 1 keeps its `version` mention
+until that spec is revised; the split of ownership — SPEC-000 keeps backend, deps, extras, entrypoint;
+SPEC-110 keeps everything that produces a version — is recorded in SPEC-110 §Notes). The literal in
+`src/hifa/__init__.py` is deleted, not kept in sync. Nothing in SPEC-050 loses: `--version` still
+prints `hifa <version>`; only where the value comes from changes.
+
+**Verified.** Every claim above is executable, and SPEC-110 §7.2 carries the commands: `git verify-tag`
+against `allowed_signers` for the signature; `git describe --tags --exact-match` ⇔ `hifa --version` for
+the tag/version tie; `semantic-release version --print` on a range with a `feat` for the bump table;
+`grep` for the absence of a version literal; `gh run view --log` for `last=` / `next=` / `no release`;
+the ruleset itself rejects any attempt to push a commit to `main`, which is the constraint this
+decision is built around and not a hypothesis.
+
+**Files:** `specs/110-release.md` (new, SPEC-110), `specs/DECISIONS.md`, `specs/INDEX.md`;
+implementation: `pyproject.toml`, `src/hifa/__init__.py`, `.github/workflows/release.yml`,
+`.github/signers/allowed_signers`, `AGENTS.md` §6, `README.md` "Contributing".
+
+## D-038 — SPEC-110 owns the version keys of `pyproject.toml` and `__version__`; SPEC-000 keeps the rest
+**Date:** 2026-11-11 · **Wins:** SPEC-110 §2.1, §2.9 (new component) · **Touches:** SPEC-000 §3,
+§8 step 1, Notes; SPEC-110 §2.1, §2.9, §2.11, §12, Notes; `specs/INDEX.md`; `specs/DECISIONS.md`
+
+D-037 settled the release design and left one conflict **declared but not resolved**: SPEC-000 §3
+says SPEC-000 "governs `pyproject.toml`, `.importlinter` and `src/hifa/__init__.py`", while SPEC-110
+removes `version` from `[project]` and rewrites `src/hifa/__init__.py`. Two specs claiming one file
+is exactly the case `AGENTS.md` §3 covers — *"a conflict between specs is not resolved by writing
+code: it is recorded in `DECISIONS.md`, the losing spec is adjusted with a `spec_revision` bump, and
+its §Notes points at the decision"* — and `specs/INDEX.md` §Rules repeats it. A split written inside
+the new spec's §Notes is not a decision: it has no number, no owner and nothing to point at.
+
+D-037 also carried a **false premise**, inherited by revision 1 of SPEC-110: it claims "SPEC-000 §8
+step 1 keeps its `version` mention". §8 step 1 lists `requires-python`, the entrypoint, the extras
+and the base dependencies — it has never mentioned `version`. The real overlap is §3, one paragraph
+longer than the decision assumed, so the deferral rested on a text that does not exist.
+
+**Corrigendum to D-037 — premise and pointer.** D-037 is **append-only and is not edited**; this
+paragraph is where its two defects are corrected, and it is the pointer that survives:
+
+1. *Premise*: the sentence "SPEC-000 §8 step 1 keeps its `version` mention until that spec is
+   revised" describes a text that never existed (above). §8 step 1 of SPEC-000 has now been revised
+   anyway — it states that the distribution `version` is dynamic and owned by SPEC-110 §2.1 — so the
+   deferral it announced has no object left.
+2. *Pointer*: D-037 says the split of ownership "is recorded in SPEC-110 §Notes". A note inside the
+   winning spec is not a decision (`AGENTS.md` §3, `specs/README.md` §Drift): the split is **this
+   decision**, and the pointers live here. Both SPEC-000 §Notes and SPEC-110 §12 point at D-038, and
+   SPEC-000's `implements:` no longer claims `src/hifa/__init__.py`, so a reader who follows D-037
+   forward lands on this decision instead of on a §Notes paragraph with no number.
+
+**Resolution: the ownership of the two shared artefacts is a split by key, and it is recorded here.**
+
+| Artefact | SPEC-000 owns | SPEC-110 owns |
+|---|---|---|
+| `pyproject.toml` | `[build-system].build-backend`, `hatchling` in `requires`, `[project]` name/description/readme/`requires-python`/dependencies/extras/scripts, `[tool.hatch.build.targets.wheel]`, `[tool.ruff]`, `[tool.pytest.ini_options]` | `[project].dynamic` and the **absence** of `[project].version`, `hatch-vcs` in `[build-system].requires`, `[tool.hatch.version]`, `[dependency-groups].dev` (the pinned PSR), the whole `[tool.semantic_release]` table, and the absence of `version_toml`/`version_variables`/`changelog`/publish targets |
+| `src/hifa/__init__.py` | nothing (the module is SPEC-110's contract in full, §2.1) | the `__version__` symbol and its fallback |
+| `.importlinter` | all of it | nothing |
+
+**Drift attribution for a shared file.** `implements:` is glob-based, so both specs legitimately list
+`pyproject.toml`; the rule that removes the ambiguity is: *a change inside a key listed in SPEC-110
+§2.9 requires a SPEC-110 `spec_revision` bump; any other change in the file requires a SPEC-000
+`spec_revision` bump; a change that moves a key from one column to the other requires both.* The
+`INDEX.md` row of each spec now says which part it claims, so a reader — and a future drift check —
+attributes a diff to one owner without guessing.
+
+**SPEC-000 is the losing spec and is adjusted here:** `spec_revision 6 → 7` (no `version` bump: the
+packaging contract keeps the same backend, dependencies, extras and entrypoint, so no public
+contract changed). Its §3 excludes the version-producing keys, its §8 step 1 points at SPEC-110 §2.1
+for the version, and its §Notes carries the pointer to this decision. `INDEX.md` carries the
+decision counter and the per-spec claim.
+
+**Secondary clause — the `0.1.0` examples of SPEC-050/060/070/080.** **Six example blocks in four
+specs** read `__version__` (`hifa --version` at 050:908, `hifa doctor --json` at 050:913, the
+`hifa serve` banner at 050:1326, `/health` at 060:833, the web read-model at 070:237 and the export
+`app_version` at 080:333), and removing `[project].version` makes an off-tag development install
+report a dev version. The example blocks at `050-cli.md:908,913,1326`,
+`060-api-rest.md:833`, `070-web-dashboard.md:237` and `080-transfer-csv-json.md:333` are
+**illustrative, not contractual**: none of those specs asserts equality with a literal, and the AC
+at `050-cli.md:1326` is an ordering assertion. SPEC-110 §2.11 states the rule. Refreshing those
+six blocks to the current tag needs a `spec_revision` bump of each spec and is **accepted debt**:
+paid when each spec is next revised, never as a drive-by edit in this change.
+
+**Why not the alternatives.** (a) *Let SPEC-110 take the whole file*: SPEC-000 §8 step 1 is the only
+place that declares the backend, the extras and the entrypoint, and moving them would rewrite an
+approved spec's packaging contract for a version change. (b) *Let SPEC-000 keep the version keys*:
+it cannot — SPEC-000 does not define a release, a tag or a parser, so those keys would be a contract
+with no owner of the behaviour. (c) *Declare the split in SPEC-110 §Notes only*: rejected by
+`AGENTS.md` §3 and by `specs/README.md` §Drift, and it leaves `INDEX.md` with two unqualified rows
+for one file, which is the state this decision repairs.
+
+**Files:** `specs/DECISIONS.md`, `specs/000-system-architecture.md` (§3, §8, Notes and
+`implements:`, which no longer claims `src/hifa/__init__.py`), `specs/110-release.md` (§2.1, §2.9,
+§2.11, §12), `specs/INDEX.md`; implementation: `pyproject.toml`, `src/hifa/__init__.py`.
+
+## D-039 — The release engine is npm `semantic-release`; the admin role is the bypass; `v0.1.0` is the bootstrap
+**Date:** 2026-11-11 · **Wins:** SPEC-110 §2 (rewritten as `version: 2`, `spec_revision: 4`) ·
+**Touches:** `specs/110-release.md` (all of §2, §3-§10, §12), `specs/000-system-architecture.md`
+(§3, §8 step 1, Notes), `specs/INDEX.md`; implementation: `pyproject.toml`, `package.json`,
+`package-lock.json`, `.releaserc.json`, `.github/workflows/release.yml`,
+`.github/release/tag-message.sh`, `CHANGELOG.md`, `AGENTS.md` §6/§9, `README.md` "Contributing"
+
+D-037 chose `python-semantic-release` (PSR) as a **read-only calculator** and forbade the pipeline any
+commit to `main`, because the ruleset `main is PR-only` rejected every push (D-036: "no bypass"). Two
+things changed the premise, and the third is a measurement:
+
+1. **The ruleset now has a bypass actor.** It carries
+   `bypass_actors: [{actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always"}]` and GitHub
+   reports `current_user_can_bypass: always`, while `pull_request`, `required_status_checks` (`test`,
+   `firmas`), `non_fast_forward` and `deletion` stay enabled. The maintainer authorised this
+   explicitly: *"pass a token from an admin user and add the admin as a bypass to that rule, or use a
+   GitHub App"*.
+2. **A proven engine exists.** The user's `Vichoko/python-semantic-release-cookiecutter` solves the
+   same problem with the npm package `semantic-release` and six plugins; its `.releaserc.json` was read
+   from the repository, not remembered.
+3. **PSR's cost was measured in workarounds.** On this repository PSR 10.7.0 needs
+   `allow_zero_version = true` (unset, every releasable commit on a `0.x` line resolves to `1.0.0`),
+   `major_on_zero = true`, `add_partial_tags = false`, three `--no-*` flags per invocation and the
+   seven-row truth table of SPEC-110 rev 3 (rows A-G) to read `--print` unambiguously. That table was
+   the price of a calculator that answers with a number and nothing else. The npm engine answers with
+   the release itself: it computes, writes, commits, tags and publishes, and it is idempotent by
+   construction (it computes from the last tag and prints `There are no relevant changes` when there
+   is nothing to release).
+
+**Resolution (a) — the engine.** SPEC-110 `version: 2`, `spec_revision: 4` replaces PSR with npm
+`semantic-release@21`, pinned with its plugins in a **versioned** `package.json` +
+`package-lock.json` and installed with `npm ci`:
+
+| Kept from the reference setup | Corrected (the three defects of the reference) |
+|---|---|
+| plugin set and order: `commit-analyzer` → `release-notes-generator` → `changelog` → `exec` → `git` → `github`; `tagFormat: "v${version}"`; the `sed` `prepareCmd` that rewrites the literal | **config vs documentation**: the reference mapped `style`/`ci`/`chore`/`build` to `patch` in `.releaserc.json` and to "no release" in its own docs. SPEC-110 §2.5.4 is the single table and `AGENTS.md` §9 must be identical (§2.10) |
+| `@semantic-release/git` committing `CHANGELOG.md` + `pyproject.toml` with `chore(release): X [skip ci]` | **`CHANGELOG.md` corruption**: a hand-written `# Changelog` header ended up *below* the generated `# [1.0.1](…)`. The file is machine-owned and must not exist before the first release (§2.6) |
+| the workflow skeleton: `push: [main]`, `workflow_dispatch`, `fetch-depth: 0`, `setup-node` lts, `[skip ci]` job condition | **non-reproducible install**: an inline `package.json` with `^` ranges and no lockfile, in a job holding `contents: write`. `npm ci` + a versioned lockfile is mandatory (§2.8); `persist-credentials: false` is kept and the push credential travels in `GIT_CONFIG_*` env vars (§2.4) |
+
+The version is a **literal again**: `@semantic-release/exec`'s `sed` writes `version = "X.Y.Z"` in
+`pyproject.toml`, in the release commit. `dynamic = ["version"]`, `[tool.hatch.version]`,
+`hatch-vcs`, `[tool.semantic_release]` and the `python-semantic-release` dev dependency are removed;
+`src/hifa/__init__.py` keeps reading `importlib.metadata` with the `0.0.0+unknown` fallback, so
+`hifa --version` still has one origin. The seven-row guard A-G is deleted: its outcome space is now
+one assertion on the run — a release XOR the engine's `no relevant changes` token, plus four
+post-conditions (annotated signed tag, signed release commit, literal == tag, changelog mentions the
+version).
+
+**Resolution (b) — the bypass, and its exact scope against D-036.** D-036 is **not edited** (append-
+only); this is its corrigendum:
+
+- *What D-036 said*: `current_user_can_bypass: never`; every push to `main` is rejected; a release
+  commit is impossible. *What holds now*: the same ruleset exempts **one actor class**, the
+  `RepositoryRole` admin, with `bypass_mode: always`. The four rules remain, the required checks
+  remain `test` + `firmas`, and every other actor — collaborator, fork, bot without bypass,
+  fine-grained token — is still rejected with *"Changes must be made through a pull request"*.
+- *The exception is role-based, not token-based.* `HIFA_RELEASE_TOKEN` (classic PAT of an admin, scope
+  `repo` **only**, ≤ 90 days — `workflow` would only matter to push `.github/workflows/**`, which no step
+  does, so carrying it is a widening that must be justified: SPEC-110 §2.7.2, REQ-S110-03) authenticates a
+  job that exercises a power the admin already has; it
+  grants no new power, and any admin could push to `main` without it. That is the trade-off the
+  maintainer accepted to get a one-run release instead of a two-step bot PR (D-037 candidate (c),
+  still rejected).
+- *Scope.* May be used for: the single `chore(release): X [skip ci]` commit, the `vX.Y.Z` tag, and
+  re-running a failed release. Must never be used for: merging a feature branch, editing
+  `.github/workflows/**` by hand, pushing any other commit to `main`, force-pushing, deleting `main`,
+  moving or deleting a tag, or changing the ruleset and its bypass actors. SPEC-110 §2.7.1 is the
+  authoritative table; R11 and R16 are the rules derived from it.
+- *Blast radius, stated.* A leaked token can push code that bypasses review. Mitigations in the
+  contract: 90-day expiry, rotation, secret scanning, and the audit trail (the release commit is
+  always `chore(release): … [skip ci]` and is verifiable as a signed commit).
+- *The GitHub App alternative is deferred, not rejected.* It would scope the exemption to one identity
+  with its own audit trail; it costs an App registration, a private key, an installation-token exchange
+  and a second secret. Out of scope for `version: 2` (SPEC-110 §10), recorded here as the upgrade path.
+- *Not closed by this decision*: GitHub has no tag rule in this ruleset, so `refs/tags/v*` is not
+  protected against a force-move by a human with write access. A second ruleset targeting
+  `refs/tags/v*` is declared debt (SPEC-110 §2.5.4 point 3).
+
+**Resolution (c) — the bootstrap `v0.1.0`.** Measured on `semantic-release 21.1.2`: with no tag at all
+the engine answers *"There is no previous release, the next release version is 1.0.0"* for the first
+`feat:`. HIFA-22 requires a `feat` to produce `0.x.0`, so the maintainer creates a **signed** `v0.1.0`
+tag once, on the **merge commit of the PR that restores the literal `0.1.0`** (§5.2's PR-A), and pushes it
+**before** the workflow is enabled (SPEC-110 §5.2, R12). The first automated release is then `0.2.0`. The
+tag is manual because it is the one version no commit can derive — the import commit is not conventional,
+and PR-A only restores a value a human chose — and because a tag asserts what shipped. That commit must
+carry `version = "0.1.0"`: tagging one whose version is derived (`dynamic = ["version"]`) would make the
+baseline itself violate R10.
+
+**Resolution (d) — what this corrects in D-037 and D-038.** Both are append-only and are not edited:
+
+1. *D-037, "the pipeline writes no commit"* — false from now on: the pipeline writes **exactly one**
+   commit per release and pushes it through the bypass. The invariant that survives is *one commit per
+   release, always `chore(release): X [skip ci]`, signed, and no other write* (SPEC-110 R11).
+2. *D-037, "`python-semantic-release` is a calculator, not a publisher"* — the engine is now the
+   publisher: it writes the version, the changelog, the commit, the tag and the Release.
+3. *D-037, "the changelog is the GitHub Release body"* — there is now a **versioned
+   `CHANGELOG.md`**, machine-owned, and the Release body is the same notes. The reason D-037 gave for
+   avoiding the file (a bot commit and a PR per release) no longer applies: there is no PR.
+4. *D-037, "the tag is the single source of the version"* — the **literal** is the value an install
+   reports and the tag is its record; the two are written by the same commit, and the job asserts they
+   agree. The tag remains the only marker of *what shipped*.
+5. *D-038, the ownership split* — the split stands; the column changes. SPEC-110 owns
+   `[project].version` (the literal) and the **absence** of `dynamic`, `[tool.hatch.version]`,
+   `hatch-vcs`, `[tool.semantic_release]` and the PSR row of `[dependency-groups] dev`; SPEC-000 keeps
+   the backend, the base dependencies, the extras, the entrypoint and the tool config. The drift rule
+   is unchanged: a diff inside a SPEC-110 key needs a SPEC-110 `spec_revision` bump, any other diff
+   needs a SPEC-000 one.
+
+**What loses.** HIFA-22's clause "bump the version in `pyproject.toml` and commit it" now *holds* — as
+a bypassed commit, not as a PR; the part that loses is the assumption that the bump travels through
+review like any other change. The "dynamic version" design of D-037 loses on the packaging side:
+`hatch-vcs` and `dynamic` are removed, so a development install no longer reports `0.N.devM+g<sha>`;
+it reports the last released version (SPEC-110 §2.2), which is the accepted cost of a literal. Nothing
+in SPEC-050 loses: `--version` still prints `hifa <version>`.
+
+**Verified (measured on this host, `semantic-release 21.1.2`, Node 22.22.3, scratch repo with a bare
+`origin`).** `git tag` is called without `-m` by the engine (`lib/git.js:225-227`); `tag.gpgSign=true`
+alone makes it abort; `tag.gpgSign=true` plus a `GIT_EDITOR` helper produces an annotated, SSH-signed
+tag (`git cat-file -t` ⇒ `tag`, `git verify-tag` ⇒ *Good "git" signature for hifa-release*); the
+release commit created by `@semantic-release/git` verifies (`%G?` ⇒ `G`) with only
+`commit.gpgSign=true`; the engine pushes the commit to the branch; `feat` ⇒ `0.2.0` from `v0.1.0`,
+`fix`/`chore`/`ci` ⇒ patch, a `BREAKING CHANGE:` footer ⇒ `1.0.0`, `feat!` **without** the footer ⇒
+`no relevant changes`, `docs:`-only ⇒ exit 0 with no release, no tag at all ⇒ `1.0.0`; `--dry-run`
+leaves the tree untouched. SPEC-110 §9 is the full table.
+
+**Why not the alternatives.** (a) *Keep PSR and fix its flags*: the ambiguity is in the tool's output,
+not in the configuration — that is why rev 3 needed seven rows; PSR can compute a version but cannot
+write a changelog file, commit it and publish without losing the signature and the guard. (b) *Bot PR
+with the bump*: two runs and two signed commits per release, and a merge gate that can stay open while
+the version is decided (D-037 (c), still rejected). (c) *GitHub App as the bypass actor now*: better
+scoping, but it adds an App, a key and a token exchange to a pipeline that does not exist yet — it is
+the documented upgrade path, not the first version. (d) *No bootstrap tag*: the first release would be
+`1.0.0`, violating HIFA-22's `0.x.0` criterion on a product that is not 1.0.
+
+**Files:** `specs/DECISIONS.md`, `specs/110-release.md` (`version` 1 → 2, `spec_revision` 3 → 4),
+`specs/000-system-architecture.md` (`spec_revision` 7 → 8), `specs/INDEX.md`; implementation:
+`pyproject.toml`, `package.json`, `package-lock.json`, `.releaserc.json`,
+`.github/workflows/release.yml`, `.github/release/tag-message.sh`, `CHANGELOG.md`,
+`.github/signers/allowed_signers`, `AGENTS.md` §6/§9, `README.md` "Contributing".
+
+**Corrigendum (pre-publication, 2026-11-11).** This entry was written and corrected before it was ever
+committed, so the two adjustments below are made **in place** instead of appending a second decision: the
+append-only rule protects published entries and none of this text has been published. *(1) PAT scopes:*
+`repo` **only** — `workflow` authorises nothing this pipeline does and any additional scope is a widening
+that has to be justified on its own (SPEC-110 §2.7.2, REQ-S110-03). *(2) Bootstrap target:* `v0.1.0` names
+the **merge commit of the PR that restores the literal `0.1.0`**, never the initial commit — the import
+commit is not conventional and its version would be derived, so tagging it would make the baseline itself
+violate R10 (SPEC-110 §5.2, R12).
+
+**Corrigendum (pre-publication, 2026-11-11) — the scopes of the installed token, as measured.** Item (1)
+above states the requirement (`repo`, nothing else); this records what `HIFA_RELEASE_TOKEN` actually
+carries, and supersedes that item as a description of the token that exists. The token was created with the
+**`gh` CLI device flow**, and the CLI's OAuth app appends `gist` and `read:org` to every token it issues:
+they cannot be removed one by one, only `repo` and wider scopes are selectable on the authorisation screen.
+GitHub reports the effective set as `x-oauth-scopes: gist, read:org, repo`, so the token carries **`repo`
+(required) + `gist` + `read:org`** — the **accepted ceiling** of this deviation, not an instance of least
+privilege. What keeps the blast radius where SPEC-110 §2.7.2 puts it is what is **absent**:
+`admin:ssh_signing_key` (it would let the token replace the account's signing keys, i.e. forge a signed
+release) and `workflow` (it would authorise exactly the write §2.7.1 forbids, `.github/workflows/**`).
+`gist` and `read:org` authorise nothing this pipeline does. Creating the token as a classic PAT with `repo`
+alone removes the deviation; until then SPEC-110 §2.7.2 carries the normative text and this line records
+the gap between it and the installed token.
