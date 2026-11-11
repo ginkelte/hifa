@@ -85,8 +85,10 @@ that literal.
 
 ```python
 """hifa — local issue tracker (CLI + SQLite + dashboard)."""
+
 from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
+
 try:
     __version__: str = version("hifa")
 except PackageNotFoundError:  # source tree that was never installed
