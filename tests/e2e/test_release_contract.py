@@ -455,59 +455,55 @@ def test_package_json_stays_private_with_npms_zero_placeholder() -> None:
     assert package["version"] == "0.0.0"
 
 
-# --- R15: AGENTS.md §9 and `releaseRules` are the same contract -------------------------------
+# --- R15: AGENTS.md §9 and `releaseRules` are one contract -------------------------------
 #
-# P8 says a rule that is not executable is not a rule. R15 promises the documented commit types and
-# the engine's bump table never diverge; this is that promise as a test. The reference project this
-# pipeline was modelled on documents `chore:`/`ci:`/`style:` as "no release" while its config gives
-# them `patch`, so the docs and the released versions disagreed. Comparing the two structures is the
-# only thing that prevents a repeat.
+# P8: a rule that is not executable is not a rule. R15 promises (a) that the documented block
+# and the spec's block are byte-identical, and (b) that the documented types and the engine's
+# bump table agree. The reference project this pipeline was modelled on documented
+# `chore:`/`ci:`/`style:`/`build:` as "no release" while its config gave them `patch`; the docs
+# were wrong for four of eleven types and nothing failed. Both checks below exist so that
+# cannot happen here.
 
 _AGENTS = REPO_ROOT / "AGENTS.md"
-_TYPES = (
-    "feat",
-    "fix",
-    "docs",
-    "test",
-    "refactor",
-    "chore",
-    "style",
-    "perf",
-    "build",
-    "ci",
-    "revert",
-)
+_SPEC = REPO_ROOT / "specs" / "110-release.md"
+_BEGIN = "<!-- release-types:begin -->"
+_END = "<!-- release-types:end -->"
 
 
-def _agents_section_9() -> str:
-    text = _AGENTS.read_text(encoding="utf-8")
-    start = text.index("## 9.")
-    end = text.index("## 10.")
-    return text[start:end]
+def _marked_block(path: Path) -> str:
+    """The text between the markers, inclusive — the unit R15 compares."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = lines.index(_BEGIN)
+    end = lines.index(_END)
+    return "\n".join(lines[start : end + 1])
 
 
-def _bumps_from_agents() -> dict[str, str]:
-    """Read the §9 table: `| types | version |` rows, plus the breaking-change row."""
+def _documented_types() -> dict[str, str]:
+    """Read the marked table into {type: bump}; the breaking row keys on `breaking`."""
     bumps: dict[str, str] = {}
-    for line in _agents_section_9().splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|") or set(stripped) <= set("|- "):
+    inside = False
+    for line in _marked_block(_AGENTS).splitlines():
+        if line == _BEGIN:
+            inside = True
             continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if len(cells) != 2:
+        if line == _END:
+            break
+        if not inside or not line.startswith("|") or set(line) <= set("|- "):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != 2 or cells[0] == "type":
             continue
         left, right = cells
-        bump = "none" if "none" in right else right.strip("*").strip()
         if "BREAKING CHANGE" in left:
-            bumps["breaking"] = bump
+            bumps["breaking"] = right
             continue
-        for token in re.findall(r"`([a-z]+)`", left):
-            if token in _TYPES:
-                bumps[token] = bump
+        for name in (n.strip() for n in left.split(",")):
+            if name:
+                bumps[name] = right
     return bumps
 
 
-def _bumps_from_releaserc() -> dict[str, str]:
+def _engine_types() -> dict[str, str]:
     rules = _plugin_options(_release_config(), "@semantic-release/commit-analyzer")["releaseRules"]
     bumps: dict[str, str] = {}
     for rule in rules:
@@ -520,23 +516,38 @@ def _bumps_from_releaserc() -> dict[str, str]:
     return bumps
 
 
-def test_agents_section_9_matches_the_release_rules() -> None:
-    """R15: the documented table and the engine's table are the same mapping."""
-    documented = _bumps_from_agents()
-    engine = _bumps_from_releaserc()
+def test_agents_block_is_identical_to_the_spec_block() -> None:
+    """R15(a): `diff -u` of the two marker ranges must be empty."""
+    assert _marked_block(_AGENTS) == _marked_block(_SPEC), (
+        "AGENTS.md §9 and SPEC-110 §2.10 must carry the same release-types block, verbatim"
+    )
 
-    assert documented, "AGENTS.md §9 has no commit table to compare"
+
+def test_agents_block_carries_the_markers_r15_needs() -> None:
+    """Without both markers the comparison cannot be anchored, and R15 degrades to two greps."""
+    text = _AGENTS.read_text(encoding="utf-8")
+    assert text.count(_BEGIN) == 1
+    assert text.count(_END) == 1
+    assert text.index(_BEGIN) < text.index(_END)
+
+
+def test_documented_types_match_the_release_rules() -> None:
+    """R15(b): the documented mapping and the engine's mapping are the same, both directions."""
+    documented = _documented_types()
+    engine = _engine_types()
+
+    assert documented, "the marked block in AGENTS.md carries no type rows"
     assert set(documented) == set(engine), (
-        f"AGENTS.md §9 and .releaserc.json disagree on which types exist: "
+        "AGENTS.md and .releaserc.json disagree on which types exist: "
         f"only documented={sorted(set(documented) - set(engine))}, "
         f"only in the engine={sorted(set(engine) - set(documented))}"
     )
     differing = {t: (documented[t], engine[t]) for t in documented if documented[t] != engine[t]}
-    assert not differing, f"AGENTS.md §9 and .releaserc.json disagree on the bump: {differing}"
+    assert not differing, f"AGENTS.md and .releaserc.json disagree on the bump: {differing}"
 
 
 def test_agents_documents_the_breaking_footer_not_the_bang() -> None:
     """§2.5: the preset drops a `feat!:` header, so the footer is the only breaking marker."""
-    section = _agents_section_9()
+    section = _AGENTS.read_text(encoding="utf-8")
     assert "BREAKING CHANGE" in section
-    assert "feat!:" in section
+    assert "feat!" in section
