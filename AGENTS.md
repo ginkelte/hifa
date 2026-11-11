@@ -71,7 +71,8 @@ P1-P9 are normative and bind every change, exactly like A1-A8. A PR that violate
    D-036): a direct push is rejected by GitHub with *"Changes must be made through a pull request"*,
    `main` cannot be force-pushed or deleted, only squash merges are allowed, and the `test` and
    `firmas` checks must be green before the merge button works. See the "Contributing" section of
-   the README for the recovery path if a push is rejected.
+   the README for the recovery path if a push is rejected. The single exception is the release commit
+   the pipeline writes itself (step 9): it enters through the admin bypass (D-039).
 2. Spec first if the change is logic (new behaviour or contract change).
 3. CLI before dashboard (P1): a capability without its CLI verb is not ready for the web edge.
 4. New rule => new contract (P8): express it in `.importlinter` or in a test in the same PR.
@@ -80,14 +81,15 @@ P1-P9 are normative and bind every change, exactly like A1-A8. A PR that violate
 7. PR with: what changes, which spec it touches, how it was verified (real commands and their output).
 8. If the change alters stack, structure, commands or schema → **update `AGENTS.md`, `README.md`
    and `specs/INDEX.md` in the same PR**.
-9. **Releases are automatic and the maintainer is not the trigger.** Merging a commit whose type
-   carries a version (see §9) makes the `Release` workflow derive the next version, rewrite the
-   `version` literal in `pyproject.toml`, regenerate `CHANGELOG.md`, sign the tag `vX.Y.Z` with the
-   `hifa-release` identity and publish the GitHub Release (SPEC-110). Two consequences worth knowing
-   before you push: `CHANGELOG.md` is **machine-owned** (never hand-edit it, and never write a header
-   above it), and `main` is PR-only **except for that release commit**, which the job pushes with the
-   admin bypass of D-039 — it skips the PR and the `required_status_checks`. Use
-   `workflow_dispatch` with `dry_run` (its default) to see the plan without writing anything.
+9. Release (SPEC-110): a merged conventional PR on `main` is released by `.github/workflows/release.yml`.
+   The job reads the commits since the last tag, computes the version from their types (§9), writes the
+   literal in `pyproject.toml`, regenerates `CHANGELOG.md` and pushes **exactly one** commit,
+   `chore(release): X.Y.Z [skip ci]`, before signing the tag `vX.Y.Z` on it and publishing the Release.
+   That commit is the only write to `main` that skips review — it enters through the admin bypass of the
+   ruleset (D-039, SPEC-110 §2.7.1) — and therefore the only commit on `main` that no CI run validates.
+   The version has one origin, the literal that commit writes, and `hifa --version` reads the installed
+   metadata, so the tag, the literal and the reported version agree. `CHANGELOG.md` is machine-owned:
+   fix the commit message, never the file.
 
 ## 7. Verification (canonical commands)
 
@@ -133,24 +135,37 @@ declared in the docs against the real Typer commands, and declared tables agains
   Vichoko is Spanish. Historical review reports under `specs/reviews/` keep their original language
   as dated evidence. Existing specs and docs are translated as they are revised; new files and any
   modified text are English from now on (D-024, migration tracked as accepted debt in D-033).
-- Commits: `type(scope): message`, Conventional Commits. The type decides the version, so this table
-  **is** the release contract — it must stay equivalent to `releaseRules` in `.releaserc.json`
-  (SPEC-110 §2.5, R15). Changing one without the other desynchronises the engine from the
-  documentation, which is how a project ends up cutting patch releases from the `chore:` commits it
-  documents as "no release". The engine keeps the **highest** release among all rules that match, so
-  order does not change the outcome — but the set of types must be identical.
+- Commits: `type(scope): message`, conventional, in English. The type decides the release bump (§6
+  step 9), so the table below is normative, not decorative:
 
-  | Commit | Version |
-  |---|---|
-  | any type with a `BREAKING CHANGE:` footer | **major** |
-  | `feat` | minor |
-  | `fix`, `style`, `refactor`, `perf`, `build`, `ci`, `chore`, `revert` | patch |
-  | `revert` produced by `git revert` (`Revert "…"`) | patch |
-  | `docs`, `test` | none — no release |
+<!-- release-types:begin -->
+| type | release |
+|---|---|
+| any type with a `BREAKING CHANGE:` footer | major |
+| feat | minor |
+| fix, perf, style, refactor, build, ci, chore, revert | patch |
+| docs, test | none |
+<!-- release-types:end -->
 
-  A `!` in the header (`feat!:`) is **not** a breaking marker for this engine: the preset's header
-  pattern does not parse it, and the commit is dropped from the changelog. Always use the footer.
-  `docs:`/`test:` merges still land in `main`; they simply produce no release.
+- **A breaking change carries a `BREAKING CHANGE:` footer, on any type.** `feat!: …` releases **nothing**
+  and never reaches the changelog: the angular preset's `headerPattern` has no `!`, so the commit parses
+  with no type and no subject, matches no rule and is dropped. Write the footer —
+  `BREAKING CHANGE: <what stops being compatible>` — and expect `major`: a `fix:` with the footer is a
+  major, not a patch. The analyzer keeps every matching rule and returns the highest release type, so a
+  footer always outranks the type.
+- **`revert` is patch twice, and both rows are needed.** `{"type": "revert"}` matches a literal `revert:`
+  subject; `{"revert": true}` matches the `Revert "…"` header that `git revert` writes, which the parser
+  never turns into a `type`. A `feat:` and its revert in the same range cancel out: they release nothing.
+- **Anything else releases nothing.** `wip:`, `hifa:`, a subject with no conventional prefix: no rule
+  matches and the engine reports *no relevant changes*.
+- **This table and `.releaserc.json` change together.** `releaseRules` is what the engine executes; §9 is
+  what humans read. A PR that edits one and not the other is rejected: the reference setup this
+  repository replaced mapped `style`, `ci`, `chore` and `build` to `patch` in its config and to "no
+  release" in its own docs, and the documentation was wrong for four of its eleven types while the
+  runtime followed the config. R15 (SPEC-110 §7.2) compares the `release-types` block here with the one
+  in SPEC-110 §2.10 — `diff -u` of the two marker ranges, empty diff required — so keep the markers, the
+  rows and their order verbatim. When a rule is added or removed, the config, this table and the spec
+  move in one PR.
 
 ## 10. Prohibitions
 
