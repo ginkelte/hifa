@@ -1,0 +1,4 @@
+[8:03:31 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[8:03:31 PM] [semantic-release] › ✔  Loaded plugin "verifyConditions" from "@semantic-release/exec"
+[8:03:32 PM] [semantic-release] › ⚠  configured branch 'main' is not the current branch 'release-test'
+[8:03:32 PM] [semantic-release] › ✖  EBRANCHNOTFOUND

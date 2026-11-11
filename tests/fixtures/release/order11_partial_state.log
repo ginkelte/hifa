@@ -1,0 +1,7 @@
+[7:58:03 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[7:58:03 PM] [semantic-release] › ✔  Allowed to push to the Git repository
+signing pre-flight: starting
+signing pre-flight ok: preflight-4d0aa17-1188
+[7:58:04 PM] [semantic-release] › ℹ  The next release version is 0.2.0
+[7:58:06 PM] [semantic-release] › ✔  Prepared Git release: v0.2.0
+[7:58:06 PM] [semantic-release] › ✔  Created tag v0.2.0

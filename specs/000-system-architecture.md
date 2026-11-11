@@ -4,7 +4,7 @@ title: System architecture
 component: support
 status: approved
 version: 3
-spec_revision: 8
+spec_revision: 9
 depends_on: []
 implements:
   - pyproject.toml
@@ -280,12 +280,15 @@ Coverage of the requirements that have no scenario of their own (they are verifi
    `markdown-it-py`, `python-ulid` (REQ-N007; no third-party sanitizer, D-020). The distribution
    `version` is a **literal** in `[project]` written only by the release job
    (`chore(release): X [skip ci]`): its value, its bump and the ban on deriving it from git belong to
-   SPEC-110 §2.1/§2.5.2 (D-038, **D-039**) — the backend must not carry `hatch-vcs`, `setuptools-scm`,
+   SPEC-110 §2.1/§2.5.3 (D-038, **D-039**) — the backend must not carry `hatch-vcs`, `setuptools-scm`,
    `dynamic` or `[tool.hatch.version]`.
 2. Create the tree of §4.3 with empty modules that respect the allowed imports.
 3. `.importlinter` with the `domain`, `app` and `web` contracts (A1, A2, P8/D-032).
 4. `scripts/spec_contract_check.py` implemented before writing features.
-5. CI: ruff + pytest + import-linter + spec_contract_check.
+5. CI: ruff + pytest + import-linter + spec_contract_check. The pytest gate also **executes** the governed
+   shell files of the release pipeline (`.github/release/tag-message.sh`,
+   `.github/release/assert-outcome.sh`), because P8 is satisfied by a test that observes behaviour, not by a
+   test that reads a document (SPEC-110 §2.9, D-040).
 
 ## 9. Provenance
 
@@ -302,6 +305,15 @@ Multi-tenant, auth, sync, plugins, AI, binary attachments, notifications, webhoo
 
 ## Notes
 
+- spec_revision 9 (2026-11-11): **the CI gate of §8 step 5 now names the executable contracts it runs.**
+  SPEC-110 `version: 3` moves the release component's two shell files from prose into governed,
+  pytest-executed artefacts (`.github/release/tag-message.sh`, `.github/release/assert-outcome.sh`, D-040),
+  and a regenerated system must keep them executable and tested — a checklist that only says "pytest" does
+  does not say that. **Nothing else moves:** §3's ownership table is untouched (the packaging keys, the
+  `[project].version` literal and the version-producing absences are still SPEC-110's by D-038/D-039), and
+  **no public contract change: `version` stays at 3** — same backend, same base dependencies, same extras,
+  same entrypoint. §8 step 1 now points at SPEC-110 **§2.5.3** for the bump mapping: §2.5.2 is engine
+  behaviour and §2.5.3 is the table this key follows.
 - spec_revision 8 (2026-11-11): **the version key is a literal again, and this spec's packaging contract
   follows (D-039).** SPEC-110 `version: 2` replaces `python-semantic-release` with the npm
   `semantic-release` engine and re-adds `[project] version = "X.Y.Z"` as the only product version

@@ -1,0 +1,10 @@
+[7:26:40 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[7:26:40 PM] [semantic-release] › ✔  Loaded plugin "verifyConditions" from "@semantic-release/exec"
+[7:26:40 PM] [semantic-release] › ✔  Allowed to push to the Git repository
+signing pre-flight: starting
+signing pre-flight ok: preflight-b90c411-6073
+[7:26:41 PM] [semantic-release] › ℹ  The next release version is 0.2.0
+[7:26:41 PM] [semantic-release] › ℹ  Start step "publish" of plugin "@semantic-release/github"
+[7:26:42 PM] [semantic-release] › ✖  HttpError: Bad credentials
+[7:26:42 PM] [semantic-release] › ✖  E401 Unauthorized
+[7:26:42 PM] [semantic-release] › ✖  Failed step "publish" of plugin "@semantic-release/github"

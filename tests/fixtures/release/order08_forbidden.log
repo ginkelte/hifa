@@ -1,0 +1,11 @@
+[7:44:59 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[7:44:59 PM] [semantic-release] › ✔  Allowed to push to the Git repository
+signing pre-flight: starting
+signing pre-flight ok: preflight-77aa30d-8120
+[7:45:00 PM] [semantic-release] › ℹ  The next release version is 0.2.0
+[7:45:01 PM] [semantic-release] › ✔  Prepared Git release: v0.2.0
+[7:45:01 PM] [semantic-release] › ✔  Created tag v0.2.0
+[7:45:02 PM] [semantic-release] › ℹ  Start step "publish" of plugin "@semantic-release/github"
+[7:45:03 PM] [semantic-release] › ✖  HttpError: Resource not accessible by integration
+[7:45:03 PM] [semantic-release] › ✖  status: 403
+[7:45:03 PM] [semantic-release] › ✖  Failed step "publish" of plugin "@semantic-release/github"

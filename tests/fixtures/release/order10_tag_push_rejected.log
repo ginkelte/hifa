@@ -1,0 +1,10 @@
+[7:52:14 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[7:52:14 PM] [semantic-release] › ✔  Allowed to push to the Git repository
+signing pre-flight: starting
+signing pre-flight ok: preflight-1e8b5c9-9034
+[7:52:15 PM] [semantic-release] › ℹ  The next release version is 0.2.0
+[7:52:16 PM] [semantic-release] › ✔  Prepared Git release: v0.2.0
+[7:52:16 PM] [semantic-release] › ✔  Created tag v0.2.0
+ ! [remote rejected] v0.2.0 -> v0.2.0 (push declined due to repository rule violations)
+error: failed to push some refs to 'https://github.com/ginkelte/hifa'
+[7:52:17 PM] [semantic-release] › ✖  EGITNOPERMISSION Cannot push to the Git repository

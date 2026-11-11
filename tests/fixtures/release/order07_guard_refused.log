@@ -1,0 +1,6 @@
+[7:38:22 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[7:38:22 PM] [semantic-release] › ✔  Loaded plugin "verifyConditions" from "@semantic-release/exec"
+[7:38:22 PM] [semantic-release] › ✔  Allowed to push to the Git repository
+release_version_mismatch: expected exactly one version literal line, found 0
+[7:38:22 PM] [semantic-release] › ✖  Command failed with exit code 1: set -eu; count=$(grep -cE ...
+[7:38:22 PM] [semantic-release] › ✖  Failed step "verifyConditions" of plugin "@semantic-release/exec"

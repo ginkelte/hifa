@@ -20,8 +20,8 @@
     ["@semantic-release/release-notes-generator", { "preset": "angular" }],
     ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
     ["@semantic-release/exec", {
-      "verifyConditionsCmd": "set -eu; probe=\"preflight-$(git rev-parse --short HEAD)-$$\"; git tag \"$probe\"; git verify-tag \"$probe\" >/dev/null; git tag -d \"$probe\" >/dev/null; echo \"signing pre-flight ok: $probe\"",
-      "prepareCmd": "sed 's/^version = \"[^\"]*\"/version = \"${nextRelease.version}\"/' pyproject.toml > pyproject.toml.tmp && mv pyproject.toml.tmp pyproject.toml"
+      "verifyConditionsCmd": "set -eu; count=$(grep -cE '^version = \"[0-9]+\\.[0-9]+\\.[0-9]+\"$' pyproject.toml || true); if [ \"$count\" != 1 ]; then echo \"release_version_mismatch: expected exactly one version literal line, found $count\"; exit 1; fi; probe=\"preflight-$(git rev-parse --short HEAD)-$$\"; echo \"signing pre-flight: starting\"; git tag \"$probe\"; git verify-tag \"$probe\" >/dev/null; git tag -d \"$probe\" >/dev/null; echo \"signing pre-flight ok: $probe\"",
+      "prepareCmd": "set -eu; expected=\"${nextRelease.version}\"; before=$(grep -cE '^version = \"[0-9]+\\.[0-9]+\\.[0-9]+\"$' pyproject.toml || true); if [ \"$before\" != 1 ]; then echo \"release_version_mismatch: expected exactly one version literal line before the substitution, found $before\"; exit 1; fi; sed 's/^version = \"[^\"]*\"/version = \"'\"$expected\"'\"/' pyproject.toml > pyproject.toml.tmp; after=$(grep -cxF \"version = \\\"$expected\\\"\" pyproject.toml.tmp || true); if [ \"$after\" != 1 ]; then rm -f pyproject.toml.tmp; echo \"release_version_mismatch: the substitution produced $after lines equal to $expected\"; exit 1; fi; mv pyproject.toml.tmp pyproject.toml"
     }],
     ["@semantic-release/git", {
       "assets": ["CHANGELOG.md", "pyproject.toml"],

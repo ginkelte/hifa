@@ -1,0 +1,5 @@
+[7:31:07 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[7:31:07 PM] [semantic-release] › ✔  Loaded plugin "verifyConditions" from "@semantic-release/exec"
+[7:31:07 PM] [semantic-release] › ✔  Allowed to push to the Git repository
+[7:31:08 PM] [semantic-release] › ✔  Completed step "verifyConditions" of plugin "@semantic-release/github"
+[7:31:08 PM] [semantic-release] › ℹ  There are no relevant changes, so no new version is released.

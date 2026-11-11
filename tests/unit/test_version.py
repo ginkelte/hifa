@@ -26,6 +26,9 @@ PACKAGE_JSON = REPO_ROOT / "package.json"
 # §2.1: the one product version literal, and its exact spelling (column 0, double quotes, one
 # space on each side of `=`) — the `sed` of §2.5 matches that shape literally.
 VERSION_LINE = re.compile(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', re.MULTILINE)
+# §2.1.1: the *uniqueness* check counts every `version = "..."` line, not only the ones whose
+# value already has the release shape — a line with a typo must not hide behind the regex above.
+ANY_VERSION_LINE = re.compile(r'^version = "([^"]*)"$', re.MULTILINE)
 # §2.2: a release version is three numeric components; the only other allowed value is the
 # documented fallback. No `v` prefix, no dev/local suffix: the value is a literal, not a describe.
 RELEASE_SHAPE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -112,14 +115,21 @@ def test_package_init_keeps_the_metadata_read_and_the_documented_fallback() -> N
 
 
 def test_pyproject_carries_exactly_one_version_literal() -> None:
-    """§2.1: the literal exists, is `0.1.0` today, and is `[project]`'s `version`."""
+    """§2.1.1: exactly one `version = "..."` line, and it is the value `tomllib` parses.
+
+    The value itself is never asserted. The release rewrites this literal inside a commit that
+    enters `main` with `[skip ci]`, so no CI run ever sees the change: a test pinned to the number
+    turns `main` red on the first successful release, and the required `test` check then blocks
+    every later pull request. Shape and uniqueness survive every release; a number does not.
+    """
     text = PYPROJECT.read_text(encoding="utf-8")
     data = _pyproject()
+    parsed = data["project"]["version"]
 
-    matches = VERSION_LINE.findall(text)
-    assert len(matches) == 1, f'exactly one `version = "X.Y.Z"` line is expected, got {matches}'
-    assert data["project"]["version"] == "0.1.0"
-    assert matches[0] == data["project"]["version"]
+    matches = ANY_VERSION_LINE.findall(text)
+    assert len(matches) == 1, f'exactly one `version = "..."` line is expected, got {matches}'
+    assert matches[0] == parsed, "the single line and `[project].version` disagree"
+    assert RELEASE_SHAPE.fullmatch(parsed) or parsed == FALLBACK, parsed
     assert "dynamic" not in data["project"], '`dynamic = ["version"]` is back in [project]'
 
 
