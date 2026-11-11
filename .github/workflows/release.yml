@@ -14,6 +14,12 @@ name: Release
 on:
   push:
     branches: [main]
+  # §2.4: the self-healing fallback. GitHub suppresses every workflow run for a push whose commit
+  # message quotes the skip token — silently, with no run, no check and no error — and the likely
+  # author of such a message is a document explaining the token. A scheduled run with nothing to
+  # release classifies itself as `green: no relevant changes`.
+  schedule:
+    - cron: '0 */6 * * *'
   # §2.4: manual dispatch is for re-running a failure, never for releasing an arbitrary commit
   # (§10). `dry_run` defaults to true, so the normal dispatch path writes nothing.
   workflow_dispatch:

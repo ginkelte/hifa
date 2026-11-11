@@ -177,8 +177,17 @@ def _check_workflow_shape(workflow: dict[str, Any]) -> list[str]:
     )
     _needs(
         violations,
-        isinstance(triggers, dict) and set(triggers) == {"push", "workflow_dispatch"},
-        "§2.4: the trigger set is push + workflow_dispatch and nothing else",
+        isinstance(triggers, dict) and set(triggers) == {"push", "workflow_dispatch", "schedule"},
+        "§2.4: the trigger set is push + workflow_dispatch + schedule and nothing else",
+    )
+    # §2.4: a push whose commit message quotes the skip token is suppressed by GitHub with no run at
+    # all — nothing to classify, nothing to alert on. The schedule is the only defence that does not
+    # depend on the message that caused the skip, so its absence is a violation, not a preference.
+    schedule = (triggers or {}).get("schedule") if isinstance(triggers, dict) else None
+    _needs(
+        violations,
+        isinstance(schedule, list) and any("0 */6 * * *" in str(entry) for entry in schedule),
+        "§2.4: the workflow also runs on a six-hour schedule (a skipped push self-heals)",
     )
     dispatch = (triggers or {}).get("workflow_dispatch") if isinstance(triggers, dict) else None
     dry_run = ((dispatch or {}).get("inputs") or {}).get("dry_run") or {}
