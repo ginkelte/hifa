@@ -453,3 +453,90 @@ def test_package_json_stays_private_with_npms_zero_placeholder() -> None:
 
     assert package["private"] is True
     assert package["version"] == "0.0.0"
+
+
+# --- R15: AGENTS.md §9 and `releaseRules` are the same contract -------------------------------
+#
+# P8 says a rule that is not executable is not a rule. R15 promises the documented commit types and
+# the engine's bump table never diverge; this is that promise as a test. The reference project this
+# pipeline was modelled on documents `chore:`/`ci:`/`style:` as "no release" while its config gives
+# them `patch`, so the docs and the released versions disagreed. Comparing the two structures is the
+# only thing that prevents a repeat.
+
+_AGENTS = REPO_ROOT / "AGENTS.md"
+_TYPES = (
+    "feat",
+    "fix",
+    "docs",
+    "test",
+    "refactor",
+    "chore",
+    "style",
+    "perf",
+    "build",
+    "ci",
+    "revert",
+)
+
+
+def _agents_section_9() -> str:
+    text = _AGENTS.read_text(encoding="utf-8")
+    start = text.index("## 9.")
+    end = text.index("## 10.")
+    return text[start:end]
+
+
+def _bumps_from_agents() -> dict[str, str]:
+    """Read the §9 table: `| types | version |` rows, plus the breaking-change row."""
+    bumps: dict[str, str] = {}
+    for line in _agents_section_9().splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or set(stripped) <= set("|- "):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) != 2:
+            continue
+        left, right = cells
+        bump = "none" if "none" in right else right.strip("*").strip()
+        if "BREAKING CHANGE" in left:
+            bumps["breaking"] = bump
+            continue
+        for token in re.findall(r"`([a-z]+)`", left):
+            if token in _TYPES:
+                bumps[token] = bump
+    return bumps
+
+
+def _bumps_from_releaserc() -> dict[str, str]:
+    rules = _plugin_options(_release_config(), "@semantic-release/commit-analyzer")["releaseRules"]
+    bumps: dict[str, str] = {}
+    for rule in rules:
+        release = rule.get("release")
+        bump = "none" if release is False else str(release)
+        if rule.get("breaking") is True:
+            bumps["breaking"] = bump
+        elif "type" in rule:
+            bumps[rule["type"]] = bump
+    return bumps
+
+
+def test_agents_section_9_matches_the_release_rules() -> None:
+    """R15: the documented table and the engine's table are the same mapping."""
+    documented = _bumps_from_agents()
+    engine = _bumps_from_releaserc()
+
+    assert documented, "AGENTS.md §9 has no commit table to compare"
+    assert set(documented) == set(engine), (
+        f"AGENTS.md §9 and .releaserc.json disagree on which types exist: "
+        f"only documented={sorted(set(documented) - set(engine))}, "
+        f"only in the engine={sorted(set(engine) - set(documented))}"
+    )
+    differing = {t: (documented[t], engine[t]) for t in documented if documented[t] != engine[t]}
+    assert not differing, f"AGENTS.md §9 and .releaserc.json disagree on the bump: {differing}"
+
+
+def test_agents_documents_the_breaking_footer_not_the_bang() -> None:
+    """§2.5: the preset drops a `feat!:` header, so the footer is the only breaking marker."""
+    section = _agents_section_9()
+    assert "BREAKING CHANGE" in section
+    assert "feat!:" in section
