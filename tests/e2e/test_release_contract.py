@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1008,20 +1007,6 @@ def test_allowed_signers_carries_the_release_principal_with_the_git_namespace() 
     assert parts[1] == 'namespaces="git"', "without the namespace git will not verify with it"
     assert parts[2] == "ssh-ed25519"
     assert re.fullmatch(r"AAAA[0-9A-Za-z+/]+[=]{0,2}", parts[3]), parts[3]
-
-
-def test_the_version_literal_is_unique_and_never_asserted_by_value() -> None:
-    """§2.1 / R17: `pyproject.toml` carries one literal; its *value* is never a test's business."""
-    text = PYPROJECT.read_text(encoding="utf-8")
-    data = tomllib.loads(text)
-
-    assert len(VERSION_ASSIGNMENT.findall(text)) == 1
-    assert RELEASE_LITERAL.search(text) is not None
-    assert data["build-system"] == {
-        "requires": ["hatchling"],
-        "build-backend": "hatchling.build",
-    }
-    assert "dynamic" not in data["project"]
 
 
 # --- R20 / D-040: the six named mutations must turn these checks red --------------------------

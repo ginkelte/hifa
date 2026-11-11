@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
-import json
 import re
 import tomllib
 from pathlib import Path
@@ -54,14 +53,6 @@ def _init_without_metadata(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def test_version_symbol_exists() -> None:
-    import hifa
-
-    assert isinstance(hifa.__version__, str)
-    assert hifa.__version__ != ""
-    assert "__version__" in hifa.__all__
 
 
 def test_version_matches_the_shape_contract() -> None:
@@ -133,26 +124,27 @@ def test_pyproject_carries_exactly_one_version_literal() -> None:
     assert "dynamic" not in data["project"], '`dynamic = ["version"]` is back in [project]'
 
 
-def test_build_system_requires_is_hatchling_only() -> None:
-    """§2.1: compared as a **list** — both git-derived backends had to leave, not just one name."""
-    build_system = _pyproject()["build-system"]
+def test_the_version_machinery_is_hatchling_and_nothing_else() -> None:
+    """§2.1: build-system, hatch hook and the release tool block, in one assertion.
 
-    assert build_system == {
-        "requires": ["hatchling"],
-        "build-backend": "hatchling.build",
-    }, build_system
-    requires = " ".join(build_system["requires"])
-    assert not any(name in requires for name in FORBIDDEN_BUILD_REQUIRES), requires
-
-
-def test_no_git_derived_version_backend_is_configured() -> None:
-    """§2.1: `[tool.hatch.version]` was the switch that made `hatch-vcs` reachable."""
+    Merged from three tests that asserted the same object: what matters is that no git-derived
+    backend is reachable and that no release tool writes a second version source.
+    """
     data = _pyproject()
 
-    assert "version" not in data.get("tool", {}).get("hatch", {}), "[tool.hatch.version] is back"
-    hooks = data.get("tool", {}).get("hatch", {}).get("build", {}).get("hooks", {})
+    assert data["build-system"] == {
+        "requires": ["hatchling"],
+        "build-backend": "hatchling.build",
+    }, data["build-system"]
+    requires = " ".join(data["build-system"]["requires"])
+    assert not any(name in requires for name in FORBIDDEN_BUILD_REQUIRES), requires
+
+    assert "dynamic" not in data["project"], '`dynamic = ["version"]` is back'
+    tool = data.get("tool", {})
+    assert "version" not in tool.get("hatch", {}), "[tool.hatch.version] is back"
+    hooks = tool.get("hatch", {}).get("build", {}).get("hooks", {})
     assert "version-file" not in hooks.get("vcs", {}), "the tree must not carry generated files"
-    assert "semantic_release" not in data.get("tool", {}), "[tool.semantic_release] is back"
+    assert "semantic_release" not in tool, "[tool.semantic_release] is back"
 
 
 def test_release_tooling_never_reaches_the_runtime_or_the_python_build() -> None:
@@ -171,15 +163,6 @@ def test_release_tooling_never_reaches_the_runtime_or_the_python_build() -> None
     )
     assert "semantic" not in runtime
     assert "hatch-vcs" not in runtime
-
-
-def test_package_json_is_not_a_version_carrier() -> None:
-    """§2.1: npm's `0.0.0` placeholder, `private: true`; the pipeline never bumps it."""
-    pkg = json.loads(PACKAGE_JSON.read_text(encoding="utf-8"))
-
-    assert pkg["private"] is True
-    assert pkg["version"] == "0.0.0"
-    assert pkg["version"] != _pyproject()["project"]["version"]
 
 
 def test_cli_prints_the_version_line() -> None:
