@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "partials/filter_bar.html" %}
+{% include "partials/quick_add.html" %}
+<section class="table-wrap">
+  <table class="issues" id="issues-table">
+    <thead>
+      <tr>
+        <th class="cell-id">Identifier</th>
+        <th class="cell-priority">P</th>
+        <th class="cell-state">State</th>
+        <th class="cell-assignee">Assignee</th>
+        <th class="cell-title">Title</th>
+        <th class="cell-due">Due</th>
+      </tr>
+    </thead>
+    {% include "partials/issue_rows.html" %}
+  </table>
+</section>
+<nav class="pager">
+  <span class="pager-info">{{ vm.shown }} of {{ vm.counts.total }} issues</span>
+  {% for link in vm.sort_links %}
+  <a href="{{ link.url }}" class="sort-link{% if link.is_active %} is-active{% endif %}">{{ link.label }}</a>
+  {% endfor %}
+  {% if vm.has_more %}
+  <a class="btn pager-next" href="{{ vm.next_url }}">More</a>
+  {% endif %}
+</nav>
+<footer class="statusbar">
+  <span>{{ vm.counts.open }} open</span>
+  <span>{{ vm.counts.urgent }} urgent</span>
+  <span class="spacer"></span>
+  <span class="hint">j k move · Enter open · / search · Esc close</span>
+</footer>
+{% endblock %}

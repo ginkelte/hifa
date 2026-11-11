@@ -1,0 +1,38 @@
+name: Firmas
+
+# Verifica que los commits del PR estén firmados con la llave de firma del proyecto.
+# No depende de branch protection (que en repos privados requiere GitHub Pro):
+# si un commit no está firmado o la firma no valida, el job falla y el PR no se mergea.
+#
+# La llave pública vive en .github/signers/allowed_signers (una llave pública no es secreta).
+# Para que GitHub muestre además el badge "Verified", la misma llave tiene que estar
+# registrada en la cuenta como SSH signing key.
+
+on:
+  pull_request:
+
+jobs:
+  firmas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar firmas SSH de los commits del PR
+        run: |
+          git config gpg.ssh.allowedSignersFile .github/signers/allowed_signers
+          base=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          echo "rango: $base..HEAD"
+          # --no-merges: GitHub crea un merge commit sintético para correr el PR y ese
+          # commit no está firmado (no lo escribe nadie); verificarlo sería un falso positivo.
+          status=0
+          for c in $(git rev-list --no-merges "$base..HEAD"); do
+            if git verify-commit "$c" 2>/dev/null; then
+              echo "OK    $(git log -1 --format='%h %s' "$c")"
+            else
+              echo "FALLA $(git log -1 --format='%h %s' "$c") -> sin firma válida"
+              status=1
+            fi
+          done
+          exit $status

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ page.title }}{% endblock %}</title>
+  <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css">
+  {% block head %}{% endblock %}
+</head>
+<body class="no-js">
+  {% include "partials/sidebar.html" %}
+  <div class="shell">
+    <header class="topbar">
+      <div class="crumbs">
+        {% if page.team %}
+        <span class="team-icon">{{ page.team.icon }}</span>
+        <span class="team-name">{{ page.team.name }}</span>
+        <span class="team-key">{{ page.team.key }}</span>
+        {% endif %}
+      </div>
+      <nav class="views">
+        {% if page.team %}
+        <a href="/{{ page.team.key }}/board" class="view-link{% if page.is_board %} is-active{% endif %}">Board</a>
+        <a href="/{{ page.team.key }}/list" class="view-link{% if page.is_list %} is-active{% endif %}">List</a>
+        {% endif %}
+        <a href="/search" class="view-link{% if page.is_search %} is-active{% endif %}">Search</a>
+      </nav>
+      <div class="spacer"></div>
+      {% if page.viewer %}
+      <div class="viewer">
+        <span class="avatar">{{ page.viewer.initials }}</span>
+        <span class="viewer-name">{{ page.viewer.display_name }}</span>
+      </div>
+      {% endif %}
+    </header>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <div id="panel" class="panel-slot">{% block panel %}{% endblock %}</div>
+  <div id="toasts">{% include "partials/toasts.html" %}</div>
+  <noscript><p class="noscript">Without JavaScript the filters and every issue page still work as plain links; quick add, the issue panel and the keyboard shortcuts need it.</p></noscript>
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/vendor/alpine.csp.min.js" defer></script>
+  <script src="/static/vendor/sortable.min.js" defer></script>
+  <script src="/static/js/app.js" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,57 @@
+[importlinter]
+root_package = hifa
+include_external_packages = True
+
+[importlinter:contract:domain-es-puro]
+name = domain is pure (SPEC-000 A1/A2)
+type = forbidden
+source_modules =
+    hifa.domain
+forbidden_modules =
+    hifa.adapters
+    hifa.app
+    hifa.api
+    hifa.cli
+    hifa.web
+    sqlite3
+    fastapi
+    typer
+    click
+    jinja2
+    httpx
+    uvicorn
+    os
+    time
+
+[importlinter:contract:app-sin-bordes]
+name = app does not know the edges (SPEC-000 A1/A5)
+type = forbidden
+source_modules =
+    hifa.app
+forbidden_modules =
+    hifa.cli
+    hifa.api
+    hifa.web
+    fastapi
+    typer
+    jinja2
+    uvicorn
+
+[importlinter:contract:web-no-cli]
+name = web does not know the CLI (P8, D-032)
+type = forbidden
+source_modules =
+    hifa.web
+forbidden_modules =
+    hifa.cli
+    typer
+    click
+
+[importlinter:contract:api-no-edges]
+name = api does not know the edges (P8, D-032)
+type = forbidden
+source_modules =
+    hifa.api
+forbidden_modules =
+    hifa.cli
+    hifa.web

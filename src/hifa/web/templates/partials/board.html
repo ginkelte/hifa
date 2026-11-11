@@ -1,0 +1,5 @@
+<div class="board" id="board" data-can-write="{{ 'true' if vm.can_write else 'false' }}">
+  {% for column in vm.columns %}
+  {% include "partials/board_column.html" %}
+  {% endfor %}
+</div>

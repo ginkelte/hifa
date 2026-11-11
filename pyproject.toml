@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hifa"
+version = "0.1.0"
+description = "Tracker de issues local: CLI + SQLite + dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2",
+    "markdown-it-py>=3",
+    "python-ulid>=2",
+]
+
+[project.optional-dependencies]
+web = ["fastapi", "uvicorn[standard]", "jinja2"]
+# `httpx` is only needed by `fastapi.testclient` in tests/e2e/web/.
+test = ["httpx>=0.27"]
+
+[project.scripts]
+hifa = "hifa.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hifa"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Typer declares flags as calls in the defaults; it is the framework official pattern.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `slow` marks tests that spawn real processes; `pytest -m "not slow"` is the fast loop.
+markers = ["slow: spawns real OS processes, so it is slower and less hermetic"]

@@ -1,0 +1,18 @@
+<section class="column" data-state-id="{{ column.state_id }}" data-position="{{ column.position }}">
+  <header class="column-head" data-drag-handle="true" title="Drag to reorder this column">
+    <span class="dot" style="background: {{ column.color }}"></span>
+    <span class="column-name">{{ column.name }}</span>
+    <span class="column-count">{{ column.count }}</span>
+  </header>
+  <div class="column-body">
+    {% for card in column.issues %}
+    {% include "partials/issue_card.html" %}
+    {% endfor %}
+    {% if column.truncated %}
+    <a class="more" href="{{ column.more_url }}">More in {{ column.name }}</a>
+    {% endif %}
+    {% if column.is_empty %}
+    <p class="empty">Nothing in {{ column.name }}</p>
+    {% endif %}
+  </div>
+</section>

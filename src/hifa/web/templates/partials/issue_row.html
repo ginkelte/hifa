@@ -1,0 +1,13 @@
+<tr id="issue-{{ row.identifier }}" class="row" data-identifier="{{ row.identifier }}"
+    data-href="{{ row.url }}" tabindex="-1"
+    hx-get="/_/issues/{{ row.identifier }}/panel" hx-target="#panel" hx-swap="innerHTML"
+    hx-push-url="{{ row.url }}">
+  <td class="cell-id"><a class="identifier" href="{{ row.url }}">{{ row.identifier }}</a></td>
+  <td class="cell-priority"><span class="glyph{% if row.is_urgent %} is-urgent{% endif %}">{{ row.priority_glyph }}</span></td>
+  <td class="cell-state"><span class="dot" style="background: {{ row.state_color }}"></span><span class="state-name">{{ row.state_name }}</span></td>
+  <td class="cell-assignee">{% if row.has_assignee %}<span class="avatar avatar-sm">{{ row.assignee_initials }}</span>{{ row.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</td>
+  <td class="cell-title"><a class="title" href="{{ row.url }}">{{ row.title }}</a>
+    {% for label in row.labels %}<span class="chip chip-label" style="--label: {{ label.color }}">{{ label.name }}</span>{% endfor %}
+  </td>
+  <td class="cell-due">{% if row.has_due %}<span class="due{% if row.is_overdue %} is-overdue{% endif %}">{{ row.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</td>
+</tr>

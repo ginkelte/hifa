@@ -1,0 +1,20 @@
+<aside class="sidebar">
+  <div class="brand">hifa <span class="brand-version">{{ page.version }}</span></div>
+  {% if page.team %}
+  <nav class="side-nav">
+    <div class="side-label">Views</div>
+    <a href="/{{ page.team.key }}/board" class="side-link{% if page.is_board %} is-active{% endif %}">Board</a>
+    <a href="/{{ page.team.key }}/list" class="side-link{% if page.is_list %} is-active{% endif %}">List</a>
+    <a href="/search" class="side-link{% if page.is_search %} is-active{% endif %}">Search</a>
+  </nav>
+  {% endif %}
+  <div class="side-label">Teams</div>
+  <ul class="team-list">
+    {% for team in page.teams %}
+    <li><a href="{{ team.url }}" class="team-link{% if team.active %} is-active{% endif %}"><span class="team-icon">{{ team.icon }}</span>{{ team.key }} <span class="team-key">{{ team.name }}</span><span class="team-count">{{ team.issues_count }}</span></a></li>
+    {% endfor %}
+  </ul>
+  {% if not page.can_write %}
+  <div class="side-label">Read-only preview</div>
+  {% endif %}
+</aside>

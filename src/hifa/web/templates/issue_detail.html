@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ vm.identifier }} · hifa{% endblock %}
+{% block content %}
+<article class="detail" data-identifier="{{ vm.identifier }}">
+  <header class="detail-head">
+    <a class="identifier" href="{{ vm.url }}">{{ vm.identifier }}</a>
+    <h1 class="detail-title">{{ vm.title }}</h1>
+    <div class="detail-actions">
+      <span class="dot" style="background: {{ vm.state_color }}"></span>
+      <span class="state-name">{{ vm.state_name }}</span>
+      <span class="glyph{% if vm.is_urgent %} is-urgent{% endif %}">{{ vm.priority_glyph }}</span>
+      <span class="priority-name">{{ vm.priority_label }}</span>
+    </div>
+  </header>
+  <div class="detail-body">
+    <section class="detail-main">
+      <div class="description">{{ vm.description_html | safe }}</div>
+      {% if vm.children %}
+      <section class="children">
+        <h2>Sub-issues</h2>
+        <ul>
+          {% for child in vm.children %}
+          <li><a class="identifier" href="/{{ vm.team_key }}/issue/{{ child.identifier }}">{{ child.identifier }}</a>
+            <span class="dot" style="background: {{ child.state_color }}"></span>{{ child.state_name }}
+            <span class="glyph">{{ child.priority_glyph }}</span>{{ child.title }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
+      {% if vm.relations %}
+      <section class="relations">
+        <h2>Relations</h2>
+        <ul>
+          {% for relation in vm.relations %}
+          <li><span class="relation-type">{{ relation.label }}</span>
+            <a class="identifier" href="{{ relation.url }}">{{ relation.identifier }}</a> {{ relation.title }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
+      {% if vm.attachments %}
+      <section class="attachments">
+        <h2>Attachments</h2>
+        <ul>
+          {% for attachment in vm.attachments %}
+          <li>{% if attachment.url %}<a href="{{ attachment.url }}">{{ attachment.title }}</a>{% else %}<span>{{ attachment.title }}</span>{% endif %}
+            <span class="dim">{{ attachment.host_label }}</span></li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
+      <section class="comments">
+        <h2>Comments</h2>
+        <ol class="comment-list">
+          {% for comment in vm.comments %}
+          <li class="comment"><span class="avatar avatar-sm">{{ comment.author_initials }}</span>
+            <div class="comment-body"><span class="comment-author">{{ comment.author_name or "unknown" }}</span>
+              {{ comment.body_html | safe }}</div>
+            <span class="stamp">{{ comment.created_label }}</span></li>
+          {% else %}
+          <li class="empty">No comments yet</li>
+          {% endfor %}
+        </ol>
+      </section>
+    </section>
+    <aside class="detail-side">
+      <dl class="meta">
+        <dt>Assignee</dt><dd>{% if vm.has_assignee %}{{ vm.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</dd>
+        <dt>Due</dt><dd>{% if vm.has_due %}<span class="due{% if vm.is_overdue %} is-overdue{% endif %}">{{ vm.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</dd>
+        <dt>Estimate</dt><dd>{{ vm.estimate_label }}</dd>
+        <dt>Project</dt><dd>{{ vm.project_label }}</dd>
+        <dt>Cycle</dt><dd>{{ vm.cycle_label }}</dd>
+        <dt>Parent</dt><dd>{{ vm.parent_label }}</dd>
+        <dt>Labels</dt><dd>{% for label in vm.labels_all %}<span class="chip chip-label" style="--label: {{ label.color }}">{{ label.name }}</span>{% else %}<span class="dim">–</span>{% endfor %}</dd>
+        <dt>Created</dt><dd>{{ vm.created_label }}</dd>
+        <dt>Updated</dt><dd>{{ vm.updated_label }}</dd>
+      </dl>
+      {% if vm.history %}
+      <section class="history">
+        <h2>History</h2>
+        <ul>
+          {% for entry in vm.history %}
+          <li><span class="history-field">{{ entry.field }}</span> {{ entry.actor_name or "unknown" }}: {{ entry.old_label }} → {{ entry.new_label }}
+            <span class="stamp">{{ entry.created_label }}</span></li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
+    </aside>
+  </div>
+</article>
+{% endblock %}

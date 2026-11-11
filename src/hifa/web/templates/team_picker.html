@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ page.title }}{% endblock %}
+{% block content %}
+<section class="team-picker" data-reason="{{ reason }}">
+  <h1 class="picker-title">Choose a team</h1>
+  <p class="picker-hint">There is more than one team and no default one: pick where to go.</p>
+  <ul class="picker-list">
+    {% for team in page.teams %}
+    <li class="picker-item">
+      <a class="picker-link" href="{{ team.url }}">
+        <span class="team-icon">{{ team.icon }}</span>
+        <span class="picker-name">{{ team.name }}</span>
+        <span class="picker-key">{{ team.key }}</span>
+        <span class="picker-count">{{ team.issues_count }} issues</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

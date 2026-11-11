@@ -1,0 +1,15 @@
+<article class="card" id="card-{{ card.identifier }}" data-identifier="{{ card.identifier }}"
+         data-state-id="{{ card.state_id }}" data-href="{{ card.url }}" tabindex="-1"
+         hx-get="/_/issues/{{ card.identifier }}/panel" hx-target="#panel" hx-swap="innerHTML"
+         hx-push-url="{{ card.url }}">
+  <div class="card-line">
+    <a class="identifier" href="{{ card.url }}">{{ card.identifier }}</a>
+    <span class="glyph{% if card.is_urgent %} is-urgent{% endif %}">{{ card.priority_glyph }}</span>
+  </div>
+  <div class="card-title">{{ card.title }}</div>
+  <div class="card-meta">
+    {% if card.has_assignee %}<span class="card-assignee"><span class="avatar avatar-sm">{{ card.assignee_initials }}</span>{{ card.assignee_name }}</span>{% endif %}
+    {% if card.has_due %}<span class="due{% if card.is_overdue %} is-overdue{% endif %}">{{ card.due_label }}</span>{% endif %}
+  </div>
+  {% for label in card.labels %}<span class="chip chip-label" style="--label: {{ label.color }}">{{ label.name }}</span>{% endfor %}
+</article>

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "partials/filter_bar.html" %}
+{% include "partials/board.html" %}
+<footer class="statusbar">
+  <span>{{ vm.counts.open }} open</span>
+  <span>{{ vm.counts.urgent }} urgent</span>
+  <span class="spacer"></span>
+  <span class="hint">j k move · Enter open · / search · Esc close</span>
+</footer>
+{% endblock %}

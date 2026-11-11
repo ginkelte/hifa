@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ error.status }} · hifa{% endblock %}
+{% block content %}
+<section class="error-page">
+  <p class="error-status">{{ error.status }}</p>
+  <p class="error-message">{{ error.message }}</p>
+  {% if error.back_url %}<a class="btn" href="{{ error.back_url }}">Go back</a>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 264" width="256" height="264" role="img" aria-label="Hifa, a spool of thread holding an issue card">
+  <title>Hifa</title>
+  <desc>A cream spool of thread with a face, holding an issue card. Its loose thread ends in an arrow: a status transition.</desc>
+
+  <!-- palette: ink #1B1D21 · cream #F7F1E6 · indigo #5E6AD2 · indigo-dark #4A54B8 · indigo-light #8A93E8 · yellow #F2C94C · grey #95A2B3 -->
+
+
+
+  <!-- the loose thread: real thread colour, drawn over the flange so it never disappears -->
+  <g fill="none" stroke="#5E6AD2" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M50 172 C 26 172, 14 188, 22 202 C 30 216, 50 210, 52 196 C 53 187, 46 184, 42 190"/>
+  </g>
+
+  <!-- top flange -->
+  <rect x="26" y="30" width="172" height="38" rx="19" fill="#F7F1E6" stroke="#1B1D21" stroke-width="8"/>
+  <rect x="66" y="41" width="92" height="8" rx="4" fill="#1B1D21" opacity="0.12"/>
+
+  <!-- wound thread -->
+  <rect x="46" y="60" width="132" height="134" rx="18" fill="#5E6AD2"/>
+  <clipPath id="body"><rect x="46" y="60" width="132" height="134" rx="18"/></clipPath>
+  <g clip-path="url(#body)" fill="none" stroke-linecap="round">
+    <g stroke="#4A54B8" stroke-width="10">
+      <path d="M40 84 q 72 18 144 0"/>
+      <path d="M40 106 q 72 18 144 0"/>
+      <path d="M40 150 q 72 18 144 0"/>
+      <path d="M40 172 q 72 18 144 0"/>
+    </g>
+    <g stroke="#8A93E8" stroke-width="4">
+      <path d="M40 95 q 72 18 144 0"/>
+      <path d="M40 139 q 72 18 144 0"/>
+      <path d="M40 161 q 72 18 144 0"/>
+    </g>
+  </g>
+
+  <!-- bottom flange -->
+  <rect x="26" y="188" width="172" height="36" rx="18" fill="#F7F1E6" stroke="#1B1D21" stroke-width="8"/>
+  <rect x="66" y="200" width="92" height="8" rx="4" fill="#1B1D21" opacity="0.12"/>
+
+  <!-- face, kept small so the wound thread still reads -->
+  <ellipse cx="112" cy="124" rx="38" ry="33" fill="#F7F1E6"/>
+  <g fill="#1B1D21">
+    <ellipse cx="98" cy="120" rx="6.5" ry="7.5"/>
+    <ellipse cx="127" cy="120" rx="6.5" ry="7.5"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="100" cy="117" r="2.3"/>
+    <circle cx="129" cy="117" r="2.3"/>
+  </g>
+  <path d="M104 137 q 9 9 18 0" fill="none" stroke="#1B1D21" stroke-width="5.5" stroke-linecap="round"/>
+  <g fill="#F2C94C" opacity="0.9">
+    <ellipse cx="86" cy="133" rx="6" ry="4"/>
+    <ellipse cx="139" cy="133" rx="6" ry="4"/>
+  </g>
+
+  <!-- arm reaching the card, drawn under it so the hand disappears behind the paper -->
+  <path d="M172 138 q 12 8 18 14" fill="none" stroke="#1B1D21" stroke-width="9" stroke-linecap="round"/>
+
+  <!-- the issue card it is carrying -->
+  <g transform="rotate(8 210 140)">
+    <rect x="176" y="104" width="64" height="74" rx="10" fill="#F7F1E6" stroke="#1B1D21" stroke-width="8"/>
+    <rect x="188" y="118" width="30" height="8" rx="4" fill="#1B1D21" opacity="0.8"/>
+    <rect x="188" y="136" width="40" height="6" rx="3" fill="#95A2B3"/>
+    <rect x="188" y="150" width="26" height="6" rx="3" fill="#95A2B3"/>
+    <rect x="188" y="164" width="20" height="7" rx="3.5" fill="#F2C94C"/>
+  </g>
+</svg>

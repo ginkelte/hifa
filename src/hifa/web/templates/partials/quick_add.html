@@ -1,0 +1,15 @@
+{% if vm.can_write %}
+<form id="quick-add" class="quick-add" method="post" action="/{{ vm.team.key }}/issue"
+      hx-post="/_/issues?team={{ vm.team.key }}" hx-target="#issues-tbody" hx-swap="afterbegin"{% if form_oob %} hx-swap-oob="true"{% endif %}>
+  <input type="text" name="title" class="quick-add-input" value="" placeholder="New issue…"
+         aria-label="New issue title" autocomplete="off" required>
+  <button type="submit" class="btn">Create</button>
+  {% if form_error %}
+  <span class="form-error" role="alert">{{ form_error }}</span>
+  {% elif form_errors %}
+  {% for message in form_errors.values() %}
+  <span class="form-error" role="alert">{{ message }}</span>
+  {% endfor %}
+  {% endif %}
+</form>
+{% endif %}

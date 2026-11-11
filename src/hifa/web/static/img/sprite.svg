@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="display:none" aria-hidden="true">
+  <symbol id="check" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M3 8.5l3.2 3.2L13 5"/></symbol>
+  <symbol id="x" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path stroke="currentColor" stroke-width="1.6" d="M10.2 10.2L14 14"/></symbol>
+  <symbol id="plus" viewBox="0 0 16 16"><path stroke="currentColor" stroke-width="1.6" d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="alert" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M8 2.5l6 11H2z"/><path stroke="currentColor" stroke-width="1.6" d="M8 6.5v3.2M8 11.6v.4"/></symbol>
+</svg>

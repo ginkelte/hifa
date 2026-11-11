@@ -1,0 +1,25 @@
+<aside id="panel" class="panel" aria-label="Issue {{ vm.identifier }}">
+  <header class="panel-head">
+    <a class="identifier" href="{{ vm.url }}">{{ vm.identifier }}</a>
+    <a class="btn btn-ghost" href="{{ vm.url }}" data-close-panel>Open</a>
+  </header>
+  <h2 class="panel-title">{{ vm.title }}</h2>
+  <dl class="meta">
+    <dt>State</dt><dd><span class="dot" style="background: {{ vm.state_color }}"></span>{{ vm.state_name }}</dd>
+    <dt>Priority</dt><dd><span class="glyph{% if vm.is_urgent %} is-urgent{% endif %}">{{ vm.priority_glyph }}</span>{{ vm.priority_label }}</dd>
+    <dt>Assignee</dt><dd>{% if vm.has_assignee %}{{ vm.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</dd>
+    <dt>Due</dt><dd>{% if vm.has_due %}<span class="due{% if vm.is_overdue %} is-overdue{% endif %}">{{ vm.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</dd>
+  </dl>
+  <div class="description">{{ vm.description_html | safe }}</div>
+  {% if vm.comments %}
+  <section class="comments">
+    <h3>Comments</h3>
+    <ol class="comment-list">
+      {% for comment in vm.comments %}
+      <li class="comment"><span class="avatar avatar-sm">{{ comment.author_initials }}</span>{{ comment.body_html | safe }}<span class="stamp">{{ comment.created_label }}</span></li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endif %}
+  <footer class="panel-foot"><a class="btn" href="{{ vm.url }}">Open full issue</a></footer>
+</aside>
