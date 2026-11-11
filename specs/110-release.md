@@ -4,7 +4,7 @@ title: Semantic release pipeline
 component: support
 status: draft
 version: 2
-spec_revision: 4
+spec_revision: 5
 depends_on: [SPEC-000, SPEC-050]
 implements:
   - .github/workflows/release.yml
@@ -446,7 +446,7 @@ why step 9 compares the literal with the tag (`release_version_mismatch`): one s
 
 | Secret | Content | Used by | If absent |
 |---|---|---|---|
-| `HIFA_RELEASE_TOKEN` | classic PAT of an **admin** user with scope `repo` (§2.7.2), expiry ≤ 90 days | the push credential (§2.4 step 7) and the engine's `GITHUB_TOKEN` | `release_token_missing`, run fails before any write |
+| `HIFA_RELEASE_TOKEN` | classic PAT of an **admin** user, scope `repo` **required** — the installed token also carries `gist` + `read:org` (§2.7.2, D-039 corrigendum) — expiry ≤ 90 days | the push credential (§2.4 step 7) and the engine's `GITHUB_TOKEN` | `release_token_missing`, run fails before any write |
 | `HIFA_RELEASE_SIGNING_KEY` | the **private** half, OpenSSH format, no passphrase | step 6: signs the release commit, the pre-flight tag and the tag | `release_signing_key_missing`, run fails before any write |
 
 - The public counterpart is a line in `.github/signers/allowed_signers` with principal `hifa-release`
@@ -498,10 +498,18 @@ token.
   releases. The block is kept as a declaration of intent (and because it does govern any action using the
   implicit `github.token`, e.g. a checkout with `persist-credentials: true`, which step 1 forbids) — not
   because it constrains the engine.
-- **Scopes actually needed: `repo` only** — commit push, tag push, release creation. Nothing here needs
-  `issues`, `pull-requests`, `packages` or `workflow`; `workflow` is required only to push changes under
+- **Scopes: `repo` is required, and `gist` + `read:org` are the accepted ceiling of the token that is
+  installed.** `repo` covers commit push, tag push and release creation; nothing here needs `issues`,
+  `pull-requests` or `packages`; `workflow` is required only to push changes under
   `.github/workflows/**`, which no step does, so a PAT carrying it is a deliberate widening for other,
-  manual uses and must be justified as such.
+  manual uses and must be justified as such. **The installed token is not a `repo`-only classic PAT:** it
+  was generated with the `gh` CLI device flow, whose OAuth app appends `gist` and `read:org` to every
+  token it issues and cannot be asked to drop them, so GitHub reports `x-oauth-scopes: gist, read:org,
+  repo`. That is a **documented deviation, not compliance**: `repo` stays the requirement here, in §2.7
+  and in REQ-S110-03, and D-039 carries the corrigendum that records the measured set. What carries the
+  weight is what is **absent** — no `admin:ssh_signing_key` (it would let the token replace the account's
+  signing keys and forge a "signed" release) and no `workflow` (the one write §2.7 forbids). `gist` and
+  `read:org` authorise nothing this pipeline does.
 - **The levers that do work:** `persist-credentials: false` (no token on disk), the token in
   `GIT_CONFIG_*` (never in `.git/config`), `fetch-depth: 0` against a public remote, the three github
   options off (§2.5, so no `issues`/`pull-requests` call happens at all), and the 90-day expiry.
@@ -991,9 +999,10 @@ assert "git verify-tag" in cfg["verifyConditionsCmd"] and "git tag -d" in cfg["v
 assert "nextRelease.version" in cfg["prepareCmd"]
 print("ok: 13 rows, pre-flight present, tagFormat as specified")
 PY
-# §2.10 / R15 — the block is compared, not grepped
-diff -u <(sed -n '/release-types:begin/,/release-types:end/p' AGENTS.md) \
-        <(sed -n '/release-types:begin/,/release-types:end/p' specs/110-release.md)   # empty diff
+# §2.10 / R15 — the block is compared, not grepped (the markers are anchored: an unanchored pattern
+# also matches this very command, which is two lines inside the same file, and the diff never empties)
+diff -u <(sed -n '/^<!-- release-types:begin -->$/,/^<!-- release-types:end -->$/p' AGENTS.md) \
+        <(sed -n '/^<!-- release-types:begin -->$/,/^<!-- release-types:end -->$/p' specs/110-release.md)   # empty diff
 # §2.3 / R7 — the tag is an annotated signed object, created by the engine
 git config gpg.ssh.allowedSignersFile .github/signers/allowed_signers && git fetch --tags --force
 git cat-file -t "refs/tags/$TAG"                       # "tag", never "commit"
@@ -1172,6 +1181,14 @@ template, so it has no empty/loading/error states, keyboard path or breakpoints.
 
 ## 12. Notes
 
+- **spec_revision 5 (2026-11-11): the token's scopes are recorded as measured.** No contract moved;
+  §2.7.2 now states what is installed instead of what is required. `HIFA_RELEASE_TOKEN` comes from the
+  `gh` CLI device flow, whose OAuth app grants `gist` and `read:org` to every token it issues and cannot
+  drop them, so the effective set is `repo` (required) + `gist` + `read:org`. The scopes that carry the
+  weight are the absent ones — no `admin:ssh_signing_key`, no `workflow` — and the deviation is accepted
+  and documented (D-039, corrigendum), not claimed as compliance. The R15 extraction of §7.2 is anchored
+  to the marker lines in the same revision: the unanchored pattern also matched the verification command
+  itself, two lines further down this file, so the `diff` could never come out empty.
 - **spec_revision 4 (2026-11-11): the engine changes from `python-semantic-release` to the npm
   `semantic-release`, and the version is a literal again (D-039).** It **reverts** revisions 1-3 where
   they rested on premises that no longer hold: `.releaserc.json` is the contract (§2.5), and the literal

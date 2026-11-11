@@ -1132,3 +1132,17 @@ that has to be justified on its own (SPEC-110 §2.7.2, REQ-S110-03). *(2) Bootst
 the **merge commit of the PR that restores the literal `0.1.0`**, never the initial commit — the import
 commit is not conventional and its version would be derived, so tagging it would make the baseline itself
 violate R10 (SPEC-110 §5.2, R12).
+
+**Corrigendum (pre-publication, 2026-11-11) — the scopes of the installed token, as measured.** Item (1)
+above states the requirement (`repo`, nothing else); this records what `HIFA_RELEASE_TOKEN` actually
+carries, and supersedes that item as a description of the token that exists. The token was created with the
+**`gh` CLI device flow**, and the CLI's OAuth app appends `gist` and `read:org` to every token it issues:
+they cannot be removed one by one, only `repo` and wider scopes are selectable on the authorisation screen.
+GitHub reports the effective set as `x-oauth-scopes: gist, read:org, repo`, so the token carries **`repo`
+(required) + `gist` + `read:org`** — the **accepted ceiling** of this deviation, not an instance of least
+privilege. What keeps the blast radius where SPEC-110 §2.7.2 puts it is what is **absent**:
+`admin:ssh_signing_key` (it would let the token replace the account's signing keys, i.e. forge a signed
+release) and `workflow` (it would authorise exactly the write §2.7.1 forbids, `.github/workflows/**`).
+`gist` and `read:org` authorise nothing this pipeline does. Creating the token as a classic PAT with `repo`
+alone removes the deviation; until then SPEC-110 §2.7.2 carries the normative text and this line records
+the gap between it and the installed token.
