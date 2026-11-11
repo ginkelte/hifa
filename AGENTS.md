@@ -123,6 +123,13 @@ declared in the docs against the real Typer commands, and declared tables agains
 
 ## 9. Code and text conventions
 
+- **Never write the literal skip token in a commit message, a PR body or a squash-merge message.**
+  GitHub honours it as a case-insensitive substring of the pushed commit's message and suppresses
+  **every** workflow for that push — no run, no check, no error, nothing to classify and nothing to
+  alert on. The release commit carries it on purpose so a release does not trigger itself; any other
+  message that quotes it silently cancels the release for that merge, and the likeliest author is a
+  document explaining the token. Write "the skip-ci token" instead. The release workflow also runs on
+  a six-hour schedule, so a skipped push still self-heals (SPEC-110 §2.4).
 - Python >= 3.11, `src/` layout, typing on every public function (`from __future__ import annotations`).
 - Formatting: `ruff format` (line-length 100), imports sorted by `ruff`.
 - SQL: always parameterized (`?`). Interpolating strings into SQL is forbidden. Table and column

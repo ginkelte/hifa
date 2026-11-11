@@ -4,7 +4,7 @@ title: Semantic release pipeline
 component: support
 status: draft
 version: 3
-spec_revision: 7
+spec_revision: 8
 depends_on: [SPEC-000, SPEC-050]
 implements:
   - .github/workflows/release.yml
@@ -249,11 +249,29 @@ four rules:
 | `on.push.branches` | `[main]` — and nothing else |
 | `on.workflow_dispatch.inputs.dry_run` | `type: boolean`, `default: true`, description "Compute and print the release plan; write nothing." |
 | `on.pull_request` | **absent**. A `pull_request` trigger here is a contract violation (§7.1) |
+| `on.schedule` | `cron: '0 */6 * * *'` — a self-healing fallback, see the rule below. A scheduled run is indistinguishable from a push run: it computes the same version, writes the same commit and tag, and classifies its own outcome |
 | `permissions` (workflow / job) | `contents: read` / `contents: write` — **inert for the engine, see §2.7.2** |
 | `concurrency` | `group: release`, `cancel-in-progress: false` (a release is never cancelled half-way) |
 | `timeout-minutes` / `runs-on` | `20` / `ubuntu-latest` |
 | `if` | **absent at job level.** The loop breaker is the `[skip ci]` token of the release commit message, which GitHub already honours for `push` (see below); a `contains()` condition on the head commit message is a second copy of that rule, and it also *skips* — grey, not red — a legitimate release whose squash-merge body quotes the phrase, i.e. it can hide a release instead of preventing a loop |
-| Environment variables | **none at workflow or job level.** Each secret is declared in the `env:` block of the single step that uses it (§2.4.3); `$GITHUB_ENV` carries no secret, no credential and no base64 of either (§2.4.2) |
+| Environment variables | **none at workflow or job level.** Each secret is declared in the `env:` block of the single step that uses it (§2.4.3); `$GITHUB_ENV` never carries one (§2.7.2) |
+
+**The skip token is a trap in both directions.** GitHub honours `[skip ci]` (and its siblings) as a
+case-insensitive substring of the **commit message** of the pushed commit, and it applies that rule
+to *every* workflow triggered by the push — `ci.yml` and this one alike — silently, with no run, no
+check and no error. The release commit therefore carries the token on purpose, so the release does
+not trigger itself. The cost is that any **other** commit whose message quotes the token disables the
+release for that push, and the most likely author of such a commit is a document explaining the
+token.
+
+- **Normative:** a commit message, a PR body and a squash-merge message **never** contain the literal
+  token. Write it as "the skip-ci token" or describe it in words. The rule binds every contributor
+  and every generated message.
+- **Detection is impossible after the fact**, because the run that would have checked does not exist.
+  That is why `on.schedule` exists: a skipped push is released within six hours, and a scheduled run
+  with nothing to release classifies itself as `green: no relevant changes`.
+- A missing run is not a red run: there is nothing to classify and nothing to alert on. The schedule
+  is the only defence that does not depend on the message that caused the skip.
 
 Steps, in this order. Each row is a contract: a step may be renamed, the effects may not be reordered.
 
@@ -1637,6 +1655,15 @@ template, so it has no empty/loading/error states, keyboard path or breakpoints.
 | Release page (§2.6) | a release without a body fails the run (`release_notes_missing`) | the summary names the failing step and the §6 code |
 
 ## 12. Notes
+
+- **spec_revision 8 (2026-11-11): a push that is skipped is now released within six hours.**
+  `version` stays 3 — no signature moved. In terms of the system: GitHub honours the skip token as a
+  case-insensitive substring of the pushed commit's message and suppresses **every** workflow for that
+  push — no run, no check, no error, nothing to classify and nothing to alert on. The release commit
+  carries the token by design, so the suppression is invisible until a commit that *mentions* the token
+  arrives, and then the release for that merge simply never happens. `on.schedule` (every six hours)
+  makes the pipeline self-healing, and the message rule — never write the literal token in a commit
+  message, a PR body or a squash message — is normative because it is the only part a human controls.
 
 - **spec_revision 7 (2026-11-11): the review of rev 6 turned two guarantees into executable ones and
   narrowed two rows to what a run can observe.** `version` stays 3 — no signature moved. In terms of the
