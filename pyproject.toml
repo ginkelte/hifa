@@ -1,10 +1,12 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs", "setuptools-scm==10.3.4"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
 name = "hifa"
-dynamic = ["version"]
+# SPEC-110 §2.1: exactly one version literal exists in the tree, this line, and only the release
+# pipeline writes it (`@semantic-release/exec` `prepareCmd`, §2.5). Nobody bumps it by hand.
+version = "0.1.0"
 description = "Tracker de issues local: CLI + SQLite + dashboard"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,39 +25,8 @@ test = ["httpx>=0.27"]
 [project.scripts]
 hifa = "hifa.cli.main:app"
 
-[dependency-groups]
-# SPEC-110 §2.8: release tooling is development-only, exactly pinned (§2.9 keys are read by this
-# version), and never reaches the runtime dependency set.
-dev = ["python-semantic-release==10.7.0"]
-
-[tool.hatch.version]
-source = "vcs"
-# SPEC-110 §2.1: a tree without *any* git metadata (exported checkout, sdist) must still build, and
-# a repository without tags must keep the measured shape `0.1.devN+g<sha>` of §2.2. The fallback is
-# the pretender setuptools-scm applies when no tag exists, so it must stay the two-part base `0.0`:
-# any three-part value (`0.0.0+unknown`) would turn the tag-free version into `0.0.1.devN+unknown`.
-# It is not a release version (no tag can carry it, §2.3) and no artefact is generated from it.
-fallback-version = "0.0"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/hifa"]
-
-[tool.semantic_release]
-# SPEC-110 §2.9. The tag is the only source of version (§2.1), so PSR computes a number and writes
-# nothing: no `version_toml`/`version_variables`, no changelog section, no publish target.
-tag_format = "v{version}"
-allow_zero_version = true   # §2.5: mandatory, measured
-major_on_zero = true        # §2.5: `type!` => 1.0.0
-add_partial_tags = false    # §2.3: no `v0.2`/`v0` refs that would corrupt LAST_TAG
-commit_parser = "conventional"
-build_command = ""          # §2.8: PSR never builds or publishes, only prints a number
-
-[tool.semantic_release.branches.main]
-match = "main"
-
-[tool.semantic_release.remote]
-type = "github"
-token = { env = "GH_TOKEN" }
 
 [tool.ruff]
 line-length = 100

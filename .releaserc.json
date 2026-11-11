@@ -1,0 +1,36 @@
+{
+  "branches": ["main"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    ["@semantic-release/commit-analyzer", {
+      "preset": "angular",
+      "releaseRules": [
+        { "breaking": true, "release": "major" },
+        { "revert": true, "release": "patch" },
+        { "type": "feat", "release": "minor" },
+        { "type": "fix", "release": "patch" },
+        { "type": "style", "release": "patch" },  { "type": "refactor", "release": "patch" },
+        { "type": "perf", "release": "patch" },   { "type": "build", "release": "patch" },
+        { "type": "ci", "release": "patch" },     { "type": "chore", "release": "patch" },
+        { "type": "revert", "release": "patch" },
+        { "type": "docs", "release": false },
+        { "type": "test", "release": false }
+      ]
+    }],
+    ["@semantic-release/release-notes-generator", { "preset": "angular" }],
+    ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
+    ["@semantic-release/exec", {
+      "verifyConditionsCmd": "set -eu; probe=\"preflight-$(git rev-parse --short HEAD)-$$\"; git tag \"$probe\"; git verify-tag \"$probe\" >/dev/null; git tag -d \"$probe\" >/dev/null; echo \"signing pre-flight ok: $probe\"",
+      "prepareCmd": "sed 's/^version = \"[^\"]*\"/version = \"${nextRelease.version}\"/' pyproject.toml > pyproject.toml.tmp && mv pyproject.toml.tmp pyproject.toml"
+    }],
+    ["@semantic-release/git", {
+      "assets": ["CHANGELOG.md", "pyproject.toml"],
+      "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+    }],
+    ["@semantic-release/github", {
+      "successComment": false,
+      "failComment": false,
+      "releasedLabels": false
+    }]
+  ]
+}
