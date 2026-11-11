@@ -3,12 +3,13 @@ id: SPEC-110
 title: Semantic release pipeline
 component: support
 status: draft
-version: 2
-spec_revision: 5
+version: 3
+spec_revision: 7
 depends_on: [SPEC-000, SPEC-050]
 implements:
   - .github/workflows/release.yml
   - .github/release/tag-message.sh
+  - .github/release/assert-outcome.sh
   - .releaserc.json
   - package.json
   - package-lock.json
@@ -18,6 +19,8 @@ implements:
   - .github/signers/allowed_signers
   - tests/unit/test_version.py
   - tests/e2e/test_release_contract.py
+  - tests/e2e/test_release_outcome.py
+  - tests/fixtures/release/*.log
 acceptance: specs/acceptance/110-release.feature
 owner: Ginkelte
 created: 2026-11-11
@@ -47,6 +50,11 @@ that literal.
 - It does not define the commit convention: `AGENTS.md` §9 does, this spec maps it to bumps (§2.5.3) and
   requires §9 to carry the same table verbatim (§2.10, R15).
 - It does not sign with GPG (SSH only, §2.7) and does not hand-render notes (§2.6).
+- It does not classify a run from the workflow YAML: every outcome of §2.4.2 is decided by the governed
+  script `.github/release/assert-outcome.sh`, which pytest executes against fixtures (D-040).
+- It does not expose a secret to a step that does not use it: `env:` is declared per step (§2.4.3), never
+  at workflow or job level, and the push credential is materialised inside the shell of the one step that
+  pushes (§2.4.2).
 - It does not create the first tag: `v0.1.0` is a one-time manual signed action (§5.2, R12), because a
   tag-free history makes the engine answer `1.0.0` (measured, §9).
 
@@ -68,7 +76,7 @@ that literal.
 | Git tag `vX.Y.Z` | the only source | the **record** of the release; the literal is what the install reports |
 
 - **Exactly one product version literal exists: `pyproject.toml`, line `version = "X.Y.Z"`.** It is
-  written **only** by `@semantic-release/exec`'s `prepareCmd` (§2.5.2), inside the release commit.
+  written **only** by `@semantic-release/exec`'s `prepareCmd` (§2.5.1), inside the release commit.
   Nobody edits it by hand: a hand-edited bump produces a version no tag records, and the next release
   overwrites it.
 - **Formatting is part of the contract.** The line starts at column 0, with double quotes and exactly
@@ -103,6 +111,28 @@ __all__ = ["__version__"]
   violation (§7.2). No generated version file exists either (no `_version.py`, no `VERSION`, no
   `export-subst`).
 
+#### 2.1.1 The version test asserts the shape and the uniqueness, never the value
+
+`tests/unit/test_version.py` is contract (§2.9), and what it may assert is bounded:
+
+| It asserts | It never asserts |
+|---|---|
+| `[project].version` matches `^[0-9]+\.[0-9]+\.[0-9]+$`, or is exactly the documented fallback `0.0.0+unknown` (§2.2) | `version == "0.1.0"`, or any other concrete number |
+| exactly one line matches `^version = "…"$` in `pyproject.toml`, and it is the value `tomllib` parses as `[project].version` | that the literal equals the current release, the last tag, or a number repeated from a fixture |
+| `src/hifa/__init__.py` keeps the `importlib.metadata` read, the fallback exactly once, and no release literal | the distribution metadata of the machine that runs the suite |
+
+**Why the value is forbidden and not merely discouraged.** The release rewrites that literal inside a
+commit that enters `main` through the admin bypass with `[skip ci]` (§2.4, D-039), so **no CI run ever
+sees the change**: a test that pins the value turns `main` red on the first successful release, and the
+required `test` check then blocks every later pull request until an emergency fix lands. A test that
+freezes the version breaks the design it exists to protect, once per release, with no run to explain it.
+
+- The shape assertion survives every release; a value assertion is a snapshot of one commit, taken of a
+  field that a machine owns (§2.1).
+- The rule binds every test that touches a version, not only this file: §7.2 simulates the post-release
+  state (`version = "0.2.0"`) and the suite must stay green. A check that fails that simulation is a
+  defect, not a stricter check (R17).
+
 ### 2.2 `hifa --version` contract
 One line on `stdout`, nothing on `stderr`, exit code `0`:
 
@@ -135,7 +165,7 @@ hifa <version>
 | Signature | SSH, made at creation time (`tag.gpgSign=true`, §2.4 step 6) |
 | Principal | `hifa-release`, the line added to `.github/signers/allowed_signers` (§2.7) |
 | Tagger identity | the engine's bot, `semantic-release-bot <semantic-release-bot@martynus.net>` — the engine sets `GIT_COMMITTER_*`, so the tagger is **not** configurable through `git config user.name` (measured, §9) |
-| Message | the tag name (`v0.2.0`), written by `.github/release/tag-message.sh` (§2.4 step 6) |
+| Message | the tag name git is creating (`v0.2.0`), written by `.github/release/tag-message.sh` from the message file git hands it (§2.3.3) |
 | Target | the release commit created in the same run (§2.3.2) |
 | Immutability | never moved, deleted or re-created by the pipeline, not even an unverified one |
 
@@ -166,10 +196,12 @@ after each prepare plugin — `lib/definitions/plugins.js`). Consequences, all n
   `pyproject.toml` says `X.Y.Z`, and **no `vX.Y.Z` tag** (measured, §9).
 - **Therefore "signed or nothing" cannot rest on the tag step.** The pipeline adds a **signing pre-flight
   in `verifyConditions`**, which runs before `prepare` and therefore before any write:
-  `@semantic-release/exec`'s `verifyConditionsCmd` (§2.5) signs a disposable `preflight-*` tag with the
-  same `tag.gpgSign` + `GIT_EDITOR` pair, verifies it against `allowed_signers`, deletes it and never
-  pushes it. It exercises the key **and** the message path, so a broken key, a broken helper or an empty
-  message aborts with `main` untouched (measured: same broken editor, `main` not advanced).
+  `@semantic-release/exec`'s `verifyConditionsCmd` (§2.5) prints `signing pre-flight: starting`, then signs a
+  disposable `preflight-*` tag with the same `tag.gpgSign` + `GIT_EDITOR` pair, verifies it against
+  `allowed_signers`, deletes it and never pushes it. It exercises the key **and** the message path, so a
+  broken key, a broken helper or an empty message aborts with `main` untouched (measured: same broken editor,
+  `main` not advanced). The opening line is part of the contract: it is what tells order 4 of §2.4.2 that
+  the pre-flight *was reached* and failed, instead of never having run.
 - **What remains is a residual, documented rather than denied:** a failure *between* the pre-flight and
   `git tag` (a concurrent actor creating `vX.Y.Z` in that window, a ref lock, an I/O error) still
   produces the partial state. Step 9 detects it and §5.5 repairs it — never a re-run.
@@ -185,6 +217,29 @@ after each prepare plugin — `lib/definitions/plugins.js`). Consequences, all n
 - A lightweight tag is out of contract: if `git cat-file -t "refs/tags/$TAG"` is not `tag`, the run
   fails with `release_tag_not_signed` even though the tag is already pushed.
 
+#### 2.3.3 The message is the name git is creating, not the literal in the tree
+
+`.github/release/tag-message.sh` is the `GIT_EDITOR` of the `git tag` call (§2.3), and its contract has
+four rules:
+
+| Rule | Value |
+|---|---|
+| Invocation | git runs `<editor> <file>`: the script requires **exactly one** argument (`$# -eq 1`). Zero or more than one exits non-zero — a helper that guesses its input is the failure this prevents |
+| Source of the message | the **message file** git passes as `$1`. git seeds it with a comment block whose line after `# Write a message for tag:` is `#   <name>` (measured, §9); the script reads the name from there and writes that name back as the only non-comment line |
+| Accepted names | `^v[0-9]+\.[0-9]+\.[0-9]+$` (a release tag, §2.3.2) or `^preflight-[A-Za-z0-9._-]+$` (the disposable tag of the pre-flight, §2.3.1). Anything else is refused |
+| Fail closed | no argument, no message file, no `# Write a message for tag:` header, zero or more than one name, or a name outside the two patterns ⇒ exit non-zero and write nothing. An empty message is never signed |
+
+- **It never reads `pyproject.toml`.** The tree literal is not the source of the message: the pre-flight
+  tag cannot be derived from it, which is exactly what proves the helper reads the name git is creating
+  instead of a value it could have got wrong.
+- **Why this replaces the tree read.** A helper that messages the tag with the literal found in the
+  working tree signs whatever the tree says, and the only comparison left would be a check that runs after
+  `prepare` has already committed and pushed (§2.5). Deriving the name from git makes the mismatch
+  impossible at creation time instead of detectable after the write.
+- **The pre-flight is the test of the message path.** It signs a `preflight-*` tag through the same helper
+  (`verifyConditionsCmd`, §2.5), before any write: a helper that cannot produce that name aborts the run
+  with `main` untouched, and a `preflight-` message is a name no tree read could produce.
+
 ### 2.4 The workflow — `.github/workflows/release.yml`
 
 | Property | Normative value |
@@ -197,8 +252,8 @@ after each prepare plugin — `lib/definitions/plugins.js`). Consequences, all n
 | `permissions` (workflow / job) | `contents: read` / `contents: write` — **inert for the engine, see §2.7.2** |
 | `concurrency` | `group: release`, `cancel-in-progress: false` (a release is never cancelled half-way) |
 | `timeout-minutes` / `runs-on` | `20` / `ubuntu-latest` |
-| `if` | `${{ !contains(github.event.head_commit.message, '[skip ci]') }}` — the second loop breaker (§2.4.1) |
-| Environment variables | `GITHUB_TOKEN: ${{ secrets.HIFA_RELEASE_TOKEN }}`, `HIFA_RELEASE_TOKEN: …`, `HIFA_RELEASE_SIGNING_KEY: …` |
+| `if` | **absent at job level.** The loop breaker is the `[skip ci]` token of the release commit message, which GitHub already honours for `push` (see below); a `contains()` condition on the head commit message is a second copy of that rule, and it also *skips* — grey, not red — a legitimate release whose squash-merge body quotes the phrase, i.e. it can hide a release instead of preventing a loop |
+| Environment variables | **none at workflow or job level.** Each secret is declared in the `env:` block of the single step that uses it (§2.4.3); `$GITHUB_ENV` carries no secret, no credential and no base64 of either (§2.4.2) |
 
 Steps, in this order. Each row is a contract: a step may be renamed, the effects may not be reordered.
 
@@ -206,44 +261,124 @@ Steps, in this order. Each row is a contract: a step may be renamed, the effects
 |---|---|---|---|
 | 1 | checkout | `actions/checkout@v4`, `fetch-depth: 0`, **`persist-credentials: false`** (public repository: no token needed to fetch, none may be written to `.git/config`) | `grep -c extraheader .git/config` ⇒ `0` |
 | 2 | node | `actions/setup-node@v4`, **`node-version: '22.22.3'`** (the pair the lockfile was generated with, §2.8), `cache: npm`, `cache-dependency-path: package-lock.json` | `node --version` ⇒ `v22.22.3` |
-| 3 | token gate | fail closed when the token is empty: print `release_token_missing`, `exit 1` | red before any write; the token value never in the log |
-| 4 | install | **`npm ci`** — never `npm install`, never an inline `package.json` | `node_modules/.package-lock.json` present; `git diff --exit-code package-lock.json` clean |
-| 5 | dry-run split | `inputs.dry_run` true ⇒ export `SEMANTIC_RELEASE_ARGS=--dry-run`, otherwise empty | `::notice::` with the argument set |
-| 6 | identity and signing | exactly the block of §2.4.2 | `git var GIT_COMMITTER_IDENT`; `ssh-keygen -y -f "$RUNNER_TEMP/hifa_signing_key"` succeeded; empty secret ⇒ `release_signing_key_missing` |
-| 7 | push credential | exactly the block of §2.4.2 | `grep -c extraheader .git/config` ⇒ `0`; the header lives in the environment only |
-| 8 | release | `./node_modules/.bin/semantic-release $SEMANTIC_RELEASE_ARGS`, engine log captured to a file | `signing pre-flight ok` **before** `Prepared Git release`, then `next release version is X.Y.Z` and `Created tag vX.Y.Z`, or `no relevant changes` |
-| 9 | post-conditions | **`if: always()`** + the assertions of §2.4.2 — the only place that classifies the run | green only for the outcomes of §6; otherwise one code, exit `1` |
+| 3 | token gate | `env: HIFA_RELEASE_TOKEN` only; empty ⇒ print `release_token_missing`, write the dedupe mark `$RUNNER_TEMP/release_code_emitted`, `exit 1` | red before any write; the token value never in the log; the code printed **once** (§2.4.2) |
+| 4 | install | **`npm ci --ignore-scripts`** — never `npm install`, never an inline `package.json`, never a lifecycle script (§2.4.3) | `node_modules/.package-lock.json` present; `git diff --exit-code package-lock.json` clean; `PRE_RUN_HEAD`, `PRE_RUN_MAIN` and the tag list captured, each asserted non-empty before it is written |
+| 5 | dry-run split | `inputs.dry_run` true ⇒ `SEMANTIC_RELEASE_ARGS=--dry-run`, otherwise empty; **always** writes `RELEASE_DRY_RUN=true`/`false` to `$GITHUB_ENV` — the key §2.4.2 requires and §2.4.1 authorises as non-secret | `::notice::` with the argument set and the flag |
+| 6 | identity and signing | exactly the block of §2.4.1, with `env: HIFA_RELEASE_SIGNING_KEY` only; empty secret ⇒ `release_signing_key_missing`, flag, `exit 1` | `git var GIT_COMMITTER_IDENT`; `ssh-keygen -y -f "$RUNNER_TEMP/hifa_signing_key"` succeeded |
+| 7 | credential scope check | proves that nothing persisted the credential: `$GITHUB_ENV` carries no `HIFA_RELEASE_TOKEN`, `HIFA_RELEASE_SIGNING_KEY`, `GIT_CONFIG_*` or `AUTHORIZATION`, and `.git/config` carries no `extraheader`. Declares no `env:` and writes nothing | both greps ⇒ `0` |
+| 8 | release | exactly the block of §2.4.1: `env:` = `HIFA_RELEASE_TOKEN` + `GITHUB_TOKEN`, the base64 header exported **inside this shell** and never written to `$GITHUB_ENV`, the engine log captured, `RELEASE_EXIT_CODE` recorded. It prints **no** code | `signing pre-flight: starting` then `signing pre-flight ok`, **both before** `Prepared Git release`; then `next release version is X.Y.Z` and `Created tag vX.Y.Z`, or `no relevant changes` |
+| 9 | post-conditions | **`if: always()`** and one command, `.github/release/assert-outcome.sh` (§2.4.2) — the only step that classifies a run — behind an existence test, because a failed checkout leaves no script to run | exactly one line: `green: …` with exit `0` (G1, G2, G3), or `release_<code>` with exit `1`; silent when a gate already printed the code; a script that is not on disk ⇒ `release_engine_aborted`, exit `1` |
 | 10 | cleanup | `if: always()`: `rm -f` the key and its `.pub`, delete any local `preflight-*` ref, `ssh-agent -k` if used | runs on red and green |
 
 **`[skip ci]`, precisely.** GitHub Actions documents `[skip ci]` (with `[ci skip]`, `[no ci]`, `[skip
 actions]`) as skipping **`push` and `pull_request`** runs for that commit. The release commit therefore
-triggers **neither** `release.yml` **nor** `ci.yml`; the workflow's `if:` is a second net, not the loop
-breaker on its own. Because the commit also lands through the admin bypass, `required_status_checks` is
-bypassed with it: **the release commit is the only commit on `main` that no CI run validates.** That is
-accepted because it touches two machine-generated files and its signature is verified by step 9.
+triggers **neither** `release.yml` **nor** `ci.yml`, and that token is the **only** loop breaker: the job
+declares no `if:` (§2.4), because a second copy of the rule —
+`contains(github.event.head_commit.message, '[skip ci]')` — also matches a *squash-merge body* that quotes
+the phrase, and GitHub then reports the run as **skipped** (grey, not red) instead of releasing or
+failing. The second net is the engine's own idempotency, which has no such defect: a re-run at a released
+commit analyses the same range and answers `no relevant changes` (R4, R13). Because the commit also lands
+through the admin bypass, `required_status_checks` is bypassed with it: **the release commit is the only
+commit on `main` that no CI run validates.** That is accepted because it touches two machine-generated
+files and its signature is verified by the classifier of step 9.
 *Documented behaviour of GitHub Actions, not measured in this repository (§9).*
 
-#### 2.4.1 Step 6 and step 7, copyable
+#### 2.4.1 Steps 3, 4, 5, 6, 7 and 8 — copyable
 
-```bash
-# step 6 — identity and signing
-set +x; umask 077
-printf '%s\n' "$HIFA_RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/hifa_signing_key"
-chmod 600 "$RUNNER_TEMP/hifa_signing_key"
-ssh-keygen -y -f "$RUNNER_TEMP/hifa_signing_key" > "$RUNNER_TEMP/hifa_signing_key.pub"
-git config user.name  "hifa release"
-git config user.email "hifa-release@users.noreply.github.com"
-git config gpg.format ssh
-git config user.signingkey "$RUNNER_TEMP/hifa_signing_key"   # the PRIVATE key — see below
-git config gpg.ssh.allowedSignersFile .github/signers/allowed_signers
-git config commit.gpgSign true
-git config tag.gpgSign true
-echo "GIT_EDITOR=$GITHUB_WORKSPACE/.github/release/tag-message.sh" >> "$GITHUB_ENV"
-# step 7 — push credential in the environment, never in .git/config
-set +x
-header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HIFA_RELEASE_TOKEN" | base64 -w0)"
-{ echo "GIT_CONFIG_COUNT=1"; echo "GIT_CONFIG_KEY_0=http.extraheader"
-  echo "GIT_CONFIG_VALUE_0=$header"; } >> "$GITHUB_ENV"
+```yaml
+# step 3 — token gate: the only step besides step 8 that reads the token
+- name: Token gate
+  env:
+    HIFA_RELEASE_TOKEN: ${{ secrets.HIFA_RELEASE_TOKEN }}
+  run: |
+    set +x
+    if [ -z "${HIFA_RELEASE_TOKEN:-}" ]; then
+      echo "release_token_missing"
+      : > "$RUNNER_TEMP/release_code_emitted"   # the owner's mark, read by step 9 (§2.4.2)
+      exit 1
+    fi
+    echo "::notice::HIFA_RELEASE_TOKEN is present (value never printed)"
+
+# step 4 — install: exact, from the lockfile, with no lifecycle script (§2.4.3)
+- name: Install the pinned release engine
+  run: |
+    npm ci --ignore-scripts
+    test -f node_modules/.package-lock.json
+    git diff --exit-code -- package-lock.json
+    head_sha=$(git rev-parse HEAD)
+    main_sha=$(git ls-remote origin refs/heads/main | cut -f1)
+    test -n "$head_sha" && test -n "$main_sha"   # fail closed: an empty baseline is not a baseline
+    { echo "PRE_RUN_HEAD=$head_sha"; echo "PRE_RUN_MAIN=$main_sha"; } >> "$GITHUB_ENV"
+    git ls-remote --tags origin | sort > "$RUNNER_TEMP/tags_before.txt"
+    test -s "$RUNNER_TEMP/tags_before.txt"   # fail closed: "no tags" is a failed capture, not an empty baseline
+    echo "PRE_RUN_TAGS=$RUNNER_TEMP/tags_before.txt" >> "$GITHUB_ENV"
+
+# step 5 — dry-run split: the flag the classifier reads, and the engine's argument set
+- name: Dry-run split
+  run: |
+    set -eu
+    if [ "${{ inputs.dry_run }}" = "true" ]; then
+      dry=true; args="--dry-run"
+    else
+      dry=false; args=""
+    fi
+    echo "RELEASE_DRY_RUN=$dry" >> "$GITHUB_ENV"
+    echo "SEMANTIC_RELEASE_ARGS=$args" >> "$GITHUB_ENV"
+    echo "::notice::dry run: $dry; engine arguments: ${args:-none}"
+
+# step 6 — identity and signing: the key is visible to this step and to no other
+- name: Configure identity and SSH signing
+  env:
+    HIFA_RELEASE_SIGNING_KEY: ${{ secrets.HIFA_RELEASE_SIGNING_KEY }}
+  run: |
+    set +x; umask 077
+    if [ -z "${HIFA_RELEASE_SIGNING_KEY:-}" ]; then
+      echo "release_signing_key_missing"
+      : > "$RUNNER_TEMP/release_code_emitted"   # the owner's mark, read by step 9 (§2.4.2)
+      exit 1
+    fi
+    printf '%s\n' "$HIFA_RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/hifa_signing_key"
+    chmod 600 "$RUNNER_TEMP/hifa_signing_key"
+    ssh-keygen -y -f "$RUNNER_TEMP/hifa_signing_key" > "$RUNNER_TEMP/hifa_signing_key.pub"
+    git config user.name  "hifa release"
+    git config user.email "hifa-release@users.noreply.github.com"
+    git config gpg.format ssh
+    git config user.signingkey "$RUNNER_TEMP/hifa_signing_key"   # the PRIVATE key — see below
+    git config gpg.ssh.allowedSignersFile .github/signers/allowed_signers
+    git config commit.gpgSign true
+    git config tag.gpgSign true
+    echo "GIT_EDITOR=$GITHUB_WORKSPACE/.github/release/tag-message.sh" >> "$GITHUB_ENV"
+    git var GIT_COMMITTER_IDENT
+
+# step 7 — nothing has persisted the credential: assert it, write nothing
+- name: Push credential scope check
+  run: |
+    set -eu
+    if grep -qE 'HIFA_RELEASE_TOKEN|HIFA_RELEASE_SIGNING_KEY|GIT_CONFIG_|AUTHORIZATION' "$GITHUB_ENV"; then
+      echo "the environment file carries a secret or the push credential (§2.4.3)"; exit 1
+    fi
+    if grep -q extraheader .git/config; then
+      echo "the credential reached .git/config (§2.4.3)"; exit 1
+    fi
+
+# step 8 — the engine, with the credential materialised inside this shell only
+- name: Run semantic-release
+  env:
+    HIFA_RELEASE_TOKEN: ${{ secrets.HIFA_RELEASE_TOKEN }}
+    GITHUB_TOKEN: ${{ secrets.HIFA_RELEASE_TOKEN }}
+  run: |
+    set +x
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0=http.extraheader
+    export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HIFA_RELEASE_TOKEN" | base64 -w0)"
+    echo "::add-mask::$GIT_CONFIG_VALUE_0"
+    set +e
+    ./node_modules/.bin/semantic-release ${SEMANTIC_RELEASE_ARGS} 2>&1 \
+      | tee "$RUNNER_TEMP/semantic-release.log"
+    status=${PIPESTATUS[0]}
+    echo "RELEASE_LOG=$RUNNER_TEMP/semantic-release.log" >> "$GITHUB_ENV"
+    echo "RELEASE_EXIT_CODE=$status" >> "$GITHUB_ENV"
+    exit "$status"
 ```
 
 **`user.signingkey` is the private key.** SSH signing needs the private half (or `key::<literal>`, or an
@@ -251,40 +386,161 @@ agent that holds it); the public half exists only as a line in `allowed_signers`
 `user.signingkey` to a `.pub` file whose key is not in an agent makes `git tag` fail with *"Could not
 read SSH key"* — i.e. exactly the partial state of §2.3.1.
 
-#### 2.4.2 Step 9 — the outcome assertion
+**The credential never enters `$GITHUB_ENV`.** `export` in the shell of step 8 makes the header visible
+to the engine and to its children only, for the life of that step. `$GITHUB_ENV` is a **plain file on
+disk** that every later step sources, so a value written there is readable by any process of the job and
+decodable by any child; `::add-mask::` protects the **log**, not the file. The mask stays as a second net
+on the value that stays in memory. Two observables, both required: `grep -c extraheader .git/config` ⇒ `0`
+and `grep -cE 'HIFA_RELEASE_TOKEN|HIFA_RELEASE_SIGNING_KEY|GIT_CONFIG_|AUTHORIZATION' "$GITHUB_ENV"` ⇒
+`0` **after** the engine has run — the second one is asserted by the classifier (§2.4.2,
+`release_credential_persisted`), because a check that runs before the write cannot prove anything about it.
 
-`if: always()`, so it also runs when step 8 failed. It reads the repository state **and** the engine log
-step 8 captured: the signature and content checks need only the repository, the log is what separates
-failures that leave an identical state (`release_tag_push_rejected` vs `release_partial_state`). It prints
-**exactly one** row, the first match in the order below — that order **is** the precedence, and this table
-is the single source of the producing step and of the precedence (§6 does not repeat them):
+**The only keys `$GITHUB_ENV` may carry are non-secret:** `SEMANTIC_RELEASE_ARGS`, `RELEASE_DRY_RUN`,
+`RELEASE_LOG`, `RELEASE_EXIT_CODE`, `PRE_RUN_HEAD`, `PRE_RUN_MAIN`,
+`PRE_RUN_TAGS`, `GIT_EDITOR` and, if an agent is used, `SSH_AUTH_SOCK`/`SSH_AGENT_PID`. Any other key is a
+contract violation; §7.2 lists the redirects and refuses a key outside this set.
 
-| # | Code / outcome | Produced by | Fires when (state **or** log) | Assertion |
-|---|---|---|---|---|
-| G1 | green: "nothing written" | step 9 | `inputs.dry_run` is true | `HEAD` unchanged, `git status --porcelain` empty, no tag `vX.Y.Z`, no new remote commit |
-| G2 | green: release | step 9 | the engine reported a release | tag exists on the remote; `git cat-file -t` ⇒ `tag`; `git verify-tag` good; `git verify-commit "$TAG^{commit}"` good; `git show "$TAG:pyproject.toml"` literal == `${TAG#v}`; `CHANGELOG.md` at that tag mentions the version |
-| G3 | green: no release (R4) | step 9 | `no relevant changes` and no release commit is `HEAD` | no tag for a new version, no release commit, literal unchanged |
-| 1 | `release_token_missing` | step 3 | `HIFA_RELEASE_TOKEN` absent or empty | nothing ran, nothing written |
-| 2 | `release_signing_key_missing` | step 6 | `HIFA_RELEASE_SIGNING_KEY` absent or empty | key never materialised, nothing written |
-| 3 | `release_signing_key_invalid` | step 8 (`verifyConditions`) | the pre-flight cannot sign or verify its `preflight-*` tag (`ssh-keygen -y`, `git tag`, `git verify-tag`) | `main` untouched, **nothing pushed**, no `preflight-*` ref anywhere |
-| 4 | `release_tag_not_signed` | step 9 | `git cat-file -t "refs/tags/$TAG"` is not `tag`, or `git verify-tag` fails | tag is public and immutable: **not** deleted |
-| 5 | `release_commit_unsigned` | step 9 | `git verify-commit "$TAG^{commit}"` fails against `allowed_signers` | commit on `main`; reported so it can be re-signed forward |
-| 6 | `release_version_mismatch` | step 9 | the literal at `$TAG` ≠ `${TAG#v}`, or `grep -c '^version = "'` ≠ `1` | tag + commit on the remote; the next release fixes it |
-| 7 | `release_forbidden` | step 9 | the log shows the API refused release creation (403) | tag exists, no Release (§5.4) |
-| 8 | `release_notes_missing` | step 9 | `CHANGELOG.md` at the tag does not mention the version, or the Release body is empty | tag + commit exist; the body is recoverable from the commit message (R13) |
-| 9 | `release_tag_push_rejected` | step 9 | the log shows the remote rejected the tag push (ruleset, expired token, no `contents: write`); the message never echoes the credential | commit on `main`, no tag → §5.5 |
-| 10 | `release_partial_state` | step 9 | `origin/main`'s head is `chore(release): X.Y.Z [skip ci]`, its literal is `X.Y.Z`, `git ls-remote --tags origin "refs/tags/vX.Y.Z"` is empty, and row 9 did not fire | commit on `main`, no tag → §5.5 |
-| 11 | `release_engine_aborted` | step 9 | none of G1–G3 and none of 1–10: the engine exited without a release and without the `no relevant changes` token (§9's silent-abort class) | depends on the phase; reported instead of passing as a no-op |
+**An empty baseline is not a baseline.** `PRE_RUN_HEAD` and `PRE_RUN_MAIN` are asserted non-empty when
+they are captured (step 4) and required non-empty again before the dry-run comparison (§2.4.2), and the tag
+list is asserted **non-empty** (`test -s`) for the same reason: with `${PRE_RUN_HEAD:-$head_now}` a capture
+that failed compares equal to itself and reports a green dry run that proved nothing, and an empty tag file
+would make a comparison between two failures look like "no tag was added".
 
-- **Why `if: always()` is not cosmetic.** An engine that exits non-zero skips every later step without it,
-  so none of the outcomes above would ever be printed and the run would be red with no diagnosis. Rows 1–3
-  are printed by steps 3, 6 and 8; rows G1–G3 and 4–11 by step 9, and each of those steps runs
-  unconditionally.
+#### 2.4.2 Step 9 — the outcome assertion, and one code per run
+
+Step 9 is `if: always()`, so it also runs when step 8 failed, and it is **one command**:
+`.github/release/assert-outcome.sh` (§2.9), behind an existence test — `[ -x … ]` — because a step that
+failed in step 1 leaves no script to invoke, and a bare call then dies with a shell error instead of
+printing a code (§2.4.2, order 13). The classifier is a governed file, not a block of YAML: pytest
+executes it against fixture logs and a throwaway git repository, with one fixture per evaluation order of the
+table below and at least one fixture per order in which it must **not** fire (§7.2, D-040).
+
+It reads the repository **and** the engine log step 8 captured: the signature and content checks need only
+the repository, and the log is what separates failures that leave an identical state
+(`release_tag_push_rejected` vs `release_partial_state`).
+
+**The interface of the script — this is what pytest drives, and what an implementer must expose:**
+
+| Input (environment) | Where it comes from | Required |
+|---|---|---|
+| `RELEASE_LOG` | step 8: the captured engine log | yes — a missing or empty log can never produce a green |
+| `RELEASE_EXIT_CODE` | step 8: `${PIPESTATUS[0]}`. **When unset the script reads the sentinel `255`, never `0`** — that is the *input* sentinel, not the script's own exit status (§8 step 8) | yes |
+| `RELEASE_DRY_RUN` | step 5: `true` or `false`, written to `$GITHUB_ENV` (§2.4 step 5) | yes |
+| `PRE_RUN_HEAD`, `PRE_RUN_MAIN`, `PRE_RUN_TAGS` | step 4. The two hashes must be **non-empty** to grant a green | for G1 |
+| `RELEASE_CODE_MARKER` | path to the dedupe mark; default `$RUNNER_TEMP/release_code_emitted` | optional |
+| `TAG` | the name on the log line `Created tag <tag>` — the **only** source. Absent (no such line) ⇒ the tag-dependent orders 5, 6 and 7 cannot be evaluated and the run lands on order 13. It is never "the last tag", never the subject of the head commit and never `tagFormat` plus the computed version | for G2 and for orders 5–7 |
+| working directory | the checkout: `git`, `refs/tags/*`, `.git/config` and `$GITHUB_ENV` are read from it | yes |
+
+**The script takes no arguments and reads no stdin.** Every input above is an environment variable plus the
+working directory; `./.github/release/assert-outcome.sh` is invoked exactly as step 9 invokes it, so an
+argument or anything on `stdin` is a usage it does not have. An argument is **refused**: no classification
+line, a diagnostic on `stderr`, exit `1`. It is the one place the pipeline must fail closed, and
+`assert-outcome.sh --help` once answered `green: released v0.2.0`, exit `0`.
+
+**Output: exactly one** classification line on `stdout`, and **the three greens are literals, not prose**, so
+a fixture asserts equality instead of a prefix:
+
+| Outcome | The exact `stdout` line |
+|---|---|
+| G1 — nothing written | `green: nothing written` |
+| G3 — no release (R4) | `green: no relevant changes` |
+| G2 — release | `green: released <tag>` (e.g. `green: released v0.2.0`) |
+
+Everything else prints `release_<code>`. The exit status carries the verdict (`0` only for the three greens,
+`1` for every code). Diagnostics go to `stderr` and never carry a secret or the credential.
+
+**One code per run, and who owns the line.** The invariant is *exactly one classification line per run*,
+and it is enforced by ownership, not by luck:
+
+| Catalogue id | Owner | Mechanism |
+|---|---|---|
+| 1 `release_token_missing` | step 3 | prints the code, writes the mark, exits `1`. The classifier **never evaluates catalogue ids 1 and 2**, so a missing secret cannot be printed twice |
+| 2 `release_signing_key_missing` | step 6 | same |
+| G1–G3 and catalogue ids 3–12 | step 9 (the classifier) | step 8 prints **no** code, only `RELEASE_EXIT_CODE` and the log |
+
+- **The mark is the mechanism.** A gate that prints a code writes `$RUNNER_TEMP/release_code_emitted`; when
+  the classifier finds it, it prints no classification line at all and exits `1` with a diagnostic. It
+  suppresses a **line**, never a **failure**: the run stays red, it just does not say the same thing twice.
+- **It is a file and not an environment variable** because it must survive a *failing* step, and a marker in
+  `$RUNNER_TEMP` is read by the next step regardless of how the previous one ended.
+- **A red run cannot be laundered green.** No evaluation order below turns a non-zero exit into a green:
+  G1, G2 and G3 require `RELEASE_EXIT_CODE == 0` explicitly, and an absent exit code reads as the non-zero
+  sentinel.
+
+Evaluation orders, in the only order that is the precedence: the first match wins, the classifier prints it
+and exits.
+
+| Evaluation order | Catalogue id / outcome | Fires when (state **and** log) | Assertion it makes |
+|---|---|---|---|
+| 1 | 12 `release_credential_persisted` | `$GITHUB_ENV` or `.git/config` carries the token, the signing key, an `extraheader`, a base64 of either, **or a value that is a credential by value** — a `ghp_…`/`gho_…`/`ghu_…`/`ghs_…`/`ghr_…`/`github_pat_…` prefix, or a base64 blob that decodes to `x-access-token:` or to a `PRIVATE KEY` header | the credential existed only in the memory of step 8; otherwise the run is red and the token is rotated |
+| 2 | G1 — green, nothing written | `RELEASE_DRY_RUN=true` **and** `RELEASE_EXIT_CODE == 0` **and** the log carries `next release version is` or `no relevant changes` **and** `PRE_RUN_HEAD`/`PRE_RUN_MAIN` are non-empty and unchanged **and** `git status --porcelain` is empty **and** the tag list is unchanged | the plan was computed **and** nothing was written — both, or it is not green |
+| 3 | G3 — green, no release (R4) | `RELEASE_EXIT_CODE == 0` **and** the log carries `no relevant changes` **and** `HEAD` is not a `chore(release): … [skip ci]` commit | no new tag, no release commit, the literal unchanged |
+| 4 | 3 `release_signing_key_invalid` | `RELEASE_EXIT_CODE != 0` **and** the log carries `signing pre-flight: starting` without the closing `signing pre-flight ok` | `main` untouched, nothing pushed, and no `preflight-*` ref **in `origin`**: a local ref left behind when the `set -eu` chain aborted before `git tag -d` is removed by step 10, so it is not asserted here |
+| 5 | 4 `release_tag_not_signed` | a tag was created in this run and `git cat-file -t` is not `tag`, or `git verify-tag` fails | the tag is public and immutable: **not** deleted |
+| 6 | 5 `release_commit_unsigned` | `git verify-commit "$TAG^{commit}"` fails against `allowed_signers` | the commit is on `main`; reported so it can be re-signed forward |
+| 7 | 6 `release_version_mismatch` | (a) the log carries the pre-flight literal guard's message and no release commit exists; or (b) the literal at `$TAG` ≠ `${TAG#v}`, or `grep -c '^version = "'` ≠ `1` | (a) nothing was written; (b) tag + commit on the remote, and the next release fixes it |
+| 8 | 7 `release_forbidden` | the log shows the API refused release creation (403) | the tag exists, no Release (§5.4) |
+| 9 | 8 `release_notes_missing` | `CHANGELOG.md` at the tag does not mention the version — and the log carries no rejected-push signal, because a tag the remote refused is §5.5's state, not a missing note. (The other half this row used to claim — an empty Release body — has no observable in the repository or in the log, so it is not part of the row) | tag + commit exist; the body is recoverable from the commit message (R13) |
+| 10 | 9 `release_tag_push_rejected` | the log shows the remote rejected the tag push (ruleset, expired token, no `contents: write`) **and** the state it names holds: `origin/main`'s head is the release commit, or the tag exists locally. A bare `failed to push some refs` / `protected branch` / `cannot lock ref` also appears when the *release commit*'s push failed for auth or network reasons, and §5.5 assumes that commit exists; the message never echoes the credential | commit on `main`, no tag → §5.5 |
+| 11 | 10 `release_partial_state` | `origin/main`'s head is `chore(release): X.Y.Z [skip ci]`, its literal is `X.Y.Z`, `git ls-remote --tags origin "refs/tags/vX.Y.Z"` is empty, and order 10 did not fire | commit on `main`, no tag → §5.5 |
+| 12 | G2 — green, release | `RELEASE_EXIT_CODE == 0` **and** no earlier evaluation order matched **and** the tag named in the log exists locally and on `origin`, **and** the assertions of orders 5–9 all passed | tag on the remote, annotated and signed; commit signed; literal == tag; `CHANGELOG.md` mentions the version |
+| 13 | 11 `release_engine_aborted` | none of the above: the engine exited without a release and without the `no relevant changes` token, **or** a green cannot be proven (no log, no baseline, no exit code) | depends on the phase; reported instead of passing as a no-op |
+
+- **Why G2 sits at 12 and not at 2.** Its assertions *are* orders 5–9: an "everything is fine" row placed
+  before them would fire on a state a later evaluation order rejects. As the residual green of a completed
+  release it is reachable only when no failure matched.
+- **Catalogue id and evaluation order are two different numbers, and the columns now say which is which.**
+  The `Catalogue id` column — and the leading number of a code, `3 release_signing_key_invalid` — is the id
+  this spec uses whenever it names a code (§6 lists the same twelve by name); the
+  `Evaluation order` column is the position in the
+  precedence. They disagree on purpose: `release_credential_persisted` is id 12 and is evaluated first
+  (a leaked credential invalidates every green below it), ids 3–10 sit at `order = id − 1`, and id 11 is
+  the residual at order 13. **An invariant phrased against the first two positions suppresses order 1
+  (`release_credential_persisted`) and G1** — that is why no text here says "row N" without naming which
+  column it means.
+- **Catalogue ids 1 and 2 do not appear in this table** because the classifier does not evaluate them: a
+  gate owns each line.
+- **G1 and G3 are not "the step did not fail".** Both require `RELEASE_EXIT_CODE == 0` **and** a positive
+  signal in the log. A dry run whose engine died — an expired PAT, the pre-flight passing and the GitHub
+  plugin failing with 403, nothing written — leaves the repository *identical*, so a state-only assertion
+  reports "green: nothing written" for a run that computed nothing. The positive signal is that difference,
+  and order 13 is where such a run lands.
+- **`RELEASE_EXIT_CODE` has no benign default.** `${RELEASE_EXIT_CODE:-0}` makes "step 8 never ran"
+  indistinguishable from "step 8 succeeded"; the sentinel is `255`, so absence reads as failure.
 - **`dry_run: true` is the dispatch default**, so the dry-run branch is the *normal* dispatch path: an
   unconditional "tag exists" assertion would make every default dispatch fail.
-- **`workflow_dispatch` is for re-running a failure, not for releasing an arbitrary commit.** The version
-  is always computed from the last tag on `main`; dispatching on an older commit either reproduces a
-  version whose tag exists (`git tag` fails → §5.5) or produces a version nobody reviewed (§10).
+- **`workflow_dispatch` is for re-running a failure, not for releasing an arbitrary commit.** The version is
+  always computed from the last tag on `main`; dispatching on an older commit either reproduces a version
+  whose tag exists (`git tag` fails → §5.5) or produces a version nobody reviewed (§10).
+
+#### 2.4.3 Secret scope: which step sees what
+
+| Step | `env:` it declares | `HIFA_RELEASE_TOKEN` | `HIFA_RELEASE_SIGNING_KEY` | `GITHUB_TOKEN` |
+|---|---|---|---|---|
+| 1 checkout | — | no | no | no |
+| 2 node | — | no | no | no |
+| 3 token gate | `HIFA_RELEASE_TOKEN` | yes — presence only, never printed | no | no |
+| 4 install (`npm ci --ignore-scripts`) | — | no | no | no |
+| 5 dry-run split | — | no | no | no |
+| 6 identity and signing | `HIFA_RELEASE_SIGNING_KEY` | no | yes — to `$RUNNER_TEMP`, mode `0600`, removed in step 10 | no |
+| 7 credential scope check | — | no | no | no |
+| 8 release | `HIFA_RELEASE_TOKEN`, `GITHUB_TOKEN` | yes — in the base64 header, in memory only | no | yes |
+| 9 outcome (classifier) | — | no | no | no |
+| 10 cleanup | — | no | no | no |
+
+- **Why per step and not workflow-wide.** A workflow-level `env:` puts both secrets in `os.environ` of
+  **every** step, `npm ci` included: the lifecycle scripts of 616 packages would run with
+  `HIFA_RELEASE_TOKEN` — an admin PAT whose blast radius is the whole repository because it bypasses the
+  ruleset (§2.7.1) — and with the private signing key in the same environment. One compromised
+  `postinstall` would then be a full takeover **signed by the release key**, i.e. a release a third party
+  verifies as the project's own. Per-step `env:` leaves the install step with no secret at all, and the
+  secrets in exactly the two steps that use them.
+- **`npm ci --ignore-scripts` is mandatory**, and it is a second and independent control: no dependency can
+  execute code at install time even if a later edit puts a secret back in scope. The lockfile carries
+  **zero** `hasInstallScript` entries across 616 packages today (measured, §9), so the cost is zero and the
+  vector stays closed permanently — including through a dependency bump that would introduce one.
+- **Nothing secret reaches `$GITHUB_ENV`**, whose keys are the non-secret list of §2.4.1; the classifier
+  asserts the absence *after* the engine ran (`release_credential_persisted`, order 1).
 
 ### 2.5 `.releaserc.json` — the engine contract
 
@@ -313,8 +569,8 @@ is the single source of the producing step and of the precedence (§6 does not r
     ["@semantic-release/release-notes-generator", { "preset": "angular" }],
     ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
     ["@semantic-release/exec", {
-      "verifyConditionsCmd": "set -eu; probe=\"preflight-$(git rev-parse --short HEAD)-$$\"; git tag \"$probe\"; git verify-tag \"$probe\" >/dev/null; git tag -d \"$probe\" >/dev/null; echo \"signing pre-flight ok: $probe\"",
-      "prepareCmd": "sed 's/^version = \"[^\"]*\"/version = \"${nextRelease.version}\"/' pyproject.toml > pyproject.toml.tmp && mv pyproject.toml.tmp pyproject.toml"
+      "verifyConditionsCmd": "set -eu; count=$(grep -cE '^version = \"[0-9]+\\.[0-9]+\\.[0-9]+\"$' pyproject.toml || true); if [ \"$count\" != 1 ]; then echo \"release_version_mismatch: expected exactly one version literal line, found $count\"; exit 1; fi; probe=\"preflight-$(git rev-parse --short HEAD)-$$\"; echo \"signing pre-flight: starting\"; git tag \"$probe\"; git verify-tag \"$probe\" >/dev/null; git tag -d \"$probe\" >/dev/null; echo \"signing pre-flight ok: $probe\"",
+      "prepareCmd": "set -eu; expected=\"${nextRelease.version}\"; before=$(grep -cE '^version = \"[0-9]+\\.[0-9]+\\.[0-9]+\"$' pyproject.toml || true); if [ \"$before\" != 1 ]; then echo \"release_version_mismatch: expected exactly one version literal line before the substitution, found $before\"; exit 1; fi; sed 's/^version = \"[^\"]*\"/version = \"'\"$expected\"'\"/' pyproject.toml > pyproject.toml.tmp; after=$(grep -cxF \"version = \\\"$expected\\\"\" pyproject.toml.tmp || true); if [ \"$after\" != 1 ]; then rm -f pyproject.toml.tmp; echo \"release_version_mismatch: the substitution produced $after lines equal to $expected\"; exit 1; fi; mv pyproject.toml.tmp pyproject.toml"
     }],
     ["@semantic-release/git", {
       "assets": ["CHANGELOG.md", "pyproject.toml"],
@@ -333,25 +589,48 @@ is the single source of the producing step and of the precedence (§6 does not r
 |---|---|---|
 | `branches` / `tagFormat` | `["main"]` / `"v${version}"` | a release is cut from `main` only (R5), with three-part tags (§2.3.2) |
 | plugin order | analyzer → notes → changelog → exec → git → github | the lifecycle runs in array order: `verifyConditions` for **all** plugins first (the pre-flight, §2.3.1), then `prepare`, so the `sed` writes the literal before `@semantic-release/git` stages it, and the tag is created after both |
-| `verifyConditionsCmd` | a disposable `preflight-*` tag: sign, verify, delete | §2.3.1: signing fails **before** `prepare`. It must not push, and it must delete the ref in the same command |
-| `prepareCmd` | the `sed` of §2.5 | the only writer of the literal (§2.1) |
+| `verifyConditionsCmd` | the **literal guard**, then a disposable `preflight-*` tag: sign, verify, delete | §2.3.1 and §2.5.1: the guard and the signature both fail **before** `prepare` writes anything. It must not push, and it must delete the ref in the same command. It announces itself with `signing pre-flight: starting` **before** it creates the tag — the token order 4 of §2.4.2 keys on, because the closing `signing pre-flight ok` alone cannot distinguish "never reached" from "started and failed" |
+| `prepareCmd` | the **guarded `sed`** of §2.5.1 | the only writer of the literal (§2.1), and it fails when the substitution is not exactly one line |
 | `preset` | `"angular"` on analyzer and notes | section titles and `BREAKING CHANGE` parsing come from it. `conventionalcommits` is **not** used: on this toolchain it aborted analysis with no message and exit `0` (§9) |
 | `releaseRules` | §2.5.3, identical to `AGENTS.md` §9 | one table, compared mechanically (§2.10) |
 | `assets` | `["CHANGELOG.md", "pyproject.toml"]` | exactly the two files a release writes; `package.json` is not an asset (§2.1) |
 | `message` | `chore(release): ${nextRelease.version} [skip ci]` + notes as body | the `[skip ci]` token (§2.4); the body is the recovery source of the notes (§5.4, R13) |
 | github options | the three options `false` | keeps the run from needing `issues`/`pull-requests` (REQ-S110-03, §2.7.2) |
 
-**The `sed` that writes the version:**
+**The literal guard, and the guarded `sed`.** The same two rules, unfolded — the JSON above is the
+normative spelling, this is the same text without the escaping:
 
-```
-sed 's/^version = "[^"]*"/version = "${nextRelease.version}"/' pyproject.toml > pyproject.toml.tmp && mv pyproject.toml.tmp pyproject.toml
+```bash
+# verifyConditionsCmd, first statement: before any signature, before any write
+count=$(grep -cE '^version = "[0-9]+\.[0-9]+\.[0-9]+"$' pyproject.toml || true)
+[ "$count" = 1 ] || { echo "release_version_mismatch: expected exactly one version literal line, found $count"; exit 1; }
+
+# prepareCmd
+expected="${nextRelease.version}"
+before=$(grep -cE '^version = "[0-9]+\.[0-9]+\.[0-9]+"$' pyproject.toml || true)
+[ "$before" = 1 ] || { echo "release_version_mismatch: expected exactly one version literal line before the substitution, found $before"; exit 1; }
+sed 's/^version = "[^"]*"/version = "'"$expected"'"/' pyproject.toml > pyproject.toml.tmp
+after=$(grep -cxF "version = \"$expected\"" pyproject.toml.tmp || true)
+[ "$after" = 1 ] || { rm -f pyproject.toml.tmp; echo "release_version_mismatch: the substitution produced $after lines equal to $expected"; exit 1; }
+mv pyproject.toml.tmp pyproject.toml
 ```
 
-It rewrites only a line starting at column 0 with `version = "`; `[project]` carries exactly one such
-line (§7.2 asserts `grep -c '^version = "'` ⇒ `1`). The temp file + `mv` is atomic, so an interrupted
-step leaves either the old or the new file. **A `sed` that matches nothing is a silent no-op**, which is
-why step 9 compares the literal with the tag (`release_version_mismatch`): one source
-(`${nextRelease.version}`), four consumers (tag, changelog header, release, literal), checked once.
+- **Why the guard runs in `verifyConditions` and not at tag time.** `verifyConditions` runs for every
+  plugin before `prepare` (§2.3.1), i.e. before the changelog is regenerated, before the release commit
+  exists and before anything is pushed. A literal spelled differently — one character out, a tab, single
+  quotes — is refused there and the run aborts with `main` untouched. The same check at tag time runs
+  *after* `prepare` pushed the commit: changelog regenerated, commit on `main`, tag aborted,
+  `release_partial_state` (§5.5) for a file a `grep` could have rejected up front.
+- **Why `prepareCmd` checks again.** It is the second and independent net: the `sed` rewrites only a line
+  starting at column 0 with `version = "`, and **a `sed` that matches nothing is a silent no-op**. `before`
+  proves the input had exactly one candidate line, `after` proves the temporary file carries exactly one
+  line with the new value, and a substitution count that is not exactly `1` fails the command. A failure
+  inside `prepare` leaves nothing on the remote, because `add`/`commit` precede `push`.
+- **Nothing is half-written.** Both checks read `pyproject.toml.tmp`, and the file is replaced by `mv` only
+  when `after == 1`: an interrupted or refused step leaves either the old file or the new one.
+- The four consumers of the number — tag, changelog header, Release body, literal — are compared once more
+  against the tag by the classifier (order 7, `release_version_mismatch`), which is the assertion that
+  survives into the published state.
 
 #### 2.5.2 The engine's behaviour the job relies on
 
@@ -444,10 +723,10 @@ why step 9 compares the literal with the tag (`release_version_mismatch`): one s
 
 ### 2.7 Secrets, the bypass, and what actually authorises the write
 
-| Secret | Content | Used by | If absent |
+| Secret | Content | Visible to (exactly) | If absent |
 |---|---|---|---|
-| `HIFA_RELEASE_TOKEN` | classic PAT of an **admin** user, scope `repo` **required** — the installed token also carries `gist` + `read:org` (§2.7.2, D-039 corrigendum) — expiry ≤ 90 days | the push credential (§2.4 step 7) and the engine's `GITHUB_TOKEN` | `release_token_missing`, run fails before any write |
-| `HIFA_RELEASE_SIGNING_KEY` | the **private** half, OpenSSH format, no passphrase | step 6: signs the release commit, the pre-flight tag and the tag | `release_signing_key_missing`, run fails before any write |
+| `HIFA_RELEASE_TOKEN` | classic PAT of an **admin** user, scope `repo` **required** — the installed token also carries `gist` + `read:org` (§2.7.2, D-039 corrigendum) — expiry ≤ 90 days | step 3 (presence check) and step 8 (the push credential and the engine's `GITHUB_TOKEN`), each through its own step-level `env:` (§2.4.3) | `release_token_missing`, printed once by step 3, run fails before any write |
+| `HIFA_RELEASE_SIGNING_KEY` | the **private** half, OpenSSH format, no passphrase | step 6 only: signs the release commit, the pre-flight tag and the tag | `release_signing_key_missing`, printed once by step 6, run fails before any write |
 
 - The public counterpart is a line in `.github/signers/allowed_signers` with principal `hifa-release`
   **and `namespaces="git"`**, mirroring the `ginkelte` line, committed through a PR. One allowlist, two
@@ -456,8 +735,12 @@ why step 9 compares the literal with the tag (`release_version_mismatch`): one s
   to `$RUNNER_TEMP` with mode `0600`; removed with `if: always()`; rotation means a new keypair, its
   public line **added** (the old one kept, so published tags keep verifying) and the secret replaced.
   Rotating a key never rewrites a tag.
-- The token never reaches `.git/config`: the checkout does not persist credentials and the push
-  authenticates through `GIT_CONFIG_*` environment variables (§2.4 step 7).
+- The token never reaches `.git/config` and never reaches `$GITHUB_ENV`: the checkout does not persist
+  credentials, and the push authenticates through `GIT_CONFIG_*` variables exported **inside the shell of
+  step 8**, so they exist in the memory of that process and of its children and nowhere else (§2.4.1).
+  Both absences are asserted after the write — `.git/config` by step 7 and the log-time surfaces by the
+  classifier (`release_credential_persisted`, §2.4.2) — because an assertion that runs before the write
+  cannot say anything about it.
 
 #### 2.7.1 The admin bypass: scope of the exception (D-039)
 
@@ -542,13 +825,15 @@ token.
 |---|---|
 | `.github/workflows/release.yml` | §2.4, ten steps in order |
 | `.releaserc.json` | §2.5, verbatim |
-| `.github/release/tag-message.sh` | the `GIT_EDITOR` helper: reads the literal from `pyproject.toml`, writes `v<version>` into the message file git passes as `$1`, exits non-zero if the literal is missing (§2.3) |
+| `.github/release/tag-message.sh` | the `GIT_EDITOR` helper: requires exactly one argument, reads the tag name git is creating from the message file's own header, writes that name back and exits non-zero on anything ambiguous or outside the two accepted patterns (§2.3.3). It never reads `pyproject.toml` |
+| `.github/release/assert-outcome.sh` | the outcome classifier of §2.4.2: reads `RELEASE_LOG`, `RELEASE_EXIT_CODE` (the **input** sentinel `255` when unset, never `0`), `RELEASE_DRY_RUN`, `PRE_RUN_*`, `TAG` (taken only from the log line `Created tag <tag>`, absent ⇒ order 13), the dedupe mark and the repository; **takes no arguments and reads no stdin**; prints **exactly one** classification line — `green: nothing written`, `green: no relevant changes`, `green: released <tag>`, or `release_<code>` — and exits `0` only for G1/G2/G3, `1` otherwise. Executable, `bash`, **no network writes**: `git ls-remote` is read only (two queries, `refs/heads/main` and `refs/tags/*`), there is no `fetch` and no `push`; no write to the repository; deterministic given its inputs |
+| `tests/e2e/test_release_outcome.py` | executes both governed scripts: one fixture per evaluation order of §2.4.2 and per catalogue id, a negative fixture per order (the precedence), and a throwaway git repository in `$TMPDIR` for every assertion that reads refs or signatures |
 | `package.json`, `package-lock.json` | §2.8; `private: true`, `version: "0.0.0"` |
 | `CHANGELOG.md` | §2.6, machine-owned |
 | `pyproject.toml` | only `[project].version` and these absences: `dynamic`, `hatch-vcs` and `setuptools-scm` in `[build-system].requires`, `[tool.hatch.version]`, the `python-semantic-release` row of `[dependency-groups].dev`, `[tool.semantic_release]` (§2.1). Everything else is SPEC-000's (D-038, D-039) |
 | `src/hifa/__init__.py` | §2.1, the `__version__` symbol and its fallback |
 | `.github/signers/allowed_signers` | the `hifa-release` line (§2.7) |
-| `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py` | the tests of §8 step 10 |
+| `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py`, `tests/e2e/test_release_outcome.py`, `tests/fixtures/release/*.log` | the tests of §8 step 11 |
 
 ### 2.10 Documentation this component governs, and how it is compared
 | File | Section | Required content |
@@ -633,14 +918,15 @@ No SQLite table: this component never opens a database, never reads `.hifa.toml`
   because a release cut from an unmerged branch would tag code nobody reviewed and the tag is immutable.
 - **R6 — Immutable tag (REQ-F110-06).** §2.3.2: never moved, deleted, re-created or force-pushed, not even
   an unverified one. The engine refuses to *create* an existing tag, but that refusal happens **after**
-  `prepare` pushed the commit (§2.5.2); the partial state is repaired by §5.5, never a re-run.
+  `prepare` pushed the commit (§2.3.1); the partial state is repaired by §5.5, never a re-run.
 - **R7 — Signed or nothing (REQ-F110-07).** The commit is signed (`commit.gpgSign=true`), the tag is signed
   at creation (`tag.gpgSign` + `GIT_EDITOR`, §2.3), and signing is **pre-flighted in `verifyConditions`**
   so an unusable key aborts before any write (§2.3.1). A tag that is not an annotated object still fails
   afterwards (`release_tag_not_signed`). There is no unsigned path.
 - **R8 — Secret hygiene (REQ-S110-01, REQ-S110-03).** §2.7: the key is never printed, lives in
-  `$RUNNER_TEMP` with mode `0600`, is removed with `if: always()`; the token never reaches `.git/config`;
-  both absences are hard failures before any write.
+  `$RUNNER_TEMP` with mode `0600`, is removed with `if: always()`; the token reaches neither `.git/config`
+  nor `$GITHUB_ENV` (§2.4.1, §2.4.3); both absences are hard failures, and the second is asserted **after**
+  the write that could violate it (`release_credential_persisted`).
 - **R9 — Notes and changelog are engine output (REQ-F110-08).** The release body and the `CHANGELOG.md`
   entry come from the notes generator and the changelog plugin over `LAST_TAG..HEAD`; the job asserts they
   exist and mention the version, never their layout (§2.6).
@@ -660,8 +946,9 @@ No SQLite table: this component never opens a database, never reads `.hifa.toml`
   **missing GitHub Release is not recreated** (`gh release create "$TAG" --title "$TAG" --notes-file
   <body of the release commit>`, in `README.md`), and a **partial state is not repaired** either (§5.5).
 - **R14 — CI neutrality (REQ-F110-13).** `ci.yml` and `signatures.yml` are not modified and the release job
-  is not a required check. With the literal restored CI installs `X.Y.Z` instead of a `devN` version; no
-  test asserts a version literal, so `test` and `firmas` stay version-agnostic.
+  is not a required check. With the literal restored CI installs `X.Y.Z` instead of a `devN` version, and
+  `test` and `firmas` stay version-agnostic because **no test may assert a version value** (R17), not
+  because none happens to.
 - **R15 — The documentation ships with the pipeline, and is compared mechanically (REQ-F110-14).** The
   implementation PR updates `AGENTS.md` §6/§9 and `README.md` as §2.10 requires, and §7.2 diffs the marked
   block between `AGENTS.md` and this spec, so a divergence fails a check instead of a review.
@@ -669,6 +956,35 @@ No SQLite table: this component never opens a database, never reads `.hifa.toml`
   only (§2.7.1), is revocable in one API call (`bypass_actors: []`), and the four rules keep applying to
   everyone else.
 
+- **R17 — The version test asserts the shape and the uniqueness, never the value (REQ-F110-15).** §2.1.1:
+  `tests/unit/test_version.py` asserts that the literal matches `^[0-9]+\.[0-9]+\.[0-9]+$` (or is the
+  documented fallback), that exactly one such line exists, and that it agrees with what `tomllib` parses; a
+  concrete number is a defect. Verified by the simulation of §7.2 — with `version = "0.2.0"` in a scratch
+  copy the suite is green — because a test that pins the current version breaks the first release of the
+  design it protects.
+- **R18 — A secret is visible only to the step that uses it (REQ-S110-06).** §2.4.3: `env:` per step and
+  never at workflow or job level; the token in steps 3 and 8 only, the key in step 6 only, `GITHUB_TOKEN`
+  in step 8 only; **`npm ci --ignore-scripts` mandatory**; `$GITHUB_ENV` carries no secret, no credential
+  and no base64 of either. Verified by §7.2 (the workflow is parsed, not grepped) and by the classifier's
+  evaluation order 1.
+- **R19 — Exactly one code per run, and the owner of the line is named (REQ-F110-16).** §2.4.2: catalogue
+  ids 1 and 2 belong to steps 3 and 6, which print the code, write the dedupe mark and exit red; every
+  other catalogue id belongs to the classifier, which prints nothing at all when the mark exists. Verified
+  by the outcome suite (a fixture with the mark present produces no classification line) and by the AC
+  "exactly one `release_` code appears in the log".
+- **R20 — The outcome classifier is a governed script, not text in YAML (REQ-F110-17, D-040).** §2.4.2
+  states its interface — the environment inputs including `TAG`, the three exact green lines, and the fact
+  that it takes no arguments and reads no stdin — §2.9 lists it among the files this component governs, and
+  pytest executes it against fixture logs and a throwaway repository: one fixture per evaluation order and
+  at least one negative fixture per order. **The criterion is the six semantic mutations of D-040**: the six
+  that kept every asserted string byte-identical and passed rev 5's document-shaped suite **31/31**. D-040
+  names two of them explicitly — a raw PAT written into the header instead of the basic-auth pair, and the
+  release-commit signature check turned off — and the criterion is the six, not the two. **A fixture per
+  order proves the classifier and cannot catch a mutation of the workflow text**, because no fixture
+  observes `release.yml`: for those the assert has to be named — the `GIT_CONFIG_VALUE_0` header being the
+  basic pair and not the bare token, `commit.gpgSign true`, order 6 actually reaching `verify-commit`, the
+  pre-flight's opening line. §7.2 carries them. A rule that exists only as a string inside the workflow is
+  not executable and therefore not verified (P8).
 ### 4.1 Non-functional requirements
 
 | ID | Requirement | Verification |
@@ -688,15 +1004,18 @@ No SQLite table: this component never opens a database, never reads `.hifa.toml`
 | **REQ-S110-03** | Least privilege, at its real boundary: the PAT carries `repo` and nothing else (§2.7.2); `persist-credentials: false`; the token travels in `GIT_CONFIG_*` and never in `.git/config`, `.git/credentials` or the remote URL; no plugin option triggers an `issues`/`pull-requests` call. The `permissions:` block is **not** the control (§2.7.2). | the PAT's scope list; `grep -c extraheader .git/config` ⇒ `0`; `grep -n 'successComment' -A 2 .releaserc.json` ⇒ three `false` |
 | **REQ-S110-04** | A release is verifiable by a third party from the repository alone: tag signature against the committed `allowed_signers`, signed release commit, notes in the Release, version in the wheel. | `git verify-tag` + `git verify-commit` on a fresh clone |
 | **REQ-S110-05** | The admin bypass is deliberate, documented and minimal: four rules stay active, the only exempt actor class is `RepositoryRole admin`, and the token is used by no other workflow. | `gh api repos/ginkelte/hifa/rulesets/27053963` ⇒ four rules + one `bypass_actors` entry; AC "the ruleset still rejects a direct push from a non-admin actor" |
+| **REQ-S110-06** | Least privilege per step: no `env:` at workflow or job level, the token only in steps 3 and 8, the signing key only in step 6, `GITHUB_TOKEN` only in step 8, `npm ci --ignore-scripts`, and no secret, credential or base64 of either in `$GITHUB_ENV` (§2.4.3). | the workflow parsed as YAML (§7.2 asserts the `env:` map of every step); `grep -c 'npm ci --ignore-scripts'` ⇒ `1`; classifier order 1 (`release_credential_persisted`) |
 
 ## 5. Flow
 
 ### 5.1 Nominal release
 
 ```
- 1-7.  steps 1-7 of §2.4: checkout, node 22.22.3, token gate, npm ci, dry-run split, identity and
-       signing (private key in $RUNNER_TEMP, §2.4.1), push credential in the environment
- 8.    ./node_modules/.bin/semantic-release, in the engine's own order (§2.3.1):
+ 1-7.  steps 1-7 of §2.4: checkout, node 22.22.3, token gate (§2.4.3 step-level env), npm ci
+       --ignore-scripts, dry-run split, identity and signing (private key in $RUNNER_TEMP, §2.4.1),
+       credential scope check
+ 8.    ./node_modules/.bin/semantic-release, with GIT_CONFIG_* exported inside its own shell only
+       (§2.4.1), in the engine's own order (§2.3.1):
          verifyConditions => signing pre-flight (preflight tag signed, verified, deleted)
          analyzer         => LAST_TAG..HEAD => "next release version is 0.2.0"
          notes/changelog  => body + CHANGELOG.md regenerated, new header first
@@ -704,7 +1023,8 @@ No SQLite table: this component never opens a database, never reads `.hifa.toml`
          git              => commit chore(release): 0.2.0 [skip ci] (signed) AND push to main
          engine           => git tag v0.2.0 <release commit>, then git push --tags origin
          github           => GitHub Release v0.2.0 with the notes
- 9-10. post-conditions (if: always(), §2.4.2), then cleanup (key and preflight refs removed)
+ 9-10. .github/release/assert-outcome.sh (if: always(), §2.4.2) prints the one line of this run, then
+       cleanup (key and preflight refs removed)
 ```
 
 ### 5.2 Bootstrap of the first tag (one time, manual, two PRs)
@@ -739,7 +1059,7 @@ itself a release trigger, and a tag created afterwards loses the race. So:
 
 ### 5.3 Nothing to release
 
-A `docs:`-only (or `test:`-only, or unmapped-type) merge takes row G3 of §2.4.2: the analyzer
+A `docs:`-only (or `test:`-only, or unmapped-type) merge takes G3 of §2.4.2: the analyzer
 maps every commit to "no release", the engine logs `There are no relevant changes, so no new version is
 released.` and exits `0`, and nothing is written — no commit, no tag, no `CHANGELOG` entry, no Release.
 A re-run at an already released commit takes the same path (R13).
@@ -754,7 +1074,9 @@ A re-run at an already released commit takes the same path (R13).
 | **the commit push is rejected** (bypass removed, expired token, no `contents: write`) | the release commit exists **locally only** and **no tag exists**: the tag is created after `prepare` (§2.3.1), so the failure lands before it. Nothing of this release is on the remote; `main` unchanged | restore the bypass/token, re-run: it recomputes the same version, nothing is duplicated because nothing arrived |
 | **the tag push is rejected**, or `git tag` itself fails (key, empty message, broken editor, tag already exists) | commit + literal on `main`, **no tag**: the partial state | §5.5 — never a re-run |
 | release creation failed after the tag was pushed | tag on the remote, no Release, a re-run is a no-op | `gh release create "$TAG" --title "$TAG" --notes-file <body of the release commit>` (R13) |
-| `release_version_mismatch` | tag and commit on the remote, literal not bumped | fix §2.5 / the literal's spelling, then release the next version (never move the tag) |
+| `release_version_mismatch` — the guard in `verifyConditions` | **nothing written, nothing pushed** | fix the literal's spelling in `pyproject.toml` and re-run (§2.5.1) |
+| `release_version_mismatch` — the literal at the tag | tag and commit on the remote, literal not bumped | fix §2.5 / the literal's spelling, then release the next version (never move the tag) |
+| `release_credential_persisted` | the release may have succeeded; `$GITHUB_ENV` or `.git/config` carried the token or the key | treat the credential as compromised: rotate the token (and the key if it was the leaked one), then repair the workflow (§2.4.1) |
 | `release_tag_not_signed` | tag on the remote, unsigned or lightweight | rotate the key / fix `tag.gpgSign`; report and stop, never delete (§6) |
 
 ### 5.5 The partial state: a release commit on `main` with no tag
@@ -802,12 +1124,13 @@ fires and *what it leaves behind*.
 | `release_signing_key_invalid` | the pre-flight cannot sign or verify the `preflight-*` tag (`ssh-keygen -y`, `git tag`, `git verify-tag`) | **nothing written, nothing pushed** |
 | `release_partial_state` | a release commit with literal `X.Y.Z` is on `main` and no `vX.Y.Z` tag exists | commit on `main`, no tag → §5.5 |
 | `release_engine_aborted` | the engine exited without a release and without the `no relevant changes` token (§9's silent-abort class) | depends on the phase; reported instead of passing as a no-op |
-| `release_version_mismatch` | the literal at `$TAG` ≠ the tag, or `grep -c '^version = "'` ≠ `1` | tag + commit on the remote; the next release fixes it |
+| `release_version_mismatch` | the literal guard in `verifyConditions` found a count other than one, or (at the tag) the literal ≠ the tag or `grep -c '^version = "'` ≠ `1` | nothing written when the guard fired; otherwise tag + commit on the remote and the next release fixes it |
+| `release_credential_persisted` | `$GITHUB_ENV` or `.git/config` carries the token, the key, an `extraheader` or a base64 of either, **after** step 8 ran | the repository state is whatever the engine produced; the credential is rotation debt, not a repository defect |
 | `release_tag_not_signed` | `git cat-file -t refs/tags/$TAG` is not `tag`, or `git verify-tag` fails | tag is public and immutable: **not** deleted |
 | `release_commit_unsigned` | `git verify-commit "$TAG^{commit}"` fails against `allowed_signers` | commit on `main`; the report names it so it can be re-signed forward |
 | `release_tag_push_rejected` | the remote rejected the tag push (ruleset, expired token, no `contents: write`); the message never echoes the credential | commit on `main`, no tag → §5.5 |
 | `release_forbidden` | the API refused release creation (403) | tag exists, no Release (§5.4) |
-| `release_notes_missing` | `CHANGELOG.md` at the tag does not mention the version, or the Release body is empty | tag + commit exist; the body is recoverable from the commit message (R13) |
+| `release_notes_missing` | `CHANGELOG.md` at the tag does not mention the version — the Release body is not observable from the runner, so the changelog is its local proxy (§2.4.2, catalogue id 8) | tag + commit exist; the body is recoverable from the commit message (R13) |
 
 **A red run means a human must look.** The accepted outcomes are G1–G3 of §2.4.2 and all three say so in
 the log; anything else is a failure by construction of step 9 — there is no fourth "quiet" state.
@@ -883,7 +1206,7 @@ Feature: Semantic release pipeline
   Scenario: a signing failure is caught before anything is written
     Given the key cannot sign or GIT_EDITOR points at a helper that exits 1, and a feature was merged into main
     When the "Release" workflow runs
-    Then the run fails with "release_signing_key_invalid" — row 3 of §2.4.2, printed in step 8
+    Then the run fails with "release_signing_key_invalid" — catalogue id 3 of §2.4.2, printed once by the classifier of step 9
     And the remote main still points at the merged commit, with no tag and no "preflight-" ref
     And no "chore(release):" commit and no tag were pushed
   Scenario: the partial state is repaired by tagging the release commit, not by a re-run
@@ -913,7 +1236,7 @@ Feature: Semantic release pipeline
     Given a release run that pushed the commit "chore(release): 0.2.0 [skip ci]"
     When GitHub evaluates the workflows for that push
     Then no "Release" run and no "CI" run are created for that commit
-    And the workflow condition of release.yml would also skip it
+    And release.yml declares no job-level "if:" — the "[skip ci]" token and the engine's "no relevant changes" are the only loop breakers
   Scenario: a release without its secrets fails without publishing
     Given "HIFA_RELEASE_TOKEN" or "HIFA_RELEASE_SIGNING_KEY" is not set, and a feature was merged into main
     When the "Release" workflow runs
@@ -923,7 +1246,7 @@ Feature: Semantic release pipeline
     Given main has the signed tag "v0.2.0" and a merged "fix: repair the board query" commit, and the dispatch keeps the default dry_run
     When "gh workflow run release.yml" is executed without overriding dry_run
     Then the run succeeds and the log contains "next release version is"
-    And the post-condition step asserts that nothing was written
+    And the classifier required exit status 0 and that signal before printing "green: nothing written"
     And no new tag, no new commit on main and no change to the literal exist
   Scenario: the post-condition step runs even when the engine fails
     Given a run in which "./node_modules/.bin/semantic-release" exits non-zero
@@ -954,6 +1277,56 @@ Feature: Semantic release pipeline
     And "AGENTS.md" §9 requires a "BREAKING CHANGE:" footer for a breaking change
     And "AGENTS.md" §6 mentions the workflow and that it appends one release commit
     And "README.md" "Contributing" explains the release, the tag verification and both recoveries
+  Scenario: the version suite survives a release it never saw
+    Given a working copy of the repository whose "pyproject.toml" carries 'version = "0.2.0"', the state the release commit leaves on main
+    When "pytest tests/unit/test_version.py" is executed in that copy
+    Then the suite is green
+    And no assertion in it compares a version to a concrete number
+  Scenario: a secret is visible only to the step that uses it
+    Given the workflow file ".github/workflows/release.yml"
+    When the workflow is parsed as YAML
+    Then no "env" key exists at workflow level or at job level
+    And exactly the token gate and the release step declare "HIFA_RELEASE_TOKEN"
+    And only the identity step declares "HIFA_RELEASE_SIGNING_KEY"
+    And only the release step declares "GITHUB_TOKEN"
+    And every other step declares no variable at all
+    And the install step runs "npm ci --ignore-scripts"
+  Scenario: the credential never reaches the environment file
+    Given a release run that pushed the tag "v0.2.0"
+    When "$GITHUB_ENV" and ".git/config" are inspected after the engine ran
+    Then neither file contains the token, the signing key, an "extraheader" or a base64 of either
+    And the classifier prints "release_credential_persisted" when either one does
+  Scenario: a dry run that never computed a plan is red
+    Given a dispatch that keeps the default dry_run and a token the GitHub API refuses
+    When the engine exits non-zero without printing "next release version is"
+    Then the run fails and the repository is unchanged
+    And the classifier prints no "green: nothing written"
+  Scenario: a missing secret is classified exactly once
+    Given one run without "HIFA_RELEASE_TOKEN" and one run without "HIFA_RELEASE_SIGNING_KEY"
+    When each workflow log is inspected
+    Then "release_token_missing" appears exactly once in the first
+    And "release_signing_key_missing" appears exactly once in the second
+    And the classifier added no code of its own to either run
+  Scenario: an ambiguous version literal aborts before anything is written
+    Given a "pyproject.toml" whose version line reads "version = '0.1.0'" and a merged "feat:" commit
+    When the "Release" workflow runs
+    Then the run fails with "release_version_mismatch" during "verifyConditions"
+    And main has no new commit, no new tag, and "CHANGELOG.md" is unchanged
+  Scenario: the classifier reproduces every evaluation order of the outcome table
+    Given the fixture logs of "tests/fixtures/release" and a throwaway git repository
+    When "pytest tests/e2e/test_release_outcome.py" is executed
+    Then every evaluation order of §2.4.2 is produced by at least one fixture
+    And no order is produced by the fixtures of an order with higher precedence
+    And the exit status is 0 for G1, G2 and G3 only
+    And each green equals its literal: "green: nothing written", "green: no relevant changes", "green: released <tag>"
+    And the six mutations of D-040 turn the suite red instead of passing it
+  Scenario: the tag helper messages the name git is creating
+    Given the ".github/release/tag-message.sh" helper and a message file seeded by git
+    When the helper is executed with that file as its only argument
+    Then it writes back the "vX.Y.Z" name git put in the header
+    And it accepts a "preflight-" name, which no literal in the tree could produce
+    And it exits non-zero for zero arguments, two arguments, a header with no name, or a name such as "latest"
+    And it reads no "pyproject.toml" at all
 ```
 
 ### 7.2 Verification commands
@@ -988,16 +1361,27 @@ assert names == ["@semantic-release/commit-analyzer", "@semantic-release/release
                  "@semantic-release/changelog", "@semantic-release/exec",
                  "@semantic-release/git", "@semantic-release/github"], names
 rules = c["plugins"][0][1]["releaseRules"]
-types = {r["type"]: r["release"] for r in rules if "type" in r}
-assert types == {"feat": "minor", "fix": "patch", "style": "patch", "refactor": "patch",
-                 "perf": "patch", "build": "patch", "ci": "patch", "chore": "patch",
-                 "revert": "patch", "docs": False, "test": False}, types
-assert {"breaking": True, "release": "major"} in rules
-assert {"revert": True, "release": "patch"} in rules
+# R2/R15: the table is compared as a COMPLETE set. Filtering by "type" drops {"revert": true} — the
+# only row that matches a `git revert` header (§2.5.3) — and any rule added by accident
+expected_rules = [
+    {"breaking": True, "release": "major"},
+    {"revert": True, "release": "patch"},
+    {"type": "feat", "release": "minor"},
+    {"type": "fix", "release": "patch"},      {"type": "style", "release": "patch"},
+    {"type": "refactor", "release": "patch"}, {"type": "perf", "release": "patch"},
+    {"type": "build", "release": "patch"},    {"type": "ci", "release": "patch"},
+    {"type": "chore", "release": "patch"},    {"type": "revert", "release": "patch"},
+    {"type": "docs", "release": False},       {"type": "test", "release": False},
+]
+dump = lambda rs: sorted(json.dumps(r, sort_keys=True) for r in rs)
+assert len(rules) == 13 and dump(rules) == dump(expected_rules), rules
+assert {"revert": True, "release": "patch"} in rules      # `Revert "…"`: no `type` key at all
 cfg = c["plugins"][3][1]
 assert "git verify-tag" in cfg["verifyConditionsCmd"] and "git tag -d" in cfg["verifyConditionsCmd"]
-assert "nextRelease.version" in cfg["prepareCmd"]
-print("ok: 13 rows, pre-flight present, tagFormat as specified")
+assert "expected exactly one version literal line" in cfg["verifyConditionsCmd"]   # the guard, §2.5.1
+assert "release_version_mismatch" in cfg["verifyConditionsCmd"] and "release_version_mismatch" in cfg["prepareCmd"]
+assert "${nextRelease.version}" in cfg["prepareCmd"]
+print("ok: 13 rows, literal guard + pre-flight present, tagFormat as specified")
 PY
 # §2.10 / R15 — the block is compared, not grepped (the markers are anchored: an unanchored pattern
 # also matches this very command, which is two lines inside the same file, and the diff never empties)
@@ -1021,13 +1405,58 @@ git show "$TAG:package.json" | python3 -c "import json,sys;print(json.load(sys.s
 gh run view <run-id> --log > /tmp/release.log
 grep -cE 'Created tag v[0-9]+\.[0-9]+\.[0-9]+|no relevant changes' /tmp/release.log              # >= 1
 grep -cE 'release_(partial_state|engine_aborted|version_mismatch|tag_not_signed)' /tmp/release.log  # 0
+grep -cE '(green: |release_[a-z_]+$)' /tmp/release.log                                            # exactly 1
+# (`gh run view --log` prefixes every line with job/step/timestamp, so a `^` anchor never matches; use
+#  `gh run view <id> --json jobs --jq '.jobs[].steps[].name'` + the raw job log if you need one line per step)
+# §2.4.2 / R19 / R20 / D-040 — the classifier is executed, not read: one fixture per evaluation order
+bash -n .github/release/assert-outcome.sh && ls -l .github/release/assert-outcome.sh | cut -c1-10  # -rwxr-xr-x
+.github/release/assert-outcome.sh --help >/dev/null 2>&1; echo $?                             # 1 — an argument is a usage, never a green
+.venv/bin/pytest -q tests/e2e/test_release_outcome.py                  # every order of §2.4.2 + precedence
+.venv/bin/pytest -q tests/e2e/test_release_contract.py                 # the document-level contract
+# §2.4.2 — the precedence is a SEQUENCE, not a set: the contract suite exchanges two whole order blocks
+# (5↔6 and 9↔10, each marker keeping its own body) and requires the checks to go red, because `bash`
+# reads the file top to bottom.
+grep -c 'sequence == list(CLASSIFIER_ORDERS)' tests/e2e/test_release_contract.py               # 1 — the order in the file is the precedence
+# R20 / D-040 — the six mutations that passed rev 5's document-shaped suite must turn this one red.
+# A fixture per evaluation order proves the CLASSIFIER and observes no line of release.yml, so a mutation
+# of the workflow text is only caught by an assert that names it: the two D-040 names, and the others.
+grep -n 'GIT_CONFIG_VALUE_0=' .github/workflows/release.yml | grep -c 'AUTHORIZATION: basic.*base64'  # 1 — not the bare token
+grep -c 'commit.gpgSign true' .github/workflows/release.yml                                    # 1 — the release commit is signed
+grep -c 'git verify-commit' .github/release/assert-outcome.sh                                  # >= 1 — order 6 is implemented, not disabled
+grep -c 'signing pre-flight: starting' .releaserc.json                                         # 1 — order 4 has its opening token
 # REQ-S110-03 / §2.7.2 — nothing persisted; the block is documentation, the PAT is the control
 grep -c extraheader .git/config                                        # 0
 git config --get remote.origin.url | grep -c '@'                       # 0
 grep -nE 'persist-credentials: *true|npm install|git push -f' .github/workflows/release.yml   # no output
 grep -n 'successComment' -A 2 .releaserc.json                          # false / false / false
-# REQ-N110-05 / §2.8 — npm ci from the versioned lockfile, with the pinned Node
-grep -nE 'npm ci|node-version' .github/workflows/release.yml           # npm ci, node-version: '22.22.3'
+# §2.4.3 / R18 — the workflow is PARSED, not grepped: a grep cannot tell a step-level env from a
+# workflow-level one, and that difference is the whole control
+.venv/bin/python - <<'PY'
+import pathlib, re, yaml
+w = yaml.safe_load(open(".github/workflows/release.yml"))
+assert "env" not in w, "workflow-level env is forbidden (§2.4.3)"
+job = w["jobs"]["release"]
+assert "env" not in job, "job-level env is forbidden (§2.4.3)"
+steps = job["steps"]                      # the ORDER is the contract (§2.4), not the names
+assert len(steps) == 10, len(steps)
+envs = [set(s.get("env", {})) for s in steps]
+assert envs[2] == {"HIFA_RELEASE_TOKEN"}                       # step 3, token gate
+assert envs[5] == {"HIFA_RELEASE_SIGNING_KEY"}                 # step 6, identity and signing
+assert envs[7] == {"HIFA_RELEASE_TOKEN", "GITHUB_TOKEN"}       # step 8, the engine
+assert all(e == set() for i, e in enumerate(envs) if i not in (2, 5, 7)), envs
+assert "npm ci --ignore-scripts" in steps[3]["run"]            # step 4, the install
+text = pathlib.Path(".github/workflows/release.yml").read_text()
+allowed = {"SEMANTIC_RELEASE_ARGS", "RELEASE_DRY_RUN", "RELEASE_LOG", "RELEASE_EXIT_CODE",
+           "PRE_RUN_HEAD", "PRE_RUN_MAIN", "PRE_RUN_TAGS", "GIT_EDITOR",
+           "SSH_AUTH_SOCK", "SSH_AGENT_PID"}
+written = set(re.findall(r'echo "([A-Z_]+)=', text))
+assert written <= allowed, written - allowed
+assert not any("GIT_CONFIG" in l or "AUTHORIZATION" in l for l in text.splitlines() if "GITHUB_ENV" in l)
+print("ok: secrets per step, no secret key in $GITHUB_ENV, install runs no lifecycle script")
+PY
+# REQ-N110-05 / §2.8 / R18 — npm ci from the versioned lockfile, no lifecycle script, pinned Node
+grep -nE 'npm ci --ignore-scripts|node-version' .github/workflows/release.yml   # both present
+grep -c '"hasInstallScript"' package-lock.json                        # 0 (§2.4.3: the cost of the flag is zero)
 git ls-files --error-unmatch package.json package-lock.json .releaserc.json
 python3 -c "import json;print(json.load(open('package-lock.json'))['lockfileVersion'])"   # 3
 # REQ-S110-05 / D-039 — the bypass is exactly one admin role, and the four rules survive
@@ -1042,8 +1471,17 @@ unzip -p /tmp/vercheck-dist/hifa-*.whl 'hifa-*.dist-info/METADATA' | grep '^Vers
 .venv/bin/python -c "import sys, hifa; print('semantic_release' in sys.modules)"   # False
 hyperfine --warmup 3 '.venv/bin/hifa --version'                        # p50 < 250 ms
 gh run list --workflow release.yml --json displayTitle,durationMs,conclusion
-# R14 — CI does not depend on a version literal
-grep -rn '0\.1\.0' tests/ || echo "no test asserts a version literal"
+# R14 / R17 / §2.1.1 — no test pins a version VALUE, and the WHOLE suite is green with the released literal
+grep -rnE '(version|__version__) *== *"[0-9]+\.[0-9]+\.[0-9]+"' tests/            # no output
+cp pyproject.toml pyproject.toml.bak
+trap 'mv -f pyproject.toml.bak pyproject.toml' EXIT        # a red suite must not leave the tree bumped
+sed -i 's/^version = ".*"$/version = "0.2.0"/' pyproject.toml                     # what the release leaves
+.venv/bin/pytest -q                                                               # the whole suite, green with 0.2.0
+trap - EXIT; mv -f pyproject.toml.bak pyproject.toml
+# §2.5.1 — the guard refuses an ambiguous literal before any write (nothing to push, nothing to repair)
+tmpd=$(mktemp -d); cp pyproject.toml "$tmpd/pyproject.toml"
+sed -i 's/^version = ".*"$/version = "0.1.0"x/' "$tmpd/pyproject.toml"
+(cd "$tmpd" && grep -cE '^version = "[0-9]+\.[0-9]+\.[0-9]+"$' pyproject.toml)   # 0 → the guard aborts
 ```
 
 **Local rehearsal of the engine path.** It needs the real manifests, a real signing key and the real
@@ -1093,21 +1531,34 @@ copied in, because the engine reads them from the working tree.
 4. `package.json` + `package-lock.json`: the `devDependencies` of §2.8 with exact versions, generated
    locally with Node 22.22.3 / npm 10.9.8 (`npm install`), both committed (§2.8 policy).
 5. `.releaserc.json`: §2.5 verbatim, including `verifyConditionsCmd`.
-6. `.github/release/tag-message.sh`: executable, reads the literal from `pyproject.toml`, writes
-   `v<version>` to `$1`, exits non-zero when the literal is missing (and never writes an empty message).
+6. `.github/release/tag-message.sh`: executable; requires exactly one argument; derives the tag name from
+   the `# Write a message for tag:` header of the message file git passes as `$1`; accepts `vX.Y.Z` and
+   `preflight-*` and nothing else; exits non-zero on anything ambiguous and never writes an empty message;
+   never reads `pyproject.toml` (§2.3.3).
 7. `.github/workflows/release.yml`: the properties and ten steps of §2.4, with §2.4.1 verbatim for steps
-   6 and 7 and step 9 = `if: always()` + §2.4.2.
-8. `.github/signers/allowed_signers`: add one line, principal `hifa-release`, `namespaces="git"`, the
+   3, 4, 5, 6, 7 and 8 — `env:` per step and nowhere else, `npm ci --ignore-scripts`, no job-level `if:` —
+   and step 9 = `if: always()` + the command of item 8 behind an `[ -x ]` existence test.
+8. `.github/release/assert-outcome.sh`: executable; the interface and the precedence of §2.4.2; **exactly
+   one** classification line — one of the three literals (`green: nothing written`, `green: no relevant
+   changes`, `green: released <tag>`) or `release_<code>`; **takes no arguments — an argument is refused,
+   exit `1`, no line — and reads no stdin**;
+   `TAG` comes only from the log line `Created tag <tag>` (absent ⇒ order 13); `RELEASE_EXIT_CODE` unset
+   reads as the **input** sentinel `255`, never `0`, while the script's own exit status is `0` only for
+   G1/G2/G3 and `1` for every code; **no network writes** — `git ls-remote` is read only (two queries,
+   `refs/heads/main` and `refs/tags/*`), no `fetch`, no `push`; no write to the repository.
+9. `.github/signers/allowed_signers`: add one line, principal `hifa-release`, `namespaces="git"`, the
    public half of the secret's keypair. Keep the `ginkelte` line.
-9. `CHANGELOG.md`: it must **not** exist in this commit (§2.6).
-10. Tests: `pytest tests/unit/test_version.py tests/e2e/test_release_contract.py` green — the literal,
-    the fallback, the `--version` shape, `[build-system].requires == ["hatchling"]`, the `releaseRules`
-    table, `tagFormat`, the plugin order and the presence of the pre-flight.
-11. **Order (§5.2):** merge the literal PR first, push the signed `v0.1.0` **on its merge commit**,
+10. `CHANGELOG.md`: it must **not** exist in this commit (§2.6).
+11. Tests: `pytest tests/unit/test_version.py tests/e2e/test_release_contract.py
+    tests/e2e/test_release_outcome.py` green — the shape and single occurrence of the literal (never its
+    value, R17), the fallback, the `--version` shape, `[build-system].requires == ["hatchling"]`, the
+    thirteen `releaseRules` rows including `{"revert": true}`, `tagFormat`, the plugin order, the literal
+    guard, the pre-flight, and one fixture per evaluation order of §2.4.2.
+12. **Order (§5.2):** merge the literal PR first, push the signed `v0.1.0` **on its merge commit**,
     verify `hifa --version` ⇒ `hifa 0.1.0`, and only then merge the workflow PR.
-12. `gh workflow run release.yml -f dry_run=true`: the computed version must be the one §2.5.3 predicts.
-13. `python scripts/spec_contract_check.py --all; lint-imports` green.
-14. Documentation of §2.10, including the marked block, plus the `README.md` counters (R15).
+13. `gh workflow run release.yml -f dry_run=true`: the computed version must be the one §2.5.3 predicts.
+14. `python scripts/spec_contract_check.py --all; lint-imports` green.
+15. Documentation of §2.10, including the marked block, plus the `README.md` counters (R15).
 
 ## 9. Provenance
 Engine facts were measured on this host with **`semantic-release 21.1.2`** on **Node 22.22.3 / npm
@@ -1137,6 +1588,10 @@ row that is a code-read rather than a run says so.
 | an untracked `CHANGELOG.md` is committed; `preset: "conventionalcommits"` aborted the analysis here | `git ls-files -m -o` (code-read); the step printed nothing after `Start step "analyzeCommits"` and exited `0`, while `angular` analysed the same commits |
 | the compare link follows the `origin` URL | with a local-path remote the link came out as `https:/tmp/srprobe/remote/compare/...` (§2.6) |
 | `[skip ci]` also skips `ci.yml` | **documented, not measured**: GitHub's "Skipping workflow runs" lists `push` and `pull_request` as the skipped events (§2.4) |
+| git seeds the message file of an editor-driven `git tag` | `git tag -a v9.9.9` with a `GIT_EDITOR` that prints its arguments: the editor is invoked with **one** argument (`$1` = `.git/TAG_EDITMSG`) and the file carries `# Write a message for tag:` followed by `#   v9.9.9` (measured, git 2.53.0). No `GIT_REFLOG_ACTION` is exported to the editor, which is why the name is read from the file and not from the environment (§2.3.3) |
+| the literal guard refuses an ambiguous line **before** any write | the `prepareCmd` of §2.5.1 executed against a scratch `pyproject.toml`: `version = "0.1.0"` ⇒ rewritten to `0.2.0`; `version = "0.1.0"x` ⇒ exit 1 with `release_version_mismatch` and the file untouched; two literal lines ⇒ exit 1 and the file untouched; no `*.tmp` left behind (measured) |
+| the lockfile carries no install script | `grep -c '"hasInstallScript"' package-lock.json` ⇒ `0` across 616 packages, `lockfileVersion` 3 (measured): the cost of `npm ci --ignore-scripts` is zero today (§2.4.3) |
+| a step-level `env:` reaches that step only | **documented, not measured**: workflow- and job-level `env` are exported to every step, a step-level `env` only to that step's processes (§2.4.3) |
 
 - **The engine change is D-039.** The reference configuration is the user's
   `Vichoko/python-semantic-release-cookiecutter` `.releaserc.json` (read, not quoted from memory); its
@@ -1162,6 +1617,8 @@ row that is a code-read rather than a run says so.
 - A **GitHub App** as the bypass actor (§2.7.1); a second ruleset protecting `refs/tags/v*` (§2.5.4
   point 3); automatic recreation of a missing GitHub Release and automatic repair of the partial state
   (§5.4, §5.5).
+- A second copy of the outcome classifier inside `release.yml`: `.github/release/assert-outcome.sh` is the
+  only place a code is decided (D-040), and no check may compare a version to a value (§2.1.1).
 - GPG signing, keybase, multiple signature schemes (SSH only); hand-rendered notes or changelog; a version
   generated at run time from `git describe`.
 - Rewriting or re-tagging published versions; migrating the history to conventional commits.
@@ -1181,6 +1638,51 @@ template, so it has no empty/loading/error states, keyboard path or breakpoints.
 
 ## 12. Notes
 
+- **spec_revision 7 (2026-11-11): the review of rev 6 turned two guarantees into executable ones and
+  narrowed two rows to what a run can observe.** `version` stays 3 — no signature moved. In terms of the
+  system: (1) evaluation order 1 detects the credential **by value**, not only by name — it decodes every
+  base64-shaped value of `$GITHUB_ENV` and matches a GitHub token by its prefix — because the leak that
+  row exists to forbid is `base64("x-access-token:<PAT>")`, which carries no key name at all and used to
+  pass a name-shaped pattern, printing `green: released v0.2.0`; (2) the precedence is asserted as a
+  **sequence**, not as a set of order numbers: `bash` runs the file top to bottom, so exchanging two whole
+  blocks (5↔6 and 9↔10, each marker keeping its body) is now a red suite, where comparing the *set* of
+  sections left it 50/50 green; (3) row 9 is narrowed to the half it can observe — `CHANGELOG.md` at the
+  tag — and no longer fires when the log reports a rejected push, because a tag the remote refused is row
+  10's state; (4) row 10 is narrowed to the state it names: `failed to push some refs`, `protected branch`
+  and `cannot lock ref` also appear when the **release commit**'s push failed for auth or network reasons,
+  and §5.5 repairs a state in which that commit exists; (5) step 9 tests that the classifier is on disk
+  (`[ -x ]`) before running it, so a failed checkout prints `release_engine_aborted` instead of dying with
+  a shell error; (6) the classifier **refuses an argument** — exit `1`, no line — where `--help` once
+  answered `green: released v0.2.0`, exit `0`, i.e. it failed open in the one place the pipeline fails
+  closed; and (7) "no network" becomes "no network **writes**": the classifier makes read-only
+  `ls-remote` queries (`refs/heads/main` and `refs/tags/*`), which rows 2, 11 and 12 require, so the
+  earlier wording was simply false.
+- **spec_revision 6 (2026-11-11): the pipeline's guarantees become executable, and four of them change
+  shape.** `version` 2 → 3: the contract gains a governed file, a per-step secret scope and a new error
+  class. In terms of the system: (1) the version test asserts **shape and uniqueness, never the value**
+  (§2.1.1, R17) — the release rewrites that literal in a commit no CI run sees, so a test that pins the
+  value breaks the first release it protects; (2) secrets are declared **per step**, and the install runs
+  `npm ci --ignore-scripts` (§2.4.3, R18), so no dependency lifecycle script ever runs with the admin PAT
+  or the signing key in its environment; (3) the push credential is exported **inside the shell of step 8**
+  and never written to `$GITHUB_ENV` (§2.4.1), and its absence is asserted *after* the write by the
+  classifier (`release_credential_persisted`); (4) the outcome table gains an **owner per catalogue id** and
+  the invariant *exactly one classification line per run* with its mechanism — catalogue ids 1 and 2 belong
+  to the gates, every other catalogue id to the classifier, which stays silent when the mark exists
+  (§2.4.2, R19); (5) G1, G2 and G3 require `RELEASE_EXIT_CODE == 0` **and** a positive signal in the log,
+  plus a non-zero sentinel for "step 8 never ran", so a dispatch that computed nothing is red instead of
+  reporting "green: nothing written"; (6) the literal guard moves into `verifyConditions` and `prepareCmd`
+  fails when the substitution is not exactly one line (§2.5.1), so an ambiguous literal aborts before the
+  commit exists; (7) the
+  classifier is a **script executed by pytest** against fixtures — one per evaluation order, plus a
+  negative per order for
+  the precedence (§2.9, D-040) — instead of a block of YAML that only a review could check; and (8) the
+  message helper takes exactly one argument and reads the tag name git is creating rather than the literal
+  in the tree (§2.3.3). The job-level `if:` disappears, because the `[skip ci]` token is the loop breaker
+  and a `contains()` copy of it also *skips* a legitimate release whose squash body quotes the phrase.
+  `PRE_RUN_*` are required non-empty (a failed capture is not a baseline), and §7.2 compares the thirteen
+  `releaseRules` rows as a complete set, so `{"revert": true}` can no longer fall out of the comparison.
+  **Nothing moves in §2.1's literal, §2.2's output or §2.3's tag contract, and the packaging keys of
+  SPEC-000 are untouched.**
 - **spec_revision 5 (2026-11-11): the token's scopes are recorded as measured.** No contract moved;
   §2.7.2 now states what is installed instead of what is required. `HIFA_RELEASE_TOKEN` comes from the
   `gh` CLI device flow, whose OAuth app grants `gist` and `read:org` to every token it issues and cannot

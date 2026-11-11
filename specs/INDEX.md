@@ -4,9 +4,9 @@ Source of truth for `hifa`. The code is derived: every spec must allow its **com
 regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Template: [`_template.md`](./_template.md).
 
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
-**11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 2` / `spec_revision: 4`
-after the engine change of D-039). Accepted debt P-01…P-09 in
-[`DECISIONS.md`](./DECISIONS.md) (**39 decisions: D-001 … D-039**). Reports in [`reviews/`](./reviews/).
+**11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 3` / `spec_revision: 6`
+after the engine change of D-039 and the governed outcome classifier of D-040). Accepted debt P-01…P-09 in
+[`DECISIONS.md`](./DECISIONS.md) (**40 decisions: D-001 … D-040**). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035):** the canonical seed is
 `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · Done(5.0) ·
@@ -58,7 +58,7 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
 | 080 | Import / export | [080-transfer-csv-json.md](./080-transfer-csv-json.md) | `app/transfer.py`, `adapters/sqlite/transfer_sql.py` | 040 | approved |
 | 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | approved |
 | 100 | Config and bootstrap | [100-config-bootstrap.md](./100-config-bootstrap.md) | `config.py`, `app/teams.py::bootstrap`, `cli/commands/db.py` | 010, 040 | approved |
-| 110 | Semantic release pipeline | [110-release.md](./110-release.md) | `.github/workflows/release.yml`, `.github/release/tag-message.sh`, `.releaserc.json`, `package.json`, `package-lock.json`, `CHANGELOG.md`, `.github/signers/**`, `pyproject.toml` (the `version` literal and the version-producing keys, D-038/D-039), `src/hifa/__init__.py`, `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py` | 000, 050 | draft (`version: 2`, `spec_revision: 4`: npm `semantic-release` engine, literal version, `v0.1.0` bootstrap — D-039) |
+| 110 | Semantic release pipeline | [110-release.md](./110-release.md) | `.github/workflows/release.yml`, `.github/release/tag-message.sh`, `.github/release/assert-outcome.sh`, `.releaserc.json`, `package.json`, `package-lock.json`, `CHANGELOG.md`, `.github/signers/**`, `pyproject.toml` (the `version` literal and the version-producing keys, D-038/D-039), `src/hifa/__init__.py`, `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py`, `tests/e2e/test_release_outcome.py`, `tests/fixtures/release/*.log` | 000, 050 | draft (`version: 3`, `spec_revision: 6`: npm `semantic-release` engine, literal version, `v0.1.0` bootstrap — D-039; per-step secrets, governed and tested outcome classifier — D-040) |
 
 ## Dependency graph
 

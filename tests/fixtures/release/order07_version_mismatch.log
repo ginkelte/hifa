@@ -1,0 +1,25 @@
+[7:36:01 PM] [semantic-release] › ℹ  Running semantic-release version 21.1.2
+[7:36:01 PM] [semantic-release] › ✔  Loaded plugin "verifyConditions" from "@semantic-release/exec"
+[7:36:01 PM] [semantic-release] › ✔  Loaded plugin "analyzeCommits" from "@semantic-release/commit-analyzer"
+[7:36:01 PM] [semantic-release] › ✔  Loaded plugin "generateNotes" from "@semantic-release/release-notes-generator"
+[7:36:01 PM] [semantic-release] › ✔  Loaded plugin "prepare" from "@semantic-release/changelog"
+[7:36:01 PM] [semantic-release] › ✔  Loaded plugin "prepare" from "@semantic-release/git"
+[7:36:01 PM] [semantic-release] › ✔  Loaded plugin "publish" from "@semantic-release/github"
+[7:36:02 PM] [semantic-release] › ✔  Allowed to push to the Git repository
+[7:36:02 PM] [semantic-release] › ℹ  Start step "verifyConditions" of plugin "@semantic-release/exec"
+[7:36:02 PM] [semantic-release] › ℹ  Completed step "verifyConditions" of plugin "@semantic-release/exec"
+[7:36:02 PM] [semantic-release] › ✔  Completed step "verifyConditions" of plugin "@semantic-release/github"
+signing pre-flight: starting
+signing pre-flight ok: preflight-6c1f0a2-7140
+[7:36:02 PM] [semantic-release] › ℹ  Start step "analyzeCommits" of plugin "@semantic-release/commit-analyzer"
+[7:36:02 PM] [semantic-release] › ℹ  The next release version is 0.2.0
+[7:36:02 PM] [semantic-release] › ℹ  Completed step "analyzeCommits" of plugin "@semantic-release/commit-analyzer"
+[7:36:03 PM] [semantic-release] › ℹ  Start step "generateNotes" of plugin "@semantic-release/release-notes-generator"
+[7:36:03 PM] [semantic-release] › ℹ  Completed step "generateNotes" of plugin "@semantic-release/release-notes-generator"
+[7:36:03 PM] [semantic-release] › ℹ  Updated CHANGELOG.md
+[7:36:03 PM] [semantic-release] › ℹ  Start step "prepare" of plugin "@semantic-release/git"
+[7:36:04 PM] [semantic-release] › ✔  Prepared Git release: v0.2.0
+[7:36:04 PM] [semantic-release] › ✔  Created tag v0.2.0
+[7:36:05 PM] [semantic-release] › ✔  Published release 0.2.0 on default channel
+[7:36:05 PM] [semantic-release] › ℹ  Release note for version 0.2.0:
+[7:36:05 PM] [semantic-release] › ℹ  ## [0.2.0](https://github.com/ginkelte/hifa/compare/v0.1.0...v0.2.0) (2026-11-11)

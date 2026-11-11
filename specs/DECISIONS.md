@@ -1146,3 +1146,101 @@ release) and `workflow` (it would authorise exactly the write §2.7.1 forbids, `
 `gist` and `read:org` authorise nothing this pipeline does. Creating the token as a classic PAT with `repo`
 alone removes the deviation; until then SPEC-110 §2.7.2 carries the normative text and this line records
 the gap between it and the installed token.
+
+## D-040 — The outcome classifier is an executable, tested script; a contract that lives only in YAML is not a rule
+**Date:** 2026-11-11 · **Wins:** SPEC-110 §2.4.2 (rewritten as `version: 3`, `spec_revision: 6`) ·
+**Touches:** `specs/110-release.md` (§1, §2.1.1, §2.3.3, §2.4, §2.4.1, §2.4.2, §2.4.3, §2.5.1, §2.5.2,
+§2.7, §2.9, §4 R8/R17-R20, §5, §6, §7.1, §7.2, §8, §9, §10, §12), `specs/000-system-architecture.md`
+(§8 step 5, Notes), `specs/INDEX.md`; implementation: `.github/release/assert-outcome.sh` (**new**),
+`.github/release/tag-message.sh`, `.github/workflows/release.yml`, `.releaserc.json`,
+`tests/e2e/test_release_outcome.py` (**new**), `tests/fixtures/release/**` (**new**),
+`tests/unit/test_version.py`, `tests/e2e/test_release_contract.py`
+
+P8 states the rule this decision applies: *a rule that is not executable is not a rule*. SPEC-110 rev 5
+declared the outcome space of a release run — three greens and eleven error codes with a precedence — **as a
+block of YAML inside `release.yml`**, and verified it with `tests/e2e/test_release_contract.py`, a suite that
+reads files and asserts the presence of strings. The table was therefore documentation in a test-shaped
+wrapper: nothing in the harness could observe what the block *does*.
+
+**The gap, as measured.** Six semantic mutations of the pipeline, each of them keeping every asserted string
+byte-identical, passed that suite **31/31** — among them a raw PAT written into the header instead of the
+basic-auth pair, and the release-commit signature check turned off. That is not a flaw of the assertions;
+it is what a document-shape linter is for. It matters here because the release job is the only writer to
+`main` that no CI run validates (§2.4): the first execution of the classifier is the first release, and the
+first release is exactly what a wrong classifier corrupts.
+
+**Resolution (a) — the classifier becomes a file with a contract.** SPEC-110 §2.4.2 is rewritten around
+`.github/release/assert-outcome.sh` (precedent: `.github/release/tag-message.sh`, §2.3.3):
+
+| Property | Value |
+|---|---|
+| Step 9 | `if: always()` and **one command**: `./.github/release/assert-outcome.sh`. The workflow carries no classification logic |
+| Inputs | `RELEASE_LOG`, `RELEASE_EXIT_CODE` (sentinel `255` when unset, never `0`), `RELEASE_DRY_RUN`, `PRE_RUN_HEAD`/`PRE_RUN_MAIN`/`PRE_RUN_TAGS`, `RELEASE_CODE_MARKER`, and the checkout as working directory |
+| Output | **exactly one** classification line on `stdout` — `green: …` or `release_<code>` — and the exit status: `0` only for G1/G2/G3 |
+| Determinism | **no network writes**: `git ls-remote` is read only (two queries, `refs/heads/main` and `refs/tags/*`), there is no `fetch` and no `push`; no write to the repository; the same inputs produce the same line and the same exit status |
+| Coverage | pytest executes it from `tests/e2e/test_release_outcome.py`, against fixture logs in `tests/fixtures/release/` and a throwaway git repository in `$TMPDIR`: **one fixture per row** of §2.4.2 and **at least one negative fixture per row**, so the precedence is asserted and not just the branches |
+
+**Resolution (b) — the other seven claims that had to move with it**, because a behaviour-level test makes
+false claims visible:
+
+1. **The version test asserts shape, never a value** (§2.1.1, R17): a test pinned to `0.1.0` is red after the
+   first release, whose commit no CI run sees.
+2. **Secrets are per step, and the install runs `npm ci --ignore-scripts`** (§2.4.3, R18): a workflow-level
+   `env:` gave 616 packages' lifecycle scripts the admin PAT and the release key.
+3. **The push credential never enters `$GITHUB_ENV`** (§2.4.1): it is exported inside the shell of step 8,
+   and its absence from the environment file is asserted *after* the write (code id 12,
+   `release_credential_persisted`), because a check that runs before the write proves nothing about it.
+4. **One code per run, by ownership** (§2.4.2, R19): rows 1 and 2 belong to the gates, which print the code
+   and write a mark in `$RUNNER_TEMP`; every other row belongs to the classifier, which prints nothing when
+   the mark exists. Previously rows 1 and 2 were printed by both.
+5. **G1 and G3 require `RELEASE_EXIT_CODE == 0` and a positive signal** (§2.4.2): a dry run that computed
+   nothing is no longer "green: nothing written".
+6. **The literal guard runs in `verifyConditions`, and `prepareCmd` fails unless the substitution is exactly
+   one line** (§2.5.1): the guard used to run at tag time, after the commit had been pushed.
+7. **The tag message is the name git is creating** (§2.3.3), read from the message file git seeds, not the
+   literal in the tree; and `PRE_RUN_*` are required non-empty, so a failed capture is not a baseline.
+
+**What this corrects in SPEC-110 rev 5, stated instead of rewritten.** Rev 5 said row 3 is printed by step 8
+— it is printed by the classifier of step 9, once; it said the job-level `if:` is "a second net" — it is
+gone, because `[skip ci]` is the loop breaker and a `contains()` copy of it also *skips* a legitimate release
+whose squash body quotes the phrase; it put both secrets in the workflow-level `env:` and the base64 header
+in `$GITHUB_ENV`; it had the message helper read the tree literal; and its §2.4.2 had eleven codes, no owner
+column and a dedupe wired only for row 3. The catalogue now has **twelve** codes. **D-039 is not edited**
+(append-only) and nothing in it loses: the engine, the bypass and the `v0.1.0` bootstrap stand. What D-039
+claimed and D-040 narrows is the *verification*, not the design: the outcome table was documented, not
+tested.
+
+**How it is verified.** `pytest tests/e2e/test_release_outcome.py` (one fixture per row plus a negative per
+row, on a scratch repository), `bash -n` and an executable bit on the script, `tests/e2e/test_release_contract.py`
+for the document-level contract that remains (plugin order, the thirteen `releaseRules` rows, the guard in
+`verifyConditionsCmd`), the workflow parsed as YAML for the per-step `env:` map (§7.2), and the simulation of
+§7.2 that runs `tests/unit/test_version.py` against `version = "0.2.0"`. The regression that motivates the
+decision is a criterion, not a memory: **the six mutations that passed the old suite must turn this one
+red**, and a mutation that only rewrites a value while keeping a string identical is now a change of
+behaviour by construction.
+
+**Why not the alternatives.** (a) *Keep the YAML and add greps*: a grep cannot observe behaviour, and the six
+mutations are the demonstration. (b) *A script without fixtures*: an untested script is the same act of
+trust one level lower. (c) *Run the workflow with a local runner (`act`)*: heavyweight, needs Docker, and it
+mocks precisely the runner semantics the defects touch — `$GITHUB_ENV` propagation, step-level `env`,
+`if: always()`. (d) *A Python classifier instead of `bash`*: the job already depends on shell semantics
+(`PIPESTATUS`, `git`, `grep -c`), and `tag-message.sh` sets the precedent of a governed shell file executed
+by pytest.
+
+**Files:** `specs/DECISIONS.md`, `specs/110-release.md` (`version` 2 → 3, `spec_revision` 5 → 6),
+`specs/000-system-architecture.md` (`spec_revision` 8 → 9), `specs/INDEX.md`; implementation as listed in
+**Touches**.
+
+**Corrigendum — the five-axis review of the same pull request (SPEC-110 `spec_revision` 6 → 7).** Two of
+the guarantees above were *declared* and not *observed*, and both were demonstrated by running them:
+(1) evaluation order 1 matched names and literals, so a `$GITHUB_ENV` value holding
+`base64("x-access-token:<PAT>")` — exactly what step 8 builds — still printed `green: released v0.2.0`,
+and the row that exists to make that impossible passed it; it now decodes base64-shaped values and matches
+a token by prefix, with a fixture per shape. (2) The contract suite compared the **set** of evaluation
+orders, so exchanging two blocks (5↔6, 9↔10) with each marker keeping its own body left it green; the
+precedence is the **sequence** in the file, and that mutation is now a case in the suite. Three narrower
+corrections travel with them: rows 9 and 10 are narrowed to the states they can observe (a rejected tag
+push is not a missing note, and `failed to push some refs` alone is not proof that the *tag* was refused),
+step 9 tests that the classifier is on disk before invoking it, and the classifier refuses an argument
+instead of classifying `--help` as a release. Nothing in the design moves: this is the criterion of R20
+applied to the decision that wrote it.
