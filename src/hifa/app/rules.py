@@ -1,7 +1,8 @@
-"""Application-layer rules owned by no other module (SPEC-040 R17).
+"""Application-layer rules owned by no other module.
 
-`slugify` and `branch_name` live here because the formula belongs to `app/`: SPEC-020 §10
-**consumes** it, and delegating it to the domain would make the dependency circular.
+`slugify` and `branch_name` produce derived values the use cases store (`url_key`,
+`branch_name`). They live in `app/` so the domain does not carry a formula only the
+application consumes.
 Pure functions, stdlib only.
 """
 
@@ -30,7 +31,7 @@ def slugify(text: str) -> str:
 
 
 def branch_name(identifier: str, title: str) -> str:
-    """`("ENG-12", "Fix login")` -> `"eng-12-fix-login"` (SPEC-040 R17)."""
+    """`("ENG-12", "Fix login")` -> `"eng-12-fix-login"`."""
     slug = slugify(title)
     base = identifier.lower()
     return f"{base}-{slug}" if slug else base

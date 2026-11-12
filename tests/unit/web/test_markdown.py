@@ -1,4 +1,4 @@
-"""Unit tests of the markdown allowlist (SPEC-070 §2.3.6, R15, REQ-S070-01).
+"""Unit tests of the markdown allowlist.
 
 `render_markdown` already returns escaped, allowlisted HTML, so the templates can apply `|safe`.
 These tests pin every escape hatch that the spec names: raw HTML, `javascript:` links and

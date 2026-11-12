@@ -1,4 +1,4 @@
-"""Markdown rendering with an in-house allowlist (SPEC-070 §2.3.6, D-020).
+"""Markdown rendering with an in-house allowlist.
 
 `markdown-it-py` parses CommonMark with `html=False` (raw HTML is escaped, not interpreted);
 the result is then walked with `html.parser` and every tag/attribute outside the allowlist is
@@ -39,7 +39,7 @@ VOID_TAGS: frozenset[str] = frozenset({"br"})
 
 
 def _safe_href(value: str) -> bool:
-    """Only `http(s):` and `mailto:`; anything else loses the attribute (R15)."""
+    """Only `http(s):` and `mailto:`; anything else loses the attribute."""
     scheme = urlparse(value.strip()).scheme.lower()
     return scheme in ALLOWED_SCHEMES
 

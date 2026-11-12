@@ -1,4 +1,4 @@
-"""SPEC-110 §2.4.2 / §2.9 — the outcome classifier is executed, not read (R19, R20, D-040).
+"""SPEC-110 §2.4.2 / §2.9 — the outcome classifier is executed, not read.
 
 `assert-outcome.sh` is the only step that classifies a release run, and it runs on `main` with a
 tag possibly already published. This module therefore *runs* it, once per evaluation order of the
@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / ".github" / "release" / "assert-outcome.sh"
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "release"
 
-# §2.4.2: the three greens are literals, so a fixture asserts equality instead of a prefix.
+# The three greens are literals, so a fixture asserts equality instead of a prefix.
 GREEN_NOTHING_WRITTEN = "green: nothing written"
 GREEN_NO_CHANGES = "green: no relevant changes"
 GREEN_RELEASED = "green: released v0.2.0"
@@ -36,7 +36,7 @@ GREENS = (GREEN_NOTHING_WRITTEN, GREEN_NO_CHANGES, GREEN_RELEASED)
 RELEASE_SUBJECT = "chore(release): 0.2.0 [skip ci]"
 BASE_LITERAL = "0.1.0"
 
-# The order of the table in §2.4.2: `release_credential_persisted` is catalogue id 12 and is
+# The order of the table: `release_credential_persisted` is catalogue id 12 and is
 # evaluated first; ids 3-10 sit at `order = id - 1`; id 11 is the residual at order 13.
 ORDERS = range(1, 14)
 
@@ -245,7 +245,7 @@ def _classify(root: Path, case: Case) -> tuple[str, int, str]:
     return lines[0], proc.returncode, proc.stderr
 
 
-# --- one positive per evaluation order (§2.4.2) -----------------------------------------------
+# --- one positive per evaluation order -----------------------------------------------
 
 POSITIVE_CASES = [
     Case(
@@ -600,7 +600,7 @@ def test_each_evaluation_order_stays_silent_when_it_must_not_fire(
 
 
 def test_every_evaluation_order_has_a_positive_and_a_negative() -> None:
-    """The coverage criterion of R20, asserted instead of described."""
+    """The coverage criterion, asserted instead of described."""
     positives = {case.order for case in POSITIVE_CASES}
     negatives = {case.order for case in NEGATIVE_CASES}
 
@@ -608,7 +608,7 @@ def test_every_evaluation_order_has_a_positive_and_a_negative() -> None:
     assert negatives == set(ORDERS), f"orders without a negative: {sorted(set(ORDERS) - negatives)}"
 
 
-# --- the interface itself (§2.4.2) ------------------------------------------------------------
+# --- the interface itself ------------------------------------------------------------
 
 
 def test_the_script_is_executable_and_uses_bash(tmp_path: Path) -> None:

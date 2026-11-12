@@ -1,6 +1,6 @@
-"""Data model enums (SPEC-020 §2.1).
+"""Data model enums.
 
-Each value is the literal translation of a `CHECK` in SPEC-010 §3. `StrEnum`s
+Each value is the literal translation of a `CHECK` constraint of the schema. `StrEnum`s
 serialize to their exact value; `Priority` is an `IntEnum` and serializes to `int`.
 """
 
@@ -30,7 +30,7 @@ class Priority(enum.IntEnum):
 
     @classmethod
     def from_label(cls, label: str) -> Priority:
-        """Case-sensitive over the five labels; `ValueError` otherwise (SPEC-020 §2.1)."""
+        """Case-sensitive over the five labels; `ValueError` otherwise."""
         try:
             return _PRIORITY_BY_LABEL[label]
         except KeyError:

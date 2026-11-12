@@ -1,4 +1,4 @@
-"""`IssueRepo`: SQL-1/SQL-2/SQL-3, posiciones, labels, relaciones e historia (SPEC-030 §2.4)."""
+"""`IssueRepo`: SQL-1/SQL-2/SQL-3, posiciones, labels, relaciones e historia."""
 
 from __future__ import annotations
 

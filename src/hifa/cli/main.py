@@ -1,4 +1,4 @@
-"""`hifa` CLI entry point (SPEC-050 §2.1).
+"""`hifa` CLI entry point.
 
 `app` is the root group: it declares the global options (`--db`, `--json`, `--quiet`,
 `--no-color`, `--version`) and registers the subcommands. The package entrypoint is

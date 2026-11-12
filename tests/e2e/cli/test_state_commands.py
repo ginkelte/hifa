@@ -1,4 +1,4 @@
-"""E2E tests of `hifa state list|create|update` (SPEC-050 §2.5.3, D-035).
+"""E2E tests of `hifa state list|create|update`.
 
 Every test runs the real Typer app against a database seeded by `hifa init`, and checks the
 human table, the `--json` envelope and the D-014 exit codes (0 ok, 2 validation, 3 not found,

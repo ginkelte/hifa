@@ -1,1 +1,1 @@
-"""Dashboard server-rendered (SPEC-070). Requiere el extra `[web]`."""
+"""Server-rendered dashboard. Requires the `[web]` extra."""

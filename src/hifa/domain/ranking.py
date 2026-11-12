@@ -1,7 +1,7 @@
-"""Fractional float ordering (SPEC-020 §2.4).
+"""Fractional float ordering.
 
 `between` only computes: it does not renumber or write. If it returns `RANKING_EXHAUSTED`,
-`app/` calls `rebalance` and retries once (SPEC-040 §5).
+`app/` calls `rebalance` and retries once.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ INITIAL_GAP: float = 1024.0
 MIN_GAP: float = 1e-6
 
 #: Gap of an ordering that is seeded `1.0, 2.0, 3.0…` instead of `1024, 2048, 3072…`: the board
-#: columns (`workflow_state.position`, SPEC-050 §2.5.6, SPEC-070 §2.6.5) keep the ordinal scale
+#: columns (`workflow_state.position`) keep the ordinal scale
 #: of `DEFAULT_STATES` and one decimal of headroom between neighbours. Issues keep `INITIAL_GAP`.
 UNIT_GAP: float = 1.0
 

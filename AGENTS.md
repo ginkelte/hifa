@@ -123,6 +123,9 @@ declared in the docs against the real Typer commands, and declared tables agains
 
 ## 9. Code and text conventions
 
+- **Code never cites the documents.** No `SPEC-0NN`, `§N.N`, `R..`, `D-0NN` or `REQ-..` in comments or
+  docstrings: say what the code does, because the spec explains why it exists and a citation is not
+  an explanation.
 - **Never write the literal skip token in a commit message, a PR body or a squash-merge message.**
   GitHub honours it as a case-insensitive substring of the pushed commit's message and suppresses
   **every** workflow for that push — no run, no check, no error, nothing to classify and nothing to

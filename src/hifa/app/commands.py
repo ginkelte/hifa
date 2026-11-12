@@ -1,8 +1,8 @@
-"""Typed application commands (SPEC-040 §2.1, R4).
+"""Typed application commands.
 
 A command is the **only** transport for a write: there is no change `dict`. `__post_init__`
-validates shape and local combinations (§2.1, items 1-3): a primitive that does not convert
-is `Validation(rule='COMMAND_FIELD')`. Semantics (empty title, priority range, membership in
+validates shape and local combinations: a primitive that does not convert is
+`Validation(rule='COMMAND_FIELD')`. Semantics (empty title, priority range, membership in
 the database) are validated by the use case through `domain.rules`.
 """
 
@@ -43,7 +43,7 @@ def _command_field(field_name: str, value: object) -> Validation:
 
 @dataclass(frozen=True, slots=True)
 class Actor:
-    """Identity of whoever performs the write; never persisted on `issue` (R13)."""
+    """Identity of whoever performs the write; never persisted on `issue`."""
 
     member_id: str | None = None
     source: Literal["cli", "api", "web", "import"] = "cli"
@@ -62,7 +62,7 @@ class Actor:
 
 @dataclass(frozen=True, slots=True)
 class CreateIssue:
-    """Issue creation (SPEC-040 §2.1). `team` is a ULID or key; `state` a name or ULID."""
+    """Issue creation. `team` is a ULID or key; `state` a name or ULID."""
 
     team: str
     title: str
@@ -109,7 +109,7 @@ class CreateIssue:
 
 @dataclass(frozen=True, slots=True)
 class CreateTeam:
-    """Team creation (SPEC-040 §2.1, SPEC-050 §2.5.2).
+    """Team creation.
 
     `key` is normalized (`strip().upper()`) but **not** validated here: the pattern is
     `Validation(rule='TEAM_KEY_INVALID')` from the use case, so the rule and the field are the
@@ -173,12 +173,12 @@ class CreateTeam:
 
 @dataclass(frozen=True, slots=True)
 class CreateState:
-    """Workflow state creation (SPEC-040 §2.1).
+    """Workflow state creation.
 
-    `team` is a ULID or key. `position` is the absolute fractional position declared by the
-    spec (`None` = last of the team). The neighbour anchors (`--before`/`--after` on the CLI)
+    `team` is a ULID or key. `position` is the absolute fractional position
+    (`None` = last of the team). The neighbour anchors (`--before`/`--after` on the CLI)
     are resolved at the edge, which computes the midpoint with `domain.ranking` and sends it
-    here as `position`: the command never carries a neighbour (SPEC-050 §2.5.6).
+    here as `position`: the command never carries a neighbour.
     """
 
     team: str
@@ -193,7 +193,7 @@ class CreateState:
 
 @dataclass(frozen=True, slots=True)
 class UpdateState:
-    """Workflow state update (SPEC-040 §2.1).
+    """Workflow state update.
 
     `name`/`color`/`position` use the `UNSET` sentinel: `UNSET` keeps, `None` clears (a `None`
     color falls back to the current one, because `color` is `NOT NULL`). Reordering is

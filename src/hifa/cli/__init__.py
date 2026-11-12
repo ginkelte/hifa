@@ -1,1 +1,1 @@
-"""Borde CLI (SPEC-050)."""
+"""CLI edge."""

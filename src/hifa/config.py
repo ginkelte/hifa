@@ -1,6 +1,6 @@
-"""Resolution of the process configuration (SPEC-100 §2.1-§2.4).
+"""Resolution of the process configuration.
 
-Public contract (SPEC-100 §2.1): the `DEFAULT_*` constants, the `TeamConfig`,
+Public contract: the `DEFAULT_*` constants, the `TeamConfig`,
 `CliConfig`, `WebConfig`, `Config`, `ConfigFile`, `ConfigError` dataclasses, and the
 `find_config_file`, `load_config_file`, `resolve_config`, `resolve_db_path`,
 `write_config_file`, `slugify`, `validate_timezone` functions.
@@ -8,8 +8,8 @@ Public contract (SPEC-100 §2.1): the `DEFAULT_*` constants, the `TeamConfig`,
 Rules:
 - `--db` (flag) > `HIFA_DB` (env) > `.hifa.toml` (walk-up) > `$XDG_DATA_HOME` > `~`.
 - Everything is pure except `write_config_file`: no directory is created and the database is
-  never opened (R7). Creation is done by `hifa init`.
-- Stdlib only: `tomllib` (REQ-N100-04). This module does **not** import `sqlite3`, `typer` or
+  never opened. Creation is done by `hifa init`.
+- Stdlib only: `tomllib`. This module does **not** import `sqlite3`, `typer` or
   `fastapi`.
 """
 
@@ -45,7 +45,7 @@ KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 URL_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
-#: `ConfigError` codes fixed by SPEC-100 §6.
+#: The fixed `ConfigError` codes.
 CONFIG_ERROR_CODES: frozenset[str] = frozenset(
     {
         "config_invalid_toml",
@@ -65,7 +65,7 @@ _KNOWN_KEYS: dict[str, frozenset[str]] = {
 
 
 class ConfigError(Exception):
-    """Configuration error with a stable `code` and a populated `field` (SPEC-100 §6).
+    """Configuration error with a stable `code` and a populated `field`.
 
     `code` ∈ `CONFIG_ERROR_CODES`. `field` is `"<section>.<key>"` or the flag name
     (`"db"`, `"team.key"`, `"web.port"`, …). The CLI maps it to exit 2.
@@ -96,7 +96,7 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class TeamConfig:
-    """`[team]` section of `.hifa.toml` (all fields optional, §2.3)."""
+    """`[team]` section of `.hifa.toml` (all fields optional)."""
 
     key: str | None = None
     name: str | None = None
@@ -136,7 +136,7 @@ class Config:
 
     @property
     def default_team(self) -> str | None:
-        """Default team (`[cli].default_team`, SPEC-050 §2.2.2)."""
+        """Default team (`[cli].default_team`)."""
         return self.cli.default_team
 
 
@@ -158,7 +158,7 @@ class ConfigFile:
 
 
 def slugify(text: str) -> str:
-    """`"Hifa Dev"` -> `"hifa-dev"`; NFKD folding drops accents and non-ASCII letters (R8)."""
+    """`"Hifa Dev"` -> `"hifa-dev"`; NFKD folding drops accents and non-ASCII letters."""
     normalized = unicodedata.normalize("NFKD", text)
     ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
     replaced = re.sub(r"[^a-z0-9]", "-", ascii_text.lower())
@@ -220,7 +220,7 @@ def _expect_no_spaces(section: str, key: str, value: object) -> str:
     return text
 
 
-# --- file lookup (R3) ----------------------------------------------------------
+# --- file lookup ----------------------------------------------------------
 
 
 def _stat_file(path: Path) -> bool:
@@ -267,7 +267,7 @@ def find_config_file(start: Path) -> Path | None:
     return None
 
 
-# --- file parsing (R6) ------------------------------------------------------------
+# --- file parsing ------------------------------------------------------------
 
 
 def _unknown_keys(data: Mapping[str, object]) -> list[str]:
@@ -395,7 +395,7 @@ def load_config_file(path: Path) -> ConfigFile:
     )
 
 
-# --- path resolution (R1/R2/R4/R5) ----------------------------------------------
+# --- path resolution ----------------------------------------------
 
 
 def _has_value(value: str | None) -> bool:
@@ -421,7 +421,7 @@ def _normalize_db_value(value: str, cwd: Path, *, field: str) -> Path:
 
 
 def _resolve_file_db(raw: str, base_dir: Path) -> Path:
-    """`[workspace] db` is relative to the directory of `.hifa.toml` (R4)."""
+    """`[workspace] db` is relative to the directory of `.hifa.toml`."""
     text = raw.strip()
     if text == ":memory:":
         return Path(":memory:")
@@ -449,7 +449,7 @@ def resolve_db_path(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> tuple[Path, Source, Path | None]:
-    """Apply the 5 sources in order and return `(path, source, config_file)` (R1)."""
+    """Apply the 5 sources in order and return `(path, source, config_file)`."""
     environment = dict(os.environ) if env is None else dict(env)
     base = Path(cwd).resolve() if cwd is not None else Path.cwd().resolve()
 
@@ -471,7 +471,7 @@ def resolve_db_path(
         if xdg_path.is_absolute():
             db_path = (xdg_path / APP_DIRNAME / DEFAULT_DB_FILENAME).resolve()
             return db_path, "xdg", None
-        # XDG requires an absolute path: it is ignored and resolution falls back to home (R5).
+        # XDG requires an absolute path: it is ignored and resolution falls back to home.
 
     home_db = _home(environment) / ".local" / "share" / APP_DIRNAME / DEFAULT_DB_FILENAME
     return home_db.resolve(), "home", None
@@ -484,7 +484,7 @@ def resolve_config(
     cwd: Path | None = None,
 ) -> Config:
     """Resolve path + `[team]`/`[cli]`/`[web]` without touching the database or the
-    filesystem (R7).
+    filesystem.
     """
     environment = dict(os.environ) if env is None else dict(env)
     base = Path(cwd).resolve() if cwd is not None else Path.cwd().resolve()
@@ -497,7 +497,7 @@ def resolve_config(
         file_cfg = load_config_file(config_file)
         warnings.extend(file_cfg.warnings)
     elif source in {"flag", "env"}:
-        # R1: `--db`/`HIFA_DB` only win the PATH; team/cli/web still come from the TOML.
+        # `--db`/`HIFA_DB` only win the PATH; team/cli/web still come from the TOML.
         found = find_config_file(base)
         if found is not None:
             file_cfg = load_config_file(found)
@@ -553,7 +553,7 @@ def _default_workspace_name(base: Path) -> str:
     return f"{name[:1].upper()}{name[1:]}"
 
 
-# --- file writing (R13/R16) ----------------------------------------------------
+# --- file writing ----------------------------------------------------
 
 
 def _toml_string(value: str) -> str:
@@ -572,7 +572,7 @@ def _db_value_for_config(db_path: Path, base_dir: Path) -> str:
 
 
 def write_config_file(path: Path, config: Config) -> None:
-    """Write the `.hifa.toml` of §2.3 with the effective values and mode `0600` (R13/R16)."""
+    """Write `.hifa.toml` with the effective values and mode `0600`."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 

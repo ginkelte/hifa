@@ -1,4 +1,4 @@
-"""`StateRepo` — `workflow_state` (SPEC-030 §2.4, SPEC-010 §3)."""
+"""`StateRepo` — `workflow_state`."""
 
 from __future__ import annotations
 

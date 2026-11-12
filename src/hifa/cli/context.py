@@ -1,4 +1,4 @@
-"""CLI invocation context (SPEC-050 §2.2).
+"""CLI invocation context.
 
 Transport only: the global options already parsed. It resolves nothing — that is
 `hifa.config` — and it formats nothing — that is `hifa.cli.output`.

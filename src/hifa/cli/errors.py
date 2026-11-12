@@ -1,9 +1,9 @@
-"""Mapping of errors to CLI exit codes and messages (SPEC-050 §2.4.5/§6, D-014).
+"""Mapping of errors to CLI exit codes and messages.
 
 The only place at the edge where an error becomes an exit code and text. No command
 builds error messages on its own.
 
-Map (D-014): `0` ok · `1` `doctor` only · `2` validation/config · `3` not found ·
+Map: `0` ok · `1` `doctor` only · `2` validation/config · `3` not found ·
 `4` conflict · `5` transition · `6` internal. `130` interruption.
 """
 
@@ -25,7 +25,7 @@ EXIT_INVALID_TRANSITION = 5
 EXIT_INTERNAL = 6
 EXIT_INTERRUPTED = 130
 
-#: Domain codes (`SCREAMING_SNAKE`) → SPEC-050 §6 error envelope code.
+#: Domain codes (`SCREAMING_SNAKE`) → error envelope code.
 _JSON_CODES: dict[str, str] = {
     "VALIDATION": "validation_error",
     "NOT_FOUND": "not_found",
@@ -79,7 +79,7 @@ class CliError(Exception):
 
 
 def exit_code_for(exc: BaseException) -> int:
-    """Translate the exception to the definitive D-014 exit code."""
+    """Translate the exception to its definitive exit code."""
     if isinstance(exc, KeyboardInterrupt):
         return EXIT_INTERRUPTED
     if isinstance(exc, ConfigError):
@@ -92,7 +92,7 @@ def exit_code_for(exc: BaseException) -> int:
 
 
 def error_code_for(exc: BaseException) -> str:
-    """Stable code for the `--json` envelope (SPEC-050 §6)."""
+    """Stable code for the `--json` envelope."""
     if isinstance(exc, (ConfigError, CliError)):
         return exc.code
     if isinstance(exc, HifaError):
@@ -102,10 +102,10 @@ def error_code_for(exc: BaseException) -> str:
 
 
 def error_message_for(exc: BaseException) -> str:
-    """Human message without the `hifa: ` prefix (SPEC-050 §2.4.5)."""
+    """Human message without the `hifa: ` prefix."""
     if isinstance(exc, (ConfigError, CliError)):
         message = exc.message
-        # SPEC-100 §6 codes are part of the observable contract: they are shown. A CLI code
+        # Config codes are part of the observable contract: they are shown. A CLI code
         # whose message already reads as a sentence (`invalid_option`, `database_not_found`)
         # is *not* prefixed — `hifa: database_not_found: database not found` said it twice.
         prefix_code = isinstance(exc, ConfigError) or exc.code not in _UNPREFIXED_CLI_CODES
@@ -133,7 +133,7 @@ def error_details_for(exc: BaseException) -> dict[str, object]:
 
 
 def error_payload(exc: BaseException) -> dict[str, object]:
-    """`--json` error object (SPEC-050 §2.4.5 / SPEC-060 §6.3)."""
+    """`--json` error object."""
     payload: dict[str, object] = {
         "code": error_code_for(exc),
         "message": error_message_for(exc),
@@ -162,7 +162,7 @@ def emit_error(exc: BaseException) -> None:
 
 
 def fail(exc: BaseException) -> typer.Exit:
-    """Emit the error and return the `typer.Exit` with the D-014 exit code."""
+    """Emit the error and return the `typer.Exit` with the mapped exit code."""
     emit_error(exc)
     return typer.Exit(code=exit_code_for(exc))
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""CLI-vs-web capability parity checker — AGENTS.md §5 P2, D-032, T-18, HIFA-37.
+"""CLI-vs-web capability parity checker — T-18, HIFA-37.
 
-P2 says the CLI and the dashboard expose the same capabilities: `hifa issue create` and
+The rule is that the CLI and the dashboard expose the same capabilities: `hifa issue create` and
 `POST /{team}/issue` are two transports of one capability, and neither edge may own a
 feature the other cannot reach. This script is the executable form of that rule.
 
@@ -47,7 +47,7 @@ Usage
 -----
     python scripts/check_edge_parity.py            # human-readable diff
     python scripts/check_edge_parity.py --quiet    # only the final line
-    python scripts/check_edge_parity.py --json     # {ok, violations, debt, cli, web} (P7)
+    python scripts/check_edge_parity.py --json     # {ok, violations, debt, cli, web}
 
 Exit codes: 0 parity (debt and exemptions are allowed and printed), 1 violations, 2 usage error
 (a malformed map, a duplicate capability name) or an infrastructure failure (an edge that cannot
@@ -145,7 +145,7 @@ class Capability:
 # line green while nothing is planned to remove it.
 # * HIFA-1  (T-06) ships `hifa issue show REF --with history` — it closes `issue.show`.
 # * HIFA-2  (T-07) ships `issue list --sort manual`: the list verb and, through it, the board
-#           model (SPEC-001 T-08 note), so it closes `issue.list` and `issue.board`.
+#           model (T-08 note), so it closes `issue.list` and `issue.board`.
 # * HIFA-7  (T-11) brings full-text search and replaces the `/search` stub: `search.issues`.
 # * HIFA-42 is the dashboard form for a team and a workflow state from the UI: it closes
 #           `team.create` and `state.create`.
@@ -166,7 +166,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         name="issue.create",
         cli="issue create",
-        # The no-JS form post and the htmx quick-add are the same capability (SPEC-070 R4).
+        # The no-JS form post and the htmx quick-add are the same capability.
         web=(("POST", "/{team}/issue"), ("POST", "/_/issues")),
     ),
     Capability(name="issue.list", cli=None, web=("GET", "/{team}/list"), debt="HIFA-2"),
@@ -192,7 +192,7 @@ CAPABILITIES: tuple[Capability, ...] = (
         web=("POST", "/_/states/{state_id}/position"),
     ),
     # --- search ---------------------------------------------------------------------------
-    # `GET /search` is a 501 placeholder until SPEC-090/T-11, which also lands `hifa search`.
+    # `GET /search` is a 501 placeholder until T-11, which also lands `hifa search`.
     Capability(name="search.issues", cli=None, web=("GET", "/search"), debt="HIFA-7"),
 )
 
@@ -337,7 +337,7 @@ class Report:
         return not self.violations
 
     def as_dict(self) -> dict[str, Any]:
-        """P7 envelope: `{ok, violations, debt, cli, web}` and nothing else.
+        """JSON envelope: `{ok, violations, debt, cli, web}` and nothing else.
 
         Exemptions travel inside `debt` with `kind: "exempt"` and no ticket, so a consumer can
         read one list without losing the rows that the map deliberately keeps single-edge.
@@ -468,7 +468,7 @@ def render(report: Report, *, quiet: bool = False) -> str:
     if quiet:
         return _summary(report)
     lines = [
-        "CLI vs web capability parity (AGENTS.md §5 P2, T-18 / HIFA-37)",
+        "CLI vs web capability parity",
         f"CLI surface: {len(report.cli)} commands",
         f"web surface: {len(report.web)} capability routes of {report.routes}",
         f"map: {report.capabilities} capabilities",

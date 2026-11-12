@@ -1,4 +1,4 @@
-"""`reads.issue_detail`: the `include` set is validated, never silently ignored (SPEC-040 §2.2)."""
+"""`reads.issue_detail`: the `include` set is validated, never silently ignored."""
 
 from __future__ import annotations
 

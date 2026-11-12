@@ -1,4 +1,4 @@
-"""Immutable domain entities: a row-by-row mirror of the DDL in SPEC-010 §3.
+"""Immutable domain entities: a row-by-row mirror of the database schema.
 
 `frozen=True` + `extra="forbid"`: to "mutate" you build a copy with
 `model_copy(update={...})`. The DDL's `INTEGER 0/1` are modelled as `bool`, the
@@ -191,7 +191,7 @@ class Cycle(Entity):
 
 
 class Issue(Entity):
-    """`issue` row: 31 columns, not one more (SPEC-020 REQ-F020-06)."""
+    """`issue` row: 31 columns, not one more."""
 
     id: str
     workspace_id: str
@@ -242,10 +242,10 @@ class Issue(Entity):
 
 
 class IssueView(Issue):
-    """`v_issue` row: `Issue` + the three derived columns of SPEC-010 §3.3.
+    """`v_issue` row: `Issue` plus the three derived columns of the view.
 
     The field is named `visible` (not `is_visible`) because `Issue.is_visible` is a
-    property: redeclaring it as a field shadowed the parent attribute (D-019).
+    property: redeclaring it as a field shadowed the parent attribute.
     """
 
     priority_label: str

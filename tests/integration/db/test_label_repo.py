@@ -1,4 +1,4 @@
-"""`LabelRepo`: uniqueness per team/workspace, soft retire and usage (SPEC-030 §2.4, D-010)."""
+"""`LabelRepo`: uniqueness per team/workspace, soft retire and usage."""
 
 from __future__ import annotations
 

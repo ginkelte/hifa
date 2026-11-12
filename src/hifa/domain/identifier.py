@@ -1,4 +1,4 @@
-"""Format and parsing of `identifier` (`ENG-123`) and validation of `team.key` (SPEC-020 §2.3).
+"""Format and parsing of `identifier` (`ENG-123`) and validation of `team.key`.
 
 Pure: `re` and stdlib, no clock and no IO.
 """

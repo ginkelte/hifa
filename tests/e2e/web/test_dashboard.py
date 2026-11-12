@@ -1,4 +1,4 @@
-"""E2E of the read-only dashboard (SPEC-070 §2.1, §2.4, §6).
+"""E2E of the read-only dashboard.
 
 Every test drives the real application factory through `TestClient` against a database seeded
 by the real CLI, and reads the HTML that a browser would receive.
@@ -34,7 +34,7 @@ HTMX = {"HX-Request": "true"}
 JINJA_LOGIC = re.compile(
     r"\|length|\|default\(|\{%-?\s*(set|with)\s|\{\{[^}]*\.query|\{\{[^}]*\s[+\-*/%<>]\s[^}]*\}\}"
 )
-#: `/_/*` is htmx-only (SPEC-070 R5); none of these may answer a plain browser GET.
+#: `/_/*` is htmx-only; none of these may answer a plain browser GET.
 FRAGMENT_ROUTES = (
     "/_/issues?team=ENG",
     "/_/issues/ENG-1/row",
@@ -86,7 +86,7 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     _seed(project)
     db = tmp_path / "hifa.db"
     # There is no `issue move` command yet, so the history entry of the detail page is seeded
-    # directly: the read model must render what the table holds (R20).
+    # directly: the read model must render what the table holds.
     with sqlite3.connect(db) as conn:
         member_id = conn.execute("SELECT id FROM member LIMIT 1").fetchone()[0]
         issue_id = conn.execute("SELECT id FROM issue WHERE identifier = 'ENG-1'").fetchone()[0]
@@ -419,7 +419,7 @@ def test_quick_add_creates_the_issue_and_returns_the_row(seeded: SimpleNamespace
 
 @pytest.mark.parametrize("value", ["9", "P9", "urgentish", "high5"])
 def test_quick_add_rejects_an_unparseable_priority(seeded: SimpleNamespace, value: str) -> None:
-    """`P9`/`urgentish` is a `422`, not a silent "No priority" (SPEC-070 R9, R23)."""
+    """`P9`/`urgentish` is a `422`, not a silent "No priority"."""
     response = seeded.client.post(
         "/_/issues",
         params={"team": "ENG"},
@@ -505,7 +505,7 @@ def test_quick_add_form_posts_to_the_page_route_and_keeps_htmx(seeded: SimpleNam
 
 
 def test_quick_add_works_without_js(seeded: SimpleNamespace) -> None:
-    """R4: the form is a real form post; success is a `303` to the detail (SPEC-070 §2.1.2)."""
+    """R4: the form is a real form post; success is a `303` to the detail."""
     response = seeded.client.post(
         "/ENG/issue", data={"title": "From no JS", "priority": "P2"}, follow_redirects=False
     )
@@ -560,7 +560,7 @@ def test_the_description_is_escaped_and_carries_no_javascript_link(
 
 
 def test_attachment_urls_outside_the_allowlist_are_not_links(hostile: SimpleNamespace) -> None:
-    """REQ-S070-05: `javascript:`, `data:` and `//evil.com` are shown as text (R16)."""
+    """REQ-S070-05: `javascript:`, `data:` and `//evil.com` are shown as text."""
     body = hostile.client.get("/ENG/issue/ENG-1").text
     assert 'href="javascript:' not in body
     assert 'href="data:' not in body

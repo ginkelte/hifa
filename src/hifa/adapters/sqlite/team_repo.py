@@ -1,4 +1,4 @@
-"""`TeamRepo` — `workspace`, `team`, `team_membership` y `team_previous_key` (SPEC-030 §2.4)."""
+"""`TeamRepo` — `workspace`, `team`, `team_membership` and `team_previous_key`."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ class TeamRepo(BaseRepo):
         return None if row is None else team_from_row(row)
 
     def list(self, *, include_archived: bool = False) -> list[Team]:
-        """Teams ordered by name; archived ones only when `include_archived` (SPEC-030 §2.4)."""
+        """Teams ordered by name; archived ones only when `include_archived`."""
         sql = f"SELECT {COLUMNS} FROM team"
         if not include_archived:
             sql += " WHERE team.archived_at IS NULL"
@@ -142,7 +142,7 @@ class TeamRepo(BaseRepo):
         return [team_from_row(row) for row in self._all(sql)]
 
     def list_with_progress(self, *, include_archived: bool = False) -> list[tuple[Team, int, int]]:
-        """Teams with their `v_team_progress` counters in **one** statement (SPEC-050 §2.5.2).
+        """Teams with their `v_team_progress` counters in **one** statement.
 
         `LEFT JOIN` + `COALESCE`: a team without issues has no row in the view, so it must
         still come back with zeros instead of disappearing — and the whole list costs one
@@ -234,11 +234,11 @@ class TeamRepo(BaseRepo):
         )
 
     def progress(self, team_id: str) -> dict[str, int]:
-        """`{open_count, closed_count, urgent_open}` of one team (`v_team_progress`, SPEC-010 §3.3).
+        """`{open_count, closed_count, urgent_open}` of one team (`v_team_progress`).
 
-        The keys are the view column names: they are the ones SPEC-050 §2.5.2 fixes for
-        `team show --json`. A team without issues has no row in the view: the counters come
-        back as zeros, never as `KeyError`.
+        The keys are the view column names: they are the ones `team show --json` exposes.
+        A team without issues has no row in the view: the counters come back as zeros,
+        never as `KeyError`.
         """
         row = self._one(
             "SELECT open_count, closed_count, urgent_open FROM v_team_progress WHERE team_id = ?",
@@ -319,7 +319,7 @@ class TeamRepo(BaseRepo):
         )
         return row is not None
 
-    # --- historical keys (SPEC-010 R3) ----------------------------------------------
+    # --- historical keys ----------------------------------------------
     def previous_keys(self, team_id: str) -> tuple[str, ...]:
         rows = self._all(
             "SELECT key FROM team_previous_key WHERE team_id = ? ORDER BY changed_at DESC",

@@ -1,4 +1,4 @@
-"""Unit tests for `app.issues.create_issue` (SPEC-040 §5.1) with in-memory fakes.
+"""Unit tests for `app.issues.create_issue` with in-memory fakes.
 
 Every validation that must fail is asserted by `rule`/`code`; the happy path asserts
 identifier assignment, default state, labels, history and branch name without touching

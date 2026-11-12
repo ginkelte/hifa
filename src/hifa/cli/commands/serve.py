@@ -1,9 +1,9 @@
-"""`hifa serve` — run the dashboard (SPEC-050 §2.1/§2.3, SPEC-070 §2.4).
+"""`hifa serve` — run the dashboard.
 
-`uvicorn` and `hifa.web.app` are imported **inside** the command (A5): the core never imports
+`uvicorn` and `hifa.web.app` are imported **inside** the command: the core never imports
 FastAPI, and a missing `[web]` extra is a clean exit 2 with the install hint.
 
-Flags (SPEC-050 §2.3 table): `--host`, `--port`, `--read-only`, `--open/--no-open` (default
+Flags: `--host`, `--port`, `--read-only`, `--open/--no-open` (default
 `--no-open`), `--reload` (dev only) and `--json` (prints `{url, host, port, read_only}` before
 blocking).
 """

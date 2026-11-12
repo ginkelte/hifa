@@ -1,4 +1,4 @@
-"""Forward-only migrator (SPEC-010 §2 and §5, SPEC-030 §2.3).
+"""Forward-only migrator.
 
 Public contract: `open_db`, `schema_version`, `apply_migrations`, `MAX_VERSION`,
 `MigrationResult`. One file = one version = one transaction; `PRAGMA user_version` is the
@@ -57,7 +57,7 @@ class _Migration:
 def _migrations_path(migrations_dir: Path | None) -> Path:
     if migrations_dir is not None:
         return Path(migrations_dir)
-    # Package resource: the installed build does not depend on the repo (SPEC-010 §8 step 2).
+    # Package resource: the installed build does not depend on the repo.
     return Path(str(resources.files("hifa.adapters.sqlite").joinpath(MIGRATIONS_DIR)))
 
 
@@ -199,7 +199,7 @@ def _apply_one(
         for statement in _statements(migration.path.read_text(encoding="utf-8")):
             conn.execute(statement)
         if _table_exists(conn, "schema_migration"):
-            # §5 step 7: when the ledger is created, the already-applied versions are recorded.
+            # When the ledger is created, the already-applied versions are recorded.
             for done in backfill:
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migration"
@@ -230,7 +230,7 @@ def apply_migrations(
     migrations_dir: Path | None = None,
     backup: bool = True,
 ) -> MigrationResult:
-    """Apply the pending versions in order; idempotent (SPEC-010 §5)."""
+    """Apply the pending versions in order; idempotent."""
     current = schema_version(conn)
     migrations = discover(migrations_dir)
 
@@ -241,7 +241,7 @@ def apply_migrations(
             details={"user_version": current, "max_version": MAX_VERSION},
         )
 
-    # R5.1/§6: an already applied migration whose `.sql` changed aborts the whole run,
+    # An already applied migration whose `.sql` changed aborts the whole run,
     # even when there is nothing pending (AC "changed checksum of an applied migration").
     ledger = _applied_checksums(conn)
     for migration in migrations:
@@ -252,7 +252,7 @@ def apply_migrations(
         if recorded != actual:
             raise MigrationChecksumMismatch(
                 f"migration {migration.name} changed after being applied",
-                hint="an applied migration is never rewritten (R5.4)",
+                hint="an applied migration is never rewritten",
                 details={
                     "file": migration.name,
                     "version": migration.version,
@@ -267,7 +267,7 @@ def apply_migrations(
 
     _ensure_fts5(conn)
 
-    # R5.2: back up before touching anything; a virgin database has nothing to back up.
+    # Back up before touching anything; a virgin database has nothing to back up.
     backup_path: str | None = None
     if backup and current > 0:
         backup_path = backup_database(conn, version=current)

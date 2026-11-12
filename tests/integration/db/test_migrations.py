@@ -1,4 +1,4 @@
-"""Migrations: empty database, idempotency, checksum, schema_too_new and backup (SPEC-010 §7)."""
+"""Migrations: empty database, idempotency, checksum, schema_too_new and backup."""
 
 from __future__ import annotations
 

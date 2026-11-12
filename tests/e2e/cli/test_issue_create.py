@@ -1,4 +1,4 @@
-"""E2E tests for `hifa issue create` (SPEC-050 §2.5.3, §2.4.1/§2.4.2, D-014).
+"""E2E tests for `hifa issue create`.
 
 Runs the real Typer app with `CliRunner` over an isolated `HIFA_DB`: human output, the
 canonical `--json` object (key order included) and exit codes 0/2/3/4.

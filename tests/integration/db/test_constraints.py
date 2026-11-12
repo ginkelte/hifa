@@ -1,4 +1,4 @@
-"""DDL constraints: what the schema must reject and what it must accept (SPEC-010 §7)."""
+"""DDL constraints: what the schema must reject and what it must accept."""
 
 from __future__ import annotations
 

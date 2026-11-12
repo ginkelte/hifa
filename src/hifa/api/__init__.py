@@ -1,1 +1,1 @@
-"""Borde HTTP /api/v1 (SPEC-060). Requiere el extra `[web]`."""
+"""HTTP edge /api/v1. Requires the `[web]` extra."""

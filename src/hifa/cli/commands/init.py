@@ -1,4 +1,4 @@
-"""`hifa init` — workspace seeding (SPEC-050 §2.5.1, SPEC-100 §4.2 R9-R17, D-013).
+"""`hifa init` — workspace seeding.
 
 The command is edge orchestration only: it resolves the config (`hifa.config`), validates
 the flags by building `BootstrapOptions`, prepares the file, calls `bootstrap` and formats
@@ -192,7 +192,7 @@ def _run_init(
 
 
 def _ensure_db_dir(directory: Path) -> bool:
-    """Create the database directory with `0700`; return whether it was created (R16/R17)."""
+    """Create the database directory with `0700`; return whether it was created."""
     if directory.exists():
         if not directory.is_dir():
             raise ConfigError(
@@ -219,7 +219,7 @@ def _ensure_db_dir(directory: Path) -> bool:
 
 
 def _inspect_existing(db_path: Path) -> bool:
-    """`True` when the database is new; validates an existing one (R14) before writing."""
+    """`True` when the database is new; validates an existing one before writing."""
     if not db_path.exists():
         return True
     if db_path.is_dir():
@@ -267,7 +267,7 @@ def _inspect_existing(db_path: Path) -> bool:
 
 
 def _work_path(db_path: Path, is_new: bool) -> Path:
-    """New database: written to `.hifa.db.tmp` and renamed at the end (R17)."""
+    """New database: written to `.hifa.db.tmp` and renamed at the end."""
     if not is_new:
         return db_path
     temp = db_path.parent / ".hifa.db.tmp"
@@ -319,7 +319,7 @@ def _write_config(
     *,
     force: bool,
 ) -> tuple[Path, str]:
-    """`created` | `existing` | `rewritten` (R12/R13)."""
+    """`created` | `existing` | `rewritten`."""
     existing = find_config_file(Path.cwd())
     target = existing if existing is not None else Path.cwd() / CONFIG_FILENAME
 

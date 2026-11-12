@@ -1,4 +1,4 @@
-"""`CommentRepo` — `comment` (SPEC-030 §2.4)."""
+"""`CommentRepo` — `comment`."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def comment_from_row(row: sqlite3.Row | dict[str, Any]) -> Comment:
 
 
 class CommentRepo(BaseRepo):
-    """Comment repository; never opens connections nor deletes rows (R11)."""
+    """Comment repository; never opens connections nor deletes rows."""
 
     def __init__(
         self,

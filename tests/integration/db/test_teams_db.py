@@ -1,4 +1,4 @@
-"""Integration tests for `create_team` against a real migrated database (REQ-F040-14).
+"""Integration tests for `create_team` against a real migrated database.
 
 They prove the atomicity the contract asks for: the workspace, the team and its six states are
 one transaction, so a failure while inserting a state leaves **no** team behind.

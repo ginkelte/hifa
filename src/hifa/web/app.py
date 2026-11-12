@@ -1,10 +1,10 @@
-"""Dashboard application factory (SPEC-070).
+"""Dashboard application factory.
 
-The web layer is an **edge**: it parses the request, calls the SPEC-040 read/write functions
+The web layer is an **edge**: it parses the request, calls the `app/` read/write functions
 and prints the read models from `hifa.web.readmodels`. No SQL, no business rules, no
 `async def` on anything that touches SQLite (the driver is sync and would block the loop).
 
-`fastapi`, `jinja2` and `uvicorn` live in the `[web]` extra (A5): nothing in the core imports
+`fastapi`, `jinja2` and `uvicorn` live in the `[web]` extra: nothing in the core imports
 this module.
 """
 
@@ -48,7 +48,7 @@ WEB_DIR = Path(__file__).resolve().parent
 STATIC_DIR = WEB_DIR / "static"
 TEMPLATES_DIR = WEB_DIR / "templates"
 
-#: SPEC-070 REQ-S070-02: no `unsafe-eval`, no inline script, no framing.
+#: No `unsafe-eval`, no inline script, no framing.
 CSP = (
     "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
     "script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
@@ -56,13 +56,13 @@ CSP = (
 IMMUTABLE = "public, max-age=31536000, immutable"
 SHORT_CACHE = "public, max-age=60"
 SHORT_CACHE_PATHS = frozenset({"/static/js/app.js", "/static/css/app.css"})
-SEARCH_UNAVAILABLE = "search is not implemented yet, SPEC-090"
+SEARCH_UNAVAILABLE = "search is not implemented yet"
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
 
 class FragmentRequiresHtmx(Exception):
-    """A `/_/*` route was called without `HX-Request: true` (SPEC-070 R5)."""
+    """A `/_/*` route was called without `HX-Request: true`."""
 
 
 def build_environment() -> Environment:
@@ -80,7 +80,7 @@ def build_environment() -> Environment:
 
 
 def require_htmx(request: Request) -> None:
-    """`/_/*` is only for htmx; a bare browser hit gets a 400 (R5)."""
+    """`/_/*` is only for htmx; a bare browser hit gets a 400."""
     if request.headers.get("HX-Request") != "true":
         raise FragmentRequiresHtmx()
 
@@ -115,7 +115,7 @@ def _int_param(name: str, raw: str | None, *, default: int, rule: str) -> int:
 
 
 def _pagination(request: Request) -> tuple[str | None, int, int]:
-    """`(cursor, offset, limit)` of the listing, validated at the edge (SPEC-070 R22).
+    """`(cursor, offset, limit)` of the listing, validated at the edge.
 
     `cursor` and `offset` are mutually exclusive; the ranges (limit 1-200, offset 0-500) are
     enforced by `ListFilters` itself, so `?limit=999` is a `422 LIMIT_RANGE` and never a
@@ -137,7 +137,7 @@ def _pagination(request: Request) -> tuple[str | None, int, int]:
 
 
 def _teams_vm(request: Request, current: Team | None = None) -> list[dict[str, object]]:
-    """Sidebar teams, read **per request** from the database (SPEC-070 §2.3.1).
+    """Sidebar teams, read **per request** from the database.
 
     There is no cached team list: a team created by the CLI while the server is running has to
     appear in the sidebar of the next page without a restart.
@@ -187,7 +187,7 @@ def _error_page(
     back_url: str | None = None,
     title: str = "Error",
 ) -> HTMLResponse:
-    """`error.html` with the same layout; never a traceback (SPEC-070 §6)."""
+    """`error.html` with the same layout; never a traceback."""
     if request.url.path.startswith("/_/") and request.headers.get("HX-Request") == "true":
         return _fragment_error(request, status_code=status_code, message=message)
     page = _page(request, title=title, nav="")
@@ -213,7 +213,7 @@ def _fragment_error(request: Request, *, status_code: int, message: str) -> HTML
 
 
 def _form_error(request: Request, *, team: str, status_code: int, message: str) -> HTMLResponse:
-    """Re-render the quick-add form with the error inside it (R9, R23).
+    """Re-render the quick-add form with the error inside it.
 
     `HX-Retarget` + `HX-Reswap: outerHTML` replaces the `<form>` that failed instead of
     injecting the whole document into `#issues-tbody`.
@@ -238,7 +238,7 @@ def _form_error(request: Request, *, team: str, status_code: int, message: str) 
 def _list_form_error(
     request: Request, entity: Team, errors: dict[str, str], *, status_code: int = 422
 ) -> HTMLResponse:
-    """Re-render `list.html` with the errors of the quick-add form next to the field (R4).
+    """Re-render `list.html` with the errors of the quick-add form next to the field.
 
     This is the no-JS path: a plain form post that fails validation comes back as a page (not
     a fragment), so the browser shows the message without any script.
@@ -295,7 +295,7 @@ def _list_filters(
     offset: int = 0,
     limit: int = DEFAULT_LIMIT,
 ) -> ListFilters:
-    """The query string as a `ListFilters` with the ids resolved (SPEC-070 §2.1.1, D-025)."""
+    """The query string as a `ListFilters` with the ids resolved."""
     raw = _filters(request)
     ids = boards.resolve_filters(
         _database(request),
@@ -321,7 +321,7 @@ def _list_filters(
 
 
 def _list_page(request: Request, team: Team, filters: dict[str, str | None]) -> dict[str, object]:
-    """Shared pipeline of `list.html` and the `view=list` fragment (SPEC-070 §5.2)."""
+    """Shared pipeline of `list.html` and the `view=list` fragment."""
     db = _database(request)
     sort = request.query_params.get("sort") or "manual"
     cursor, offset, limit = _pagination(request)
@@ -349,7 +349,7 @@ router = APIRouter()
 
 @router.get("/")
 def index(request: Request) -> Response:
-    """`303` to the default team's board; never "the first one by `created_at`" (R4).
+    """`303` to the default team's board; never "the first one by `created_at`".
 
     With two or more teams and no default the answer is `200` and the team picker: choosing
     for the user would be guessing. A single team still redirects, and no team at all is a
@@ -434,7 +434,7 @@ def issue_page(request: Request, team: str, ref: str) -> Response:
 
 @router.get("/search")
 def search_page(request: Request, q: str = "") -> HTMLResponse:
-    """`SearchService` (SPEC-090) does not exist yet: report it instead of faking a search."""
+    """`SearchService` does not exist yet: report it instead of faking a search."""
     if not q.strip():
         return _error_page(
             request,
@@ -512,7 +512,7 @@ def _neighbour_positions(
     before: str | None,
     after: str | None,
 ) -> tuple[float | None, float | None]:
-    """`(prev, next)` persisted positions around the dropped column (SPEC-070 §2.6.5).
+    """`(prev, next)` persisted positions around the dropped column.
 
     `neighbours` is the team's states without the moved one, already ordered by `position`.
     Both anchors travel together in a drop to the middle and are validated here — an anchor
@@ -563,10 +563,10 @@ def _neighbour_positions(
 def state_position(
     request: Request, state_id: str, payload: dict[str, Any] | None = None
 ) -> Response:
-    """Move one board column: the only write of the drag & drop (SPEC-070 §2.1.5, §2.6.5, R25).
+    """Move one board column: the only write of the drag & drop.
 
     The body is `{"before": str|null, "after": str|null}` with the ULIDs of the neighbours the
-    column landed between — never a raw position (R25). Both anchors are sent by the client;
+    column landed between — never a raw position. Both anchors are sent by the client;
     they are **not** alternatives: `before` is the column on the left and `after` the one on
     the right, `null` at an edge. The route reads the team's states, asks
     `domain.ranking.between` for the slot and persists it with `update_state(position=…)`, so
@@ -645,7 +645,7 @@ def issue_panel_fragment(request: Request, identifier: str) -> Response:
 
 @router.post("/{team}/issue")
 def issue_create_page(request: Request, team: str, body: bytes = Body(default=b"")) -> Response:
-    """Quick add without JS: a plain form post, no `HX-Request` guard (SPEC-070 §2.1.2, R4).
+    """Quick add without JS: a plain form post, no `HX-Request` guard.
 
     Success is a `303` to the detail; a validation error re-renders `list.html` with `422` and
     the messages next to the field. With htmx enabled the same form is intercepted by
@@ -674,7 +674,7 @@ def issue_create_page(request: Request, team: str, body: bytes = Body(default=b"
 
 @router.post("/_/issues", dependencies=[HTMX])
 def quick_add(request: Request, team: str, body: bytes = Body(default=b"")) -> Response:
-    """Quick add: one `create_issue` call and the new `<tr>` back (SPEC-070 §2.1.3)."""
+    """Quick add: one `create_issue` call and the new `<tr>` back."""
     if not _can_write(request):
         return _form_error(request, team=team, status_code=403, message="server in read-only mode")
     fields = _parse_form(body)
@@ -716,7 +716,7 @@ def counts_fragment(request: Request, team: str) -> HTMLResponse:
 
 @router.get("/healthz")
 def healthz(request: Request) -> JSONResponse:
-    """Liveness plus a cheap database probe: `SELECT 1` and `PRAGMA quick_check` (SPEC-060 §2.5).
+    """Liveness plus a cheap database probe: `SELECT 1` and `PRAGMA quick_check`.
 
     A file that does not answer is `503 {"status": "degraded"}`: the process is up but it can
     serve nothing, and a 200 here would hide that from a supervisor.
@@ -747,7 +747,7 @@ def _parse_priority(value: str | None) -> int:
 
     A non-empty value that is not a priority is **never** folded into "no priority": the issue
     would be created with a field the user did not ask for and no one would notice. The error
-    carries `field="priority"` so the edges can put it next to the input (SPEC-070 R9, R23).
+    carries `field="priority"` so the edges can put it next to the input.
     """
     if value is None or not value.strip():
         return 0

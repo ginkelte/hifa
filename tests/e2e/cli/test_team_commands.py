@@ -1,8 +1,8 @@
-"""E2E tests for `hifa team create|list|show` (SPEC-050 §2.5.2, D-014, D-024).
+"""E2E tests for `hifa team create|list|show`.
 
 They run the real Typer app over an isolated `HIFA_DB`: the canonical `--json` object, the
 `KEY NAME ISSUES ARCHIVED` table of `list`, the key-value block of `show`, the `--states`
-array of SPEC-050 §2.5.2 and the exit codes 0/2/3/4.
+array and the exit codes 0/2/3/4.
 
 Every contract assertion here is a measured one: the header is compared token by token (the
 previous revision asserted `ICON OPEN`, sealing the deviation), the archived filter is proven
@@ -25,7 +25,7 @@ from hifa.config import CONFIG_FILENAME
 
 runner = CliRunner()
 
-#: SPEC-050 §2.4.1: `team list` columns, in this order.
+#: `team list` columns, in this order.
 TEAM_HEADER = ["KEY", "NAME", "ISSUES", "ARCHIVED"]
 
 #: SPEC-050 §2.4.2 order of the canonical `Team` object (no key is ever omitted).
@@ -51,7 +51,7 @@ TEAM_KEYS = [
     "updated_at",
 ]
 
-#: SPEC-050 §2.5.2: `team show --json` adds `progress` with these three keys, nothing else.
+#: `team show --json` adds `progress` with these three keys, nothing else.
 PROGRESS_KEYS = ["open_count", "closed_count", "urgent_open"]
 
 #: SPEC-050 §2.4.2 order of the canonical `State` object.
@@ -157,7 +157,7 @@ def test_create_normalizes_the_key_and_honors_the_flags(sandbox: SimpleNamespace
 
 
 def test_create_persists_description_and_visibility(sandbox: SimpleNamespace) -> None:
-    """B1: `--description` and `--visibility` must reach the `team` row (SPEC-050 §2.5.2).
+    """B1: `--description` and `--visibility` must reach the `team` row.
 
     Asserted in SQL, not in the command's own output: reading back the JSON the edge built
     from the same object would pass even if nothing was written.
@@ -280,7 +280,7 @@ def test_list_header_is_key_name_issues_archived(sandbox: SimpleNamespace) -> No
 
 
 def test_list_issues_counts_a_closed_issue_too(sandbox: SimpleNamespace) -> None:
-    """B2: `ISSUES` is `open_count + closed_count`, not the open count (SPEC-050 §2.5.2)."""
+    """B2: `ISSUES` is `open_count + closed_count`, not the open count."""
     assert run("team", "create", "OPS", "Operations").exit_code == 0
     assert run("issue", "create", "Done one", "--team", "OPS", "-s", "Done").exit_code == 0
 
@@ -333,11 +333,11 @@ def test_list_json_carries_the_count_per_team(sandbox: SimpleNamespace) -> None:
 
     assert result.exit_code == 0, out(result)
     payload_ = json.loads(result.stdout)
-    # SPEC-050 §2.4: a list command answers with the {items: [...]} envelope, never a bare array.
+    # A list command answers with the {items: [...]} envelope, never a bare array.
     assert set(payload_) == {"items"}, payload_
     rows = payload_["items"]
     assert [row["key"] for row in rows] == ["ENG", "OPS"]
-    # `issues_count` is the live total (open + closed) of SPEC-050 §2.5.2 — the only additive
+    # `issues_count` is the live total (open + closed) — the only additive
     # counter D-026 blesses: the bare `open` key was undeclared and is gone.
     assert [row["issues_count"] for row in rows] == [0, 1]
     assert "open" not in rows[1]
@@ -377,7 +377,7 @@ def test_show_json_adds_the_progress_counters_with_the_spec_keys(
 
 
 def test_show_states_json_is_sorted_by_position(sandbox: SimpleNamespace) -> None:
-    """B4: `--states` adds `states: State[]` ordered by `position` ASC (SPEC-050 §2.5.2)."""
+    """B4: `--states` adds `states: State[]` ordered by `position` ASC."""
     result = run("team", "show", "ENG", "--states", "--json")
 
     assert result.exit_code == 0, out(result)
@@ -419,7 +419,7 @@ def test_show_with_an_unknown_key_exits_three(sandbox: SimpleNamespace) -> None:
 
 
 def test_show_without_key_uses_the_configured_default_team(sandbox: SimpleNamespace) -> None:
-    """B6: without `KEY` the team comes from `[cli].default_team` (SPEC-050 §2.2.2).
+    """B6: without `KEY` the team comes from `[cli].default_team`.
 
     Two teams exist, so the answer can only come from the config: picking "the first one"
     by key or by `created_at` would return ENG.
@@ -473,7 +473,7 @@ def test_show_without_key_falls_back_to_the_only_team(sandbox: SimpleNamespace) 
     assert payload(result)["key"] == "ENG"
 
 
-# --- --quiet and --json --quiet (REQ-F050-05) ---------------------------------------------
+# --- --quiet and --json --quiet ---------------------------------------------
 
 #: One invocation per leaf command; `--quiet` promises the team **key** in all three.
 QUIET_CASES = [

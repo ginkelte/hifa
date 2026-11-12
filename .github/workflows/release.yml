@@ -1,12 +1,12 @@
 name: Release
 
-# SPEC-110 §2.4 — the one job that turns a merged conventional commit into a version.
+# The one job that turns a merged conventional commit into a version.
 # The engine (npm `semantic-release`) computes the next version from `LAST_TAG..HEAD`, writes it as
 # the literal in `pyproject.toml`, regenerates `CHANGELOG.md`, pushes one `chore(release): X [skip ci]`
-# commit (admin bypass, §2.7.1), creates a signed annotated tag and publishes the GitHub Release.
+# commit (admin bypass), creates a signed annotated tag and publishes the GitHub Release.
 # Ten steps, in this order; a step may be renamed, the effects may not be reordered.
 #
-# Secret scope (§2.4.3): there is no `env:` at workflow or job level. Each secret is declared in the
+# Secret scope: there is no `env:` at workflow or job level. Each secret is declared in the
 # `env:` of the single step that uses it — the PAT in steps 3 and 8, the signing key in step 6,
 # `GITHUB_TOKEN` in step 8. A workflow-level `env:` would hand both secrets to the lifecycle scripts
 # of the 616 packages `npm ci` installs; `--ignore-scripts` is the second, independent control.
@@ -14,14 +14,14 @@ name: Release
 on:
   push:
     branches: [main]
-  # §2.4: the self-healing fallback. GitHub suppresses every workflow run for a push whose commit
+  # The self-healing fallback. GitHub suppresses every workflow run for a push whose commit
   # message quotes the skip token — silently, with no run, no check and no error — and the likely
   # author of such a message is a document explaining the token. A scheduled run with nothing to
   # release classifies itself as `green: no relevant changes`.
   schedule:
     - cron: '0 */6 * * *'
-  # §2.4: manual dispatch is for re-running a failure, never for releasing an arbitrary commit
-  # (§10). `dry_run` defaults to true, so the normal dispatch path writes nothing.
+  # Manual dispatch is for re-running a failure, never for releasing an arbitrary commit
+  # Here `dry_run` defaults to true, so the normal dispatch path writes nothing.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -29,12 +29,12 @@ on:
         default: true
         description: Compute and print the release plan; write nothing.
 
-# §2.7.2: inert for the engine — every API call reads `GITHUB_TOKEN`, which is the PAT below.
+# Inert for the engine — every API call reads `GITHUB_TOKEN`, which is the PAT below.
 # It is kept as the declaration of intent (and it does govern any action using `github.token`).
 permissions:
   contents: read
 
-# §2.4: a release is never cancelled half-way.
+# A release is never cancelled half-way.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -46,20 +46,20 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-    # §2.4: no `if:` here. The loop breaker is the `[skip ci]` token of the release commit, which
+    # No `if:` here. The loop breaker is the `[skip ci]` token of the release commit, which
     # GitHub already honours for `push`; a `contains()` copy of that rule also *skips* (grey, not
     # red) a legitimate release whose squash-merge body quotes the phrase.
     steps:
       # Step 1 — checkout with the full history: the engine needs `LAST_TAG..HEAD`.
       # `persist-credentials: false` because the repository is public (no token is needed to fetch)
-      # and the PAT must never be written to `.git/config` (§2.4 step 1, REQ-S110-03).
+      # and the PAT must never be written to `.git/config`.
       - name: Checkout (full history, no persisted credentials)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      # Step 2 — the Node/npm pair the lockfile was generated with (§2.8). Unpinned Node is a
+      # Step 2 — the Node/npm pair the lockfile was generated with. Unpinned Node is a
       # different dependency tree and a different lockfileVersion.
       - name: Set up Node (pinned to the lockfile pair)
         uses: actions/setup-node@v4
@@ -83,7 +83,7 @@ jobs:
           echo "::notice::HIFA_RELEASE_TOKEN is present (value never printed)"
 
       # Step 4 — `npm ci --ignore-scripts` from the versioned lockfile, never `npm install`, never
-      # an inline manifest (§2.8, §2.4.3, REQ-N110-05). No secret is in scope here. An empty
+      # an inline manifest. No secret is in scope here. An empty
       # baseline is not a baseline, so every capture is asserted non-empty before it is written.
       - name: Install the pinned release engine
         run: |
@@ -101,7 +101,7 @@ jobs:
 
       # Step 5 — the dry-run split. `inputs.dry_run` is empty on a push, so a push releases and only
       # a dispatch can (and by default does) run a dry run. The flag the classifier reads is always
-      # written; the key is non-secret (§2.4.1).
+      # written; the key is non-secret.
       - name: Dry-run split
         run: |
           set -eu
@@ -114,10 +114,10 @@ jobs:
           echo "SEMANTIC_RELEASE_ARGS=$args" >> "$GITHUB_ENV"
           echo "::notice::dry run: $dry; engine arguments: ${args:-none}"
 
-      # Step 6 — identity and signing (§2.4.1). `user.signingkey` is the PRIVATE half: SSH signing
+      # Step 6 — identity and signing. `user.signingkey` is the PRIVATE half: SSH signing
       # needs the private key; the public half exists only as the `hifa-release` line in
       # allowed_signers. Binding it to a `.pub` makes `git tag` fail with "Could not read SSH key",
-      # i.e. the partial state of §2.3.1. The key is visible to this step and to no other, and it
+      # i.e. a half-configured signer. The key is visible to this step and to no other, and it
       # owns catalogue id 2.
       - name: Configure identity and SSH signing
         env:
@@ -142,7 +142,7 @@ jobs:
           echo "GIT_EDITOR=$GITHUB_WORKSPACE/.github/release/tag-message.sh" >> "$GITHUB_ENV"
           git var GIT_COMMITTER_IDENT
 
-      # Step 7 — nothing has persisted the credential: assert it, write nothing (§2.4.3). This runs
+      # Step 7 — nothing has persisted the credential: assert it, write nothing. This runs
       # before the engine, so it can only prove what the earlier steps did; the state *after* the
       # write is the classifier's evaluation order 1 (`release_credential_persisted`).
       - name: Push credential scope check
@@ -155,7 +155,7 @@ jobs:
             echo "the credential reached .git/config (§2.4.3)"; exit 1
           fi
 
-      # Step 8 — the engine, with the credential materialised inside this shell only (§2.4.1). The
+      # Step 8 — the engine, with the credential materialised inside this shell only. The
       # header is built here, from the token, with `printf` + `base64`; it is exported for the life
       # of this step and never written to `$GITHUB_ENV`, which is a plain file on disk that every
       # later step sources. `::add-mask::` protects the log, not the file. This step prints no code:
@@ -178,10 +178,10 @@ jobs:
           echo "RELEASE_EXIT_CODE=$status" >> "$GITHUB_ENV"
           exit "$status"
 
-      # Step 9 — the outcome assertion (§2.4.2): `if: always()`, one command, exactly one line.
+      # Step 9 — the outcome assertion: `if: always()`, one command, exactly one line.
       # A step that exits non-zero skips every later step without `always()`, so nothing would ever
       # be classified. The workflow carries no classification logic: the classifier is a governed,
-      # executed file (§2.9, D-040). The `-x` guard classifies the case that has no other
+      # executed file. The `-x` guard classifies the case that has no other
       # observable: when the checkout itself failed the script is not on disk, and a bare invocation
       # dies with a shell error instead of a code.
       - name: Post-conditions (outcome assertion)
@@ -196,7 +196,7 @@ jobs:
             exit 1
           fi
 
-      # Step 10 — cleanup, on red and on green (§2.7, REQ-S110-01). Never prints the key.
+      # Step 10 — cleanup, on red and on green. Never prints the key.
       - name: Clean up the key and the pre-flight refs
         if: always()
         run: |

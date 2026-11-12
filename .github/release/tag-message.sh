@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# SPEC-110 §2.3.3 / §2.9 — the `GIT_EDITOR` helper used by the release pipeline.
+# The `GIT_EDITOR` helper used by the release pipeline.
 #
 # The engine tags with a bare `git tag <tagName> <ref>` and no `-m`. With `tag.gpgSign=true` that
 # call aborts ("Please supply the message"); with `tag.gpgSign=true` *and* `GIT_EDITOR` pointing
 # here it produces an annotated, SSH-signed tag whose message is the tag name.
 #
-# Contract (§2.3.3), four rules:
+# Contract, four rules:
 #   1. git runs the editor as `<editor> <file>`: exactly one argument. Zero or more exits non-zero.
 #   2. the message comes from the file git seeds (`$1`), whose header carries the name git is
 #      creating — never from a value in the working tree.
-#   3. accepted names: `vX.Y.Z` (a release tag, §2.3.2) or `preflight-*` (the disposable tag of
-#      the pre-flight, §2.3.1). Anything else is refused.
+#   3. accepted names: `vX.Y.Z` (a release tag) or `preflight-*` (the disposable tag of
+#      the pre-flight). Anything else is refused.
 #   4. fail closed: no file, no header, zero or more than one name, or a name outside the two
 #      patterns => exit non-zero and write nothing. An empty message is never signed.
 #

@@ -1,4 +1,4 @@
-"""`MemberRepo` — `member` (SPEC-030 §2.4, SPEC-010 §3)."""
+"""`MemberRepo` — `member`."""
 
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ class MemberRepo(BaseRepo):
         return member_from_row(row)
 
     def deactivate(self, member_id: str) -> None:
-        """`is_active = 0`; never `DELETE` (R11)."""
+        """`is_active = 0`; never `DELETE`."""
         self._guard_write()
         self._conn.execute("UPDATE member SET is_active = 0 WHERE id = ?", (member_id,))
 

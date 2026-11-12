@@ -137,7 +137,7 @@ def test_migrations_keep_their_lowercase_codes() -> None:
 
 
 def test_exit_code_and_hint_can_be_overridden() -> None:
-    """The boundary can force another exit code without changing the class (A7)."""
+    """The boundary can force another exit code without changing the class."""
     err = HifaError("boom", code="DB_ERROR", exit_code=6, hint="check the file")
     assert err.code == "DB_ERROR"
     assert err.exit_code == 6
