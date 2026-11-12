@@ -280,14 +280,18 @@ fi
 main_sha=$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 || true)
 main_ref=${main_sha:-origin/main}
 main_subject=$(git log -1 --format=%s "$main_ref" 2>/dev/null || true)
-if has_re "$push_rejected_re"; then
+# A refusal implies a failed engine: an exit code of zero means nothing was refused, and any
+# refusal quoted in the log is then somebody else's prose — a commit message body, for instance,
+# which the analyzer echoes back line by line.
+if [ "$status" -ne 0 ] && has_re "$push_rejected_re"; then
     tag_on_remote=false
     if [ -n "$tag" ] && git ls-remote --tags origin "refs/tags/$tag" 2>/dev/null | grep -q .; then
         tag_on_remote=true
     fi
+    # Anchored to the shape git writes, never to the words: prose that mentions the ref is not
+    # a refusal of it.
     notes_rejected=false
-    if has_re '\[(remote )?rejected\].*refs/notes/'; then notes_rejected=true; fi
-    if has 'refs/notes/' && has_re 'failed to push|\[(remote )?rejected\]'; then
+    if has_re '^[[:space:]]*![[:space:]]*\[(remote )?rejected\].*refs/notes/'; then
         notes_rejected=true
     fi
     if [ "$tag_on_remote" = false ]; then
