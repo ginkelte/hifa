@@ -1,4 +1,4 @@
-"""SQLite connection factory (SPEC-030 §2.1, SPEC-010 R5.3).
+"""SQLite connection factory.
 
 PRAGMAs are **per connection**: no connection in the system is opened without going
 through here. No `.sql` in `migrations/` repeats a PRAGMA (journal_mode cannot be changed
@@ -20,7 +20,7 @@ PRAGMAS: Final[tuple[tuple[str, str], ...]] = (
     ("busy_timeout", "5000"),
     ("synchronous", "NORMAL"),
     ("temp_store", "MEMORY"),
-    ("cache_size", "-8000"),  # 8 MiB of page cache per connection (REQ-N001)
+    ("cache_size", "-8000"),  # 8 MiB of page cache per connection
 )
 
 SQLITE_MIN_VERSION: Final[tuple[int, int, int]] = (3, 35, 0)  # RETURNING
@@ -74,7 +74,7 @@ def open_db(path: str | Path, *, readonly: bool = False) -> sqlite3.Connection:
     return conn
 
 
-#: Canonical name from SPEC-010 §2; `connect` is the historical alias from SPEC-030 §2.1.
+#: Canonical name; `connect` is the historical alias.
 connect = open_db
 
 

@@ -1,4 +1,4 @@
-"""Integration tests for state reordering against a real migrated database (D-019, R25).
+"""Integration tests for state reordering against a real migrated database.
 
 `update_state` persists the `position` the edge computed with `domain.ranking` and keeps it off
 a slot a sibling already holds; `ORDER BY position` is the board order, so that is what these
@@ -120,7 +120,7 @@ def test_a_position_a_sibling_holds_is_moved_to_the_nearest_free_slot(db_path: P
 
 
 def test_an_exhausted_gap_is_rejected_instead_of_renormalized(db_path: Path) -> None:
-    """v1 does not renumber `workflow_state` (SPEC-050 §2.5.6): the write fails, exit 2 / 422."""
+    """v1 does not renumber `workflow_state`: the write fails, exit 2 / 422."""
     uow = _prepare(db_path)
     try:
         with sqlite3.connect(db_path) as conn:

@@ -1,4 +1,4 @@
-"""E2E of the draggable board columns (SPEC-070 §2.1.5, D-035).
+"""E2E of the draggable board columns.
 
 `POST /_/states/{id}/position` is the persistence half of the drag & drop: it is htmx-only
 (400 without `HX-Request`), it answers `204` with `HX-Trigger: board-reordered`, it is refused

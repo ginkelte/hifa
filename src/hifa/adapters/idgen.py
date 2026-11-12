@@ -1,4 +1,4 @@
-"""Production implementation of the `IdGen` port (SPEC-030 §2.7, D-017)."""
+"""Production implementation of the `IdGen` port."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class UlidGen:
         return str(candidate)
 
 
-#: Alias requested by the task board; the normative name in SPEC-030 §2.7 is `UlidGen`.
+#: Alias kept for compatibility; the normative name is `UlidGen`.
 UlidIdGen = UlidGen
 
 __all__ = ["ULID_LENGTH", "UlidGen", "UlidIdGen"]

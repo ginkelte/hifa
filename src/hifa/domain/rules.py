@@ -1,4 +1,4 @@
-"""Pure rules and invariants (SPEC-020 §2.5).
+"""Pure rules and invariants.
 
 No function does IO or reads the clock: whatever the rule needs from the world
 arrives as an argument already read by `app/`. Every violation is a `Validation`/`Conflict` with a
@@ -23,7 +23,7 @@ _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _reject(message: str, rule: str, field: str, value: object, **extra: object) -> Validation:
-    """`Validation` with `code == rule`: the edge shows the specific code (§6)."""
+    """`Validation` with `code == rule`: the edge shows the specific code."""
     details = dict(extra)
     return Validation(
         message,
@@ -230,7 +230,7 @@ def validate_close(target: WorkflowStateType, open_children: int) -> None:
 def validate_transition(current: WorkflowState, target: WorkflowState, open_children: int) -> None:
     """Validates the team, an archived state and closing with open children.
 
-    Never raises `InvalidTransition` (§6: reserved class, no producer in the domain).
+    Never raises `InvalidTransition` (reserved class, no producer in the domain).
     """
     validate_state_team(current.team_id, target)
     if target.archived_at is not None:

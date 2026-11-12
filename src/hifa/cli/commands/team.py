@@ -1,8 +1,8 @@
-"""`hifa team` — team subcommands (SPEC-050 §2.5.2).
+"""`hifa team` — team subcommands.
 
 `create`, `list` and `show` only parse flags, resolve the database and delegate to
 `app/teams.py`: no business rule and no SQL lives at this edge. Every error is translated by
-`cli/errors.py`, so the exit codes are the D-014 ones (0 ok, 2 validation, 3 not found,
+`cli/errors.py`, so the exit codes are the canonical ones (0 ok, 2 validation, 3 not found,
 4 conflict).
 """
 
@@ -41,18 +41,18 @@ team_app = typer.Typer(
     add_completion=False,
 )
 
-#: Columns of `team list` / `team create` (SPEC-050 §2.4.1: `KEY  NAME  ISSUES  ARCHIVED`).
+#: Columns of `team list` / `team create` (`KEY  NAME  ISSUES  ARCHIVED`).
 TEAM_TABLE_COLUMNS: tuple[str, ...] = ("key", "name", "issues", "archived")
 
-#: `--visibility` choices (SPEC-050 §2.5.2). A `StrEnum` makes Typer reject anything else
-#: with exit 2 at parse time, so the edge declares the closed set the spec fixes (D-012).
+#: `--visibility` choices. A `StrEnum` makes Typer reject anything else
+#: with exit 2 at parse time, so the edge declares the closed set.
 MISSING_CONTEXT_MESSAGE = (
     "team required: pass KEY, set HIFA_TEAM or [cli].default_team in .hifa.toml"
 )
 
 
 class VisibilityChoice(enum.StrEnum):
-    """`--visibility {public,private,restricted}` (SPEC-050 §2.5.2)."""
+    """`--visibility {public,private,restricted}`."""
 
     public = "public"
     private = "private"
@@ -148,7 +148,7 @@ def list_command(
         }
         for row in rows
     ]
-    # SPEC-050 §2.4: lists use the `{items: [...]}` envelope, never a bare array.
+    # Lists use the `{items: [...]}` envelope, never a bare array.
     output.emit(
         table_rows,
         table_cols=TEAM_TABLE_COLUMNS,
@@ -194,7 +194,7 @@ def show_command(
     payload = _canonical(detail.team)
     json_obj: dict[str, Any] = {**payload, "progress": detail.progress}
     if include_states:
-        # SPEC-050 §2.5.2: `states: State[]` sorted by `position` ASC, only with `--states`.
+        # `states: State[]` sorted by `position` ASC, only with `--states`.
         json_obj["states"] = [_state(state) for state in detail.states]
     output.emit(
         _show_row(detail, include_states=include_states),
@@ -207,7 +207,7 @@ def show_command(
 
 
 def _reject_json_quiet(json_mode: bool, quiet_mode: bool) -> None:
-    """`--json` and `--quiet` are mutually exclusive in every leaf command (REQ-F050-05)."""
+    """`--json` and `--quiet` are mutually exclusive in every leaf command."""
     if json_mode and quiet_mode:
         raise fail(
             CliError(
@@ -217,7 +217,7 @@ def _reject_json_quiet(json_mode: bool, quiet_mode: bool) -> None:
 
 
 def _config(db_flag: str | None) -> Config:
-    """Resolve the process configuration once per invocation (SPEC-100 §2.1)."""
+    """Resolve the process configuration once per invocation."""
     return resolve_config(db_flag=db_flag)
 
 
@@ -281,13 +281,12 @@ def _run_show(*, db_flag: str | None, key: str | None, include_states: bool = Fa
 
 
 def default_team(cfg: Config, uow: UnitOfWork) -> str:
-    """Resolve the team of SPEC-050 §2.2.2 when `KEY` is absent (step 1, `--team`, is not
-    declared yet).
+    """Resolve the team when `KEY` is absent (`--team` is not declared yet).
 
     Order: `HIFA_TEAM`, `[cli].default_team`, the only non-archived team. The configured
     value only counts when the workspace actually has that team — otherwise the resolution
     failed and the command must not fall back to "the first team" by alphabetical order or
-    by `created_at` (SPEC-050 R4): exit 2 `missing_context`.
+    by `created_at`: exit 2 `missing_context`.
     """
     candidate = (os.environ.get("HIFA_TEAM") or "").strip() or (cfg.default_team or "").strip()
     with uow.read() as tx:
@@ -308,7 +307,7 @@ def default_team(cfg: Config, uow: UnitOfWork) -> str:
 
 
 def _canonical(team: Team) -> dict[str, Any]:
-    """Complete `Team` object in SPEC-050 §2.4.2 order (no key is ever omitted)."""
+    """Complete `Team` object in canonical order (no key is ever omitted)."""
     return {
         "id": team.id,
         "key": team.key,
@@ -333,10 +332,10 @@ def _canonical(team: Team) -> dict[str, Any]:
 
 
 def _row(summary: TeamSummary) -> dict[str, Any]:
-    """`team list` JSON item: the canonical object plus `issues_count` (D-026 additive).
+    """`team list` JSON item: the canonical object plus `issues_count`.
 
-    `open` is not emitted: SPEC-050 §2.5.2 blesses `issues_count` (`open + closed`) and no
-    other counter, and the table does not use it (its ISSUES column is `issues_count`).
+    `open` is not emitted: only `issues_count` (`open + closed`) is part of the contract,
+    and the table does not use `open` (its ISSUES column is `issues_count`).
     """
     team = summary.team
     return {
@@ -347,7 +346,7 @@ def _row(summary: TeamSummary) -> dict[str, Any]:
 
 
 def _state(state: WorkflowState) -> dict[str, Any]:
-    """Complete `State` object in SPEC-050 §2.4.2 order."""
+    """Complete `State` object in canonical order."""
     return {
         "id": state.id,
         "name": state.name,
@@ -359,7 +358,7 @@ def _state(state: WorkflowState) -> dict[str, Any]:
 
 
 def _show_row(detail: TeamDetail, *, include_states: bool = False) -> dict[str, Any]:
-    """`team show` key-value block (SPEC-050 §2.4.1).
+    """`team show` key-value block.
 
     With `--states` the `states` line keeps the count and adds the names (the default one
     flagged with `*`), so the flag is not dead in the human format either.

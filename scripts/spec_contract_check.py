@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Verify that the real database schema matches the DDL declared in the specs.
 
-SPEC-000 §8 step 4 and SPEC-010 §8 step 5: the code is derived from the spec, so drift
-between `specs/010-data-model.md` (source of truth for the DDL, D-008) and `sqlite_master`
-is a bug. This script is the check.
+The code is derived from the spec, so drift between `specs/010-data-model.md` (the source of
+truth for the DDL) and `sqlite_master` is a bug. This script is the check.
 
 Usage:
 
@@ -142,7 +141,7 @@ def check_spec(spec_path: Path, db_path: Path) -> list[str]:
 
 
 def check_entrypoint() -> list[str]:
-    """`pyproject.toml` declares the entrypoint and base deps of SPEC-000 §2 / REQ-N007."""
+    """`pyproject.toml` declares the entrypoint and the base dependencies."""
     pyproject = REPO_ROOT / "pyproject.toml"
     if not pyproject.exists():
         return ["  pyproject.toml is missing"]
@@ -161,7 +160,7 @@ def check_entrypoint() -> list[str]:
     for bad in ("fastapi", "jinja2"):
         base = text.split("[project.optional-dependencies]")[0]
         if re.search(rf'^\s*"{bad}', base, re.MULTILINE):
-            problems.append(f"  {bad} cannot be a base dependency (A5)")
+            problems.append(f"  {bad} cannot be a base dependency ")
     return problems
 
 
@@ -209,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             problems = check_entrypoint()
             if problems:
                 failures += 1
-                print("FAIL: pyproject.toml does not satisfy SPEC-000 §2 / REQ-N007")
+                print("FAIL: pyproject.toml does not declare the entrypoint and base deps")
                 for line in problems:
                     print(line)
             elif not args.quiet:

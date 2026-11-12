@@ -1,4 +1,4 @@
-"""`reads.list_view`: one query with aggregated labels, AND filters and keyset paging (D-011)."""
+"""`reads.list_view`: one query with aggregated labels, AND filters and keyset paging."""
 
 from __future__ import annotations
 

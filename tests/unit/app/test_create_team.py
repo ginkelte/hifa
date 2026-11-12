@@ -1,4 +1,4 @@
-"""Unit tests for `app.teams.create_team` (SPEC-040 §2.2, REQ-F040-14) with in-memory fakes.
+"""Unit tests for `app.teams.create_team` with in-memory fakes.
 
 The transaction itself is covered by `tests/integration/db/test_teams_db.py`; here we pin the
 validation rules and the shape of what the use case writes: key normalization, defaults,

@@ -1,4 +1,4 @@
-"""`HistoryRepo` — `issue_history` (SPEC-030 §2.4, SQL-8)."""
+"""`HistoryRepo` — `issue_history` (SQL-8)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ COLUMNS = "id, issue_id, actor_id, field, old_value, new_value, created_at"
 
 
 def _serialize(value: Any) -> str | None:
-    """Fixed serialization of §2.4: enum→int, bool→'1'/'0', date/datetime→ISO, None→NULL."""
+    """Fixed serialization: enum→int, bool→'1'/'0', date/datetime→ISO, None→NULL."""
     if value is None:
         return None
     if isinstance(value, bool):

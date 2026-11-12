@@ -1,4 +1,4 @@
-"""`IssueRepo` — `issue`, `issue_label` e `issue_relation` (SPEC-030 §2.4/§2.5)."""
+"""`IssueRepo` — `issue`, `issue_label` and `issue_relation`."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ _UPDATE = (
     " branch_name = ?, updated_at = ? WHERE id = ? RETURNING *"
 )
 
-#: `positions()` allowlist (D-019). `backlog` is the alias used by SPEC-040 §5.
+#: `positions` allowlist. `backlog` is the alias for the backlog state.
 SCOPES: dict[str, str] = {
     "sort": "sort_order",
     "backlog": "sort_order",
@@ -138,7 +138,7 @@ class IssueRepo(BaseRepo):
         return int(value)
 
     def list_page(self, filters: Any) -> Any:
-        """Keyset listing (D-011); delegates to `reads.list_view` (a single query)."""
+        """Keyset listing; delegates to `reads.list_view` (a single query)."""
         from hifa.adapters.sqlite.reads import list_view
 
         return list_view(self._conn, filters)
@@ -186,7 +186,7 @@ class IssueRepo(BaseRepo):
         parent_id: str | None = None,
         state_id: str | None = None,
     ) -> list[tuple[str, float]]:
-        """`[(issue_id, position)]` ascending; `state_id` filters the board (D-019)."""
+        """`[(issue_id, position)]` ascending; `state_id` filters the board."""
         column = SCOPES.get(scope)
         if column is None:
             raise Validation("unknown position scope", rule="INVALID_SCOPE", value=scope)
@@ -285,7 +285,7 @@ class IssueRepo(BaseRepo):
         return issue_from_row(row)
 
     def set_state(self, issue_id: str, state_id: str, *, now: datetime) -> Issue:
-        """Touches **only** `state_id` and `updated_at`; milestones belong to SPEC-040 R7."""
+        """Touches **only** `state_id` and `updated_at`; milestones are handled elsewhere."""
         self._guard_write()
         row = self._one(
             "UPDATE issue SET state_id = ?, updated_at = ? WHERE id = ? RETURNING *",

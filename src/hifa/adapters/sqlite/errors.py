@@ -1,6 +1,6 @@
-"""Translation of `sqlite3.Error` into domain errors (SPEC-030 §6, single function).
+"""Translation of `sqlite3.Error` into domain errors (single function).
 
-It lives in `connection.py` because it is the adapter exception boundary (R13):
+It lives in `connection.py` because it is the adapter exception boundary:
 no `sqlite3.Error` crosses into `app/`.
 """
 
@@ -51,7 +51,7 @@ def _integrity(exc: sqlite3.IntegrityError) -> HifaError:
 
 
 def translate_sqlite_error(exc: sqlite3.Error) -> HifaError:
-    """Convert any `sqlite3.Error` into the `HifaError` declared by §6."""
+    """Convert any `sqlite3.Error` into the matching `HifaError`."""
     if isinstance(exc, HifaError):  # pragma: no cover - defensive
         return exc
 

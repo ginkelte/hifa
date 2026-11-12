@@ -1,4 +1,4 @@
-"""Version contract (SPEC-110 §2.1/§2.2): one literal, one metadata read, one printed line.
+"""Version contract: one literal, one metadata read, one printed line.
 
 The design reverted by D-039 is what these tests now forbid: no `dynamic = ["version"]`, no
 git-derived version backend in `[build-system].requires`, no `python-semantic-release` dev row
@@ -22,18 +22,18 @@ INIT = REPO_ROOT / "src" / "hifa" / "__init__.py"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 PACKAGE_JSON = REPO_ROOT / "package.json"
 
-# §2.1: the one product version literal, and its exact spelling (column 0, double quotes, one
-# space on each side of `=`) — the `sed` of §2.5 matches that shape literally.
+# The one product version literal, and its exact spelling (column 0, double quotes, one
+# space on each side of `=`) — the `sed` matches that shape literally.
 VERSION_LINE = re.compile(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', re.MULTILINE)
-# §2.1.1: the *uniqueness* check counts every `version = "..."` line, not only the ones whose
+# The *uniqueness* check counts every `version = "..."` line, not only the ones whose
 # value already has the release shape — a line with a typo must not hide behind the regex above.
 ANY_VERSION_LINE = re.compile(r'^version = "([^"]*)"$', re.MULTILINE)
-# §2.2: a release version is three numeric components; the only other allowed value is the
+# A release version is three numeric components; the only other allowed value is the
 # documented fallback. No `v` prefix, no dev/local suffix: the value is a literal, not a describe.
 RELEASE_SHAPE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 FALLBACK = "0.0.0+unknown"
 QUOTED_RELEASE_LITERAL = re.compile(r'"\d+\.\d+\.\d+"')
-# §2.1: both git-derived version backends left `requires`, and so did their switch.
+# Both git-derived version backends left `requires`, and so did their switch.
 FORBIDDEN_BUILD_REQUIRES = ("hatch-vcs", "setuptools-scm", "setuptools_scm")
 
 

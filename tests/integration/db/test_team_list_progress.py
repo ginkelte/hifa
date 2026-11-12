@@ -1,4 +1,4 @@
-"""`list_teams` cost and counters (SPEC-050 §2.5.2, D-026).
+"""`list_teams` cost and counters.
 
 Two properties that a green suite did not detect before:
 

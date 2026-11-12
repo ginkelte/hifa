@@ -1,4 +1,4 @@
-"""`UnitOfWork`, `Repos` and `RetryPolicy` (SPEC-030 §2.2, D-018).
+"""`UnitOfWork`, `Repos` and `RetryPolicy`.
 
 `write()` opens `BEGIN IMMEDIATE`, yields the repos and `COMMIT`s; on any exception it
 `ROLLBACK`s and re-raises. **No internal retry**: the generator cannot be re-run, so the
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
-    """Retry parameters; applied by `app/retry.py`, not by the UoW (D-018)."""
+    """Retry parameters; applied by `app/retry.py`, not by the UoW."""
 
     attempts: int = 3
     base_delay: float = 0.05  # 50 ms, 100 ms, 200 ms
@@ -46,7 +46,7 @@ DEFAULT_RETRY: RetryPolicy = RetryPolicy()
 
 
 #: `UNSET`/`Unset` are re-exported from `_base` so that `hifa.adapters.sqlite.uow` is the
-#: public owner of the sentinel (SPEC-030 §2.2); this module only documents the re-export.
+#: public owner of the sentinel; this module only documents the re-export.
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +71,7 @@ def safe_rollback(conn: sqlite3.Connection) -> None:
 
 
 class UnitOfWork:
-    """One connection, one session, one transaction per use case (R3/R14)."""
+    """One connection, one session, one transaction per use case."""
 
     def __init__(
         self,
@@ -102,12 +102,12 @@ class UnitOfWork:
 
     @property
     def clock(self) -> Clock:
-        """D-017: the only way `app/` obtains `now`."""
+        """The only way `app/` obtains `now`."""
         return self._clock
 
     @property
     def idgen(self) -> IdGen:
-        """D-017: the only way `app/` obtains IDs."""
+        """The only way `app/` obtains IDs."""
         return self._idgen
 
     @property
@@ -148,7 +148,7 @@ class UnitOfWork:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def __del__(self) -> None:  # pragma: no cover - safety net (R14)
+    def __del__(self) -> None:  # pragma: no cover - safety net
         try:
             if self._conn is not None and self._owns_connection and not self._closed:
                 logger.warning("UnitOfWork released without close(); closing connection")
@@ -172,7 +172,7 @@ class UnitOfWork:
     # --- transactions ----------------------------------------------------------------
     @contextmanager
     def write(self) -> Iterator[Repos]:
-        """`BEGIN IMMEDIATE` → repos → `COMMIT`. No retry (D-018)."""
+        """`BEGIN IMMEDIATE` → repos → `COMMIT`. No retry."""
         if self._readonly:
             raise Conflict("read-only unit of work", rule="READ_ONLY_UOW", code="READ_ONLY_UOW")
         if self._in_tx:
@@ -201,7 +201,7 @@ class UnitOfWork:
 
     @contextmanager
     def read(self) -> Iterator[Repos]:
-        """Deferred `BEGIN` → `readonly=True` repos → `COMMIT` (R6)."""
+        """Deferred `BEGIN` → `readonly=True` repos → `COMMIT`."""
         if self._in_tx:
             raise HifaError("nested transaction", code="UOW_NESTED")
         conn = self._connection()

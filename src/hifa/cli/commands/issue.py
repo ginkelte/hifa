@@ -1,11 +1,11 @@
-"""`hifa issue` — issue subcommands (SPEC-050 §2.5.3).
+"""`hifa issue` — issue subcommands.
 
 T-05 implements `issue create`. The command only orchestrates the edge: it normalizes
 flags, resolves context (database, team, member), builds `CreateIssue` and calls
 `create_issue`. No business rule lives here: titles, priorities, dates and labels are
 validated by `app/` through `domain.rules`.
 
-The canonical `Issue` JSON object (SPEC-050 §2.4.2) is assembled in `_canonical`: it is
+The canonical `Issue` JSON object is assembled in `_canonical`: it is
 a presentation helper (it resolves names for the envelope), not a use case.
 """
 
@@ -38,7 +38,7 @@ issue_app = typer.Typer(
     add_completion=False,
 )
 
-#: Columns of the row printed by every issue mutation (SPEC-050 §2.4.1).
+#: Columns of the row printed by every issue mutation.
 ISSUE_TABLE_COLUMNS: tuple[str, ...] = (
     "identifier",
     "p",
@@ -49,7 +49,7 @@ ISSUE_TABLE_COLUMNS: tuple[str, ...] = (
     "due",
 )
 
-#: Priority -> single-cell glyph (SPEC-050 §2.4.1).
+#: Priority -> single-cell glyph.
 PRIORITY_GLYPHS: dict[int, str] = {0: "–", 1: "U", 2: "H", 3: "M", 4: "L"}
 
 _PRIORITY_NAMES: dict[str, int] = {
@@ -296,7 +296,7 @@ def _active_members(repos: Repos) -> list[Member]:
 
 
 def _canonical(repos: Repos, issue: Issue) -> dict[str, Any]:
-    """Complete `Issue` object in SPEC-050 §2.4.2 order (no key is ever omitted)."""
+    """Complete `Issue` object in canonical order (no key is ever omitted)."""
     team = repos.teams.get(issue.team_id)
     state = repos.states.get(issue.state_id)
     assignee = repos.members.get(issue.assignee_id) if issue.assignee_id else None

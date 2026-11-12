@@ -1,4 +1,4 @@
-"""`with_write_retry`: the only retry loop in the system (D-018, SPEC-040 §2.2)."""
+"""`with_write_retry`: the only retry loop in the system."""
 
 from __future__ import annotations
 

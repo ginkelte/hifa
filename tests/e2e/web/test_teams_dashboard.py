@@ -1,4 +1,4 @@
-"""E2E of the team sidebar and the landing team picker (SPEC-070 §2.3.1, §2.3.8, R23/R24).
+"""E2E of the team sidebar and the landing team picker.
 
 The first group drives the real application factory and creates the team **after** `create_app`
 returned: that is the regression test of the removed startup cache. The rest pins the landing:

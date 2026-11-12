@@ -1,4 +1,4 @@
-"""`ListFilters`, keyset cursors and the sort allowlist (D-011, SPEC-030 §2.6)."""
+"""`ListFilters`, keyset cursors and the sort allowlist."""
 
 from __future__ import annotations
 

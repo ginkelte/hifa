@@ -1,4 +1,4 @@
-"""Unit tests of the pure view models (SPEC-070 §2.3, R12/R13/R20).
+"""Unit tests of the pure view models.
 
 Nothing here touches SQLite or Jinja: every derived value the templates print is computed by
 `hifa.web.readmodels`, so this is where the formatting and the "never guess an author" rule are

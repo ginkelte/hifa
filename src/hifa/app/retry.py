@@ -1,4 +1,4 @@
-"""Whole-transaction retry (SPEC-040 §2.2, D-018).
+"""Whole-transaction retry.
 
 `with_write_retry` is the only retry loop in the system: `UnitOfWork.write()` does not
 retry (a `@contextmanager` cannot be re-executed). `fn` must open its own

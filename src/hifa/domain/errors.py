@@ -1,7 +1,7 @@
-"""Domain errors: `HifaError` and its subclasses (SPEC-020 §2.6, D-014).
+"""Domain errors: `HifaError` and its subclasses.
 
 `code` is a stable `str` in `SCREAMING_SNAKE_CASE` (or the lowercase code of the
-migrations, SPEC-010 §6) that the edges use to map to exit code / HTTP (A7).
+migrations) that the edges use to map to exit code / HTTP.
 Pure module: stdlib only.
 """
 
@@ -46,7 +46,7 @@ class HifaError(Exception):
 
     @property
     def message(self) -> str:
-        """Short message in technical English (R14)."""
+        """Short message in technical English."""
         return self._message
 
     @property
@@ -60,7 +60,7 @@ class HifaError(Exception):
         return self._field
 
     def to_dict(self) -> dict[str, Any]:
-        """Error payload shared by CLI `--json` and the API (SPEC-020 §6)."""
+        """Error payload shared by CLI `--json` and the API."""
         return {
             "error": {
                 "code": self.code,
@@ -189,9 +189,9 @@ class Validation(HifaError):
 
 
 class InvalidTransition(HifaError):
-    """Invalid state transition. **Reserved**: no rule in 020/040 raises it.
+    """Invalid state transition. **Reserved**: no rule in the domain raises it.
 
-    It exists so an edge with its own constraints can map to exit 5 of D-014.
+    It exists so an edge with its own constraints can map to exit 5.
     """
 
     code = "INVALID_TRANSITION"
@@ -231,8 +231,8 @@ class InvalidTransition(HifaError):
         return self._allowed
 
 
-# --- Migrations and persistence (SPEC-010 §6, SPEC-030 §6) -----------------------------
-# Lowercase codes, fixed by SPEC-010 §6; they are not part of SPEC-020 §2.
+# --- Migrations and persistence ------------------------------------------------
+# Lowercase codes, unlike the `SCREAMING_SNAKE` domain codes.
 
 
 class MigrationChecksumMismatch(HifaError):

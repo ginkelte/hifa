@@ -1,4 +1,4 @@
-"""Board, listing and detail reads used by the web edge (SPEC-040 §2.2, SPEC-070 §2.1.4).
+"""Board, listing and detail reads used by the web edge.
 
 Thin functions over `adapters/sqlite/reads.py`: they resolve the team reference (key or ULID)
 and translate a missing row into `NotFound`. They contain no SQL and never open a write
@@ -33,7 +33,7 @@ def teams_with_counts(db: Database) -> tuple[tuple[Team, int], ...]:
     """Every visible team with its issue count (`open + closed`), one read-only connection.
 
     The sidebar is built from this on every request, so a team created by the CLI while the
-    server runs shows up on the next page without restarting (SPEC-070 §2.3.1). A database
+    server runs shows up on the next page without restarting. A database
     that is not ready yields `()` instead of a `500`, exactly like `startup_state`.
     """
     conn: sqlite3.Connection | None = None
@@ -104,7 +104,7 @@ def list_board(
     group_by: str = "state",
     limit_per_group: int = 50,
 ) -> Board:
-    """Board of one team grouped by `group_by` (SPEC-040 §2.2, D-011).
+    """Board of one team grouped by `group_by`.
 
     `filters` is the `ListFilters` of the listing; the team is resolved from `team` (key or
     ULID) and always wins over `filters.team_id`. `limit_per_group` caps each column.
@@ -152,7 +152,7 @@ def issue_detail(db: Database, ref: str, *, include: frozenset[str] = frozenset(
 def viewer(db: Database) -> tuple[str | None, str | None]:
     """`(display_name, initials)` of the single local member; `(None, None)` when there is none.
 
-    The web edge calls this at startup instead of opening its own connection (A1): `web/`
+    The web edge calls this at startup instead of opening its own connection: `web/`
     talks to `app/`, and only `adapters/sqlite/` talks to the database.
     """
     conn = db.ro_connection()
@@ -184,7 +184,7 @@ def database_ok(db: Database) -> bool:
     """`True` when the file answers `SELECT 1` and `PRAGMA quick_check`; never raises.
 
     `quick_check` is the cheap variant of `integrity_check` (no page-by-page rebuild): it is
-    what `/healthz` runs on every probe (SPEC-060 §2.5).
+    what `/healthz` runs on every probe.
     """
     conn: sqlite3.Connection | None = None
     try:

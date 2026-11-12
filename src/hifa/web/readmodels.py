@@ -1,4 +1,4 @@
-"""Pure view models for the templates (SPEC-070 §2.3). No IO, no SQL, no Jinja.
+"""Pure view models for the templates. No IO, no SQL, no Jinja.
 
 Every derived value a template prints (glyphs, formatted dates, css classes, urls, counters)
 is resolved here: the templates only read keys, loop and compare booleans.
@@ -60,7 +60,7 @@ def initials(name: str | None) -> str | None:
 
 
 def priority_glyph(priority: int) -> str:
-    """`\u2013`, `U`, `H`, `M`, `L` (SPEC-070 §2.5.5)."""
+    """Priority glyph: `\u2013`, `U`, `H`, `M`, `L`."""
     return PRIORITY_GLYPHS.get(int(priority), "\u2013")
 
 
@@ -143,7 +143,7 @@ def chips(
 
 
 def build_row_vm(item: IssueListItem, *, today: date) -> dict[str, object]:
-    """`row_vm` of SPEC-070 §2.3.3."""
+    """Template row of one issue for the list table."""
     labels = sorted(item.labels, key=lambda label: label.name.casefold())
     return {
         "identifier": item.identifier,
@@ -173,7 +173,7 @@ def build_row_vm(item: IssueListItem, *, today: date) -> dict[str, object]:
 
 
 def build_card_vm(item: IssueListItem, *, today: date) -> dict[str, object]:
-    """`card_vm` of SPEC-070 §2.3.2: the row keys plus the column it belongs to."""
+    """Template card of one issue for the board: the row keys plus its column."""
     card = build_row_vm(item, today=today)
     card["state_id"] = item.state_id
     card["board_order"] = item.board_order
@@ -195,7 +195,7 @@ def build_list_vm(
     today: date,
     can_write: bool = False,
 ) -> dict[str, object]:
-    """`list_vm` of SPEC-070 §2.3.3."""
+    """Template model of the list page: rows, filters, sort links and pagination."""
     path = f"/{team['key']}/list"
     active = active_filters(filters)
     sort_value = None if sort == "manual" else sort
@@ -247,7 +247,7 @@ def build_board_vm(
     today: date,
     can_write: bool = False,
 ) -> dict[str, object]:
-    """`board_vm` of SPEC-070 §2.3.2; empty columns are rendered by the template."""
+    """Template model of the board: one column per state, empty ones included."""
     path = f"/{team['key']}/board"
     columns = []
     for group in board.groups:
@@ -283,7 +283,7 @@ def build_board_vm(
 
 
 def _attachment_url(url: str) -> str | None:
-    """`http`, `https` and `file` only; any other scheme is shown as text (R16)."""
+    """`http`, `https` and `file` only; any other scheme is shown as text."""
     scheme = url.split(":", 1)[0].lower() if ":" in url else ""
     return url if scheme in ATTACHMENT_SCHEMES else None
 
@@ -292,7 +292,7 @@ def author_name(members: Mapping[str, str], author_id: str | None) -> str | None
     """The member who wrote a comment or performed a history entry (never the assignee).
 
     `None` when the id is missing or unknown: the template then prints `unknown` instead of
-    inventing an author (R20).
+    inventing an author.
     """
     if not author_id:
         return None
@@ -306,7 +306,7 @@ def build_issue_vm(
     now: datetime | None = None,
     can_write: bool = False,
 ) -> dict[str, object]:
-    """`issue_vm` of SPEC-070 §2.3.4: `row_vm` plus the detail of one issue."""
+    """Template model of one issue detail: `row_vm` plus the detail collections."""
     item = detail.issue
     try:
         _, number = parse_identifier(item.identifier)
@@ -443,7 +443,7 @@ def build_page(
     can_write: bool = True,
     flash: str | None = None,
 ) -> dict[str, object]:
-    """`page` of SPEC-070 §2.3.1: the context every template receives."""
+    """Context every template receives: title, team, sidebar, viewer and flash."""
     return {
         "title": title,
         "team": team,
@@ -472,7 +472,7 @@ def team_vm(team: object) -> dict[str, str]:
 
 
 def team_nav_vm(team: object, *, issues_count: int, active: bool) -> dict[str, object]:
-    """One entry of `page["teams"]` (SPEC-070 §2.3.1): identity, url, issue count and active.
+    """One entry of `page["teams"]`: identity, url, issue count and active.
 
     It is built per request from the database, so a team created while the server is running
     appears in the next page without a restart. `issues_count` is `open_count + closed_count`

@@ -1,4 +1,4 @@
-"""`TeamRepo`: teams, workspace, estados, memberships y claves previas (SPEC-030 §2.4)."""
+"""`TeamRepo`: teams, workspace, estados, memberships y claves previas."""
 
 from __future__ import annotations
 

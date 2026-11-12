@@ -1,4 +1,4 @@
-"""Concurrency tests for state ordering with real processes (R25, D-019).
+"""Concurrency tests for state ordering with real processes.
 
 Every writer here is a separate `python -c` process running the real CLI against the same SQLite
 file, because the failure mode this guards against lives in the transaction and the busy-timeout,

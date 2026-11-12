@@ -1,9 +1,9 @@
-"""Contract tests that keep `--help` honest (P8, D-032).
+"""Contract tests that keep `--help` honest.
 
 A group `help` string is free text, and free text lies: `hifa issue` announced
 `"Issues: create, list, move."` while only `create` was registered, so the help promised two verbs
 that answered "No such command". The help of a command surface is part of the CLI contract
-(SPEC-050 §2.5 verb contract, §4 R17), and a contract that is not executable is a preference (P8) —
+(SPEC-050 §2.5 verb contract, §4 R17), and a contract that is not executable is a preference —
 these tests make it executable, without a database and without a socket.
 """
 

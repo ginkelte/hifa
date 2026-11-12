@@ -1,7 +1,7 @@
 """Shared base for the SQLite repositories (private to `adapters.sqlite`).
 
-It centralizes what they all share: the `readonly` guard (SPEC-030 §4.1 R6), fixed type
-mapping (R8) and translation of `sqlite3.Error` into domain errors (R13).
+It centralizes what they all share: the `readonly` guard, fixed type
+mapping and translation of `sqlite3.Error` into domain errors.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from hifa.ports import Clock, IdGen
 
 T = TypeVar("T")
 
-#: Normative code for write rejection inside a read unit of work (R6).
+#: Normative code for write rejection inside a read unit of work.
 READ_ONLY_CODE = "READ_ONLY_UOW"
 
 
@@ -67,7 +67,7 @@ def to_date(value: str | None) -> date | None:
 def dt_text(value: datetime | None) -> str | None:
     """`datetime` aware → `TEXT ISO-8601 Z` (seconds, UTC).
 
-    A naive `datetime` is `Validation(rule='NAIVE_DATETIME')` (R8) and is rejected before
+    A naive `datetime` is `Validation(rule='NAIVE_DATETIME')` and is rejected before
     writing: UTC is assumed only when the value declares it.
     """
     if value is None:
@@ -88,7 +88,7 @@ def row_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 class BaseRepo:
-    """Constructor and helpers shared by every repo (SPEC-030 §2.4)."""
+    """Constructor and helpers shared by every repo."""
 
     def __init__(
         self,
@@ -131,7 +131,7 @@ class BaseRepo:
         return self._idgen.new()
 
     def _guard_write(self) -> None:
-        """R6: repos from `read()` never write. Raised **before** touching SQL."""
+        """Repos from `read()` never write. Raised **before** touching SQL."""
         if self._readonly:
             raise Conflict(
                 "read-only unit of work",

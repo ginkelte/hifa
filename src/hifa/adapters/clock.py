@@ -1,4 +1,4 @@
-"""Production implementation of the `Clock` port (SPEC-030 §2.7, D-017)."""
+"""Production implementation of the `Clock` port."""
 
 from __future__ import annotations
 

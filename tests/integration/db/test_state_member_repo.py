@@ -1,4 +1,4 @@
-"""`StateRepo` y `MemberRepo` (SPEC-030 §2.4)."""
+"""`StateRepo` y `MemberRepo`."""
 
 from __future__ import annotations
 

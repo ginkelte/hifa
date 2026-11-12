@@ -1,4 +1,4 @@
-"""Listing read model: `ListFilters`, `IssuePage` and `list_view` (SPEC-030 §2.6, D-011)."""
+"""Listing read model: `ListFilters`, `IssuePage` and `list_view`."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from hifa.domain.errors import Validation
 
 OrderKey = Literal["manual", "created", "updated", "priority", "due"]
 
-#: `<sort_key>` allowlist per `order` (D-011). Never built from user input.
+#: `<sort_key>` allowlist per `order`. Never built from user input.
 SORT_KEYS: dict[str, str] = {
     "manual": "i.sort_order",
     "created": "i.created_at",
@@ -40,7 +40,7 @@ MAX_LIMIT = 200
 MAX_OFFSET = 500
 DEFAULT_LIMIT = 50
 
-#: The only collections `issue_detail` loads; any other name is `INCLUDE_INVALID` (SPEC-040 §2.2).
+#: The only collections `issue_detail` loads; any other name is `INCLUDE_INVALID`.
 DETAIL_INCLUDE: frozenset[str] = frozenset({"comments", "attachments", "history"})
 
 #: Escape character of every `LIKE` in this module (`ESCAPE '\'` in the SQL text).
@@ -60,7 +60,7 @@ class LabelRef:
 
 @dataclass(frozen=True, slots=True)
 class ListFilters:
-    """Listing filters; all of them combine with AND (REQ-F030-10)."""
+    """Listing filters; all of them combine with AND."""
 
     team_id: str
     state_id: str | None = None
@@ -78,8 +78,8 @@ class ListFilters:
     order: OrderKey = "manual"
     limit: int = DEFAULT_LIMIT
     cursor: str | None = None  # base64url(sort_key + "|" + id), opaque
-    offset: int = 0  # WEB only (SPEC-070), capped at 500
-    q: str | None = None  # title substring (SPEC-070 §2.1.1); LIKE, case-insensitive for ASCII
+    offset: int = 0  # WEB only, capped at 500
+    q: str | None = None  # title substring; LIKE, case-insensitive for ASCII
 
     def __post_init__(self) -> None:
         if not 1 <= self.limit <= MAX_LIMIT:
@@ -201,7 +201,7 @@ def _like(text: str | None) -> str | None:
     """`%term%` for a `LIKE`, or `None` when the term is empty (filter dropped).
 
     `%`, `_` and the escape character itself are escaped, so `?q=%` matches a literal
-    percent sign instead of every issue (SPEC-070 §2.1.1).
+    percent sign instead of every issue.
     """
     if text is None:
         return None
@@ -330,7 +330,7 @@ def list_view(conn: sqlite3.Connection, filters: ListFilters) -> IssuePage:
     return IssuePage(items=items, next_cursor=next_cursor, has_more=has_more)
 
 
-# --- board, detail and team reads (SPEC-030 §2.6, SPEC-070 §2.1.4) ---------------------
+# --- board, detail and team reads ---------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,7 +349,7 @@ class BoardGroup:
 
 @dataclass(frozen=True, slots=True)
 class Board:
-    """Board read model, grouped by state (SPEC-030 §2.6)."""
+    """Board read model, grouped by state."""
 
     team_id: str
     group_by: str
@@ -446,7 +446,7 @@ def _one_item(conn: sqlite3.Connection, where: str, params: dict[str, Any]) -> I
 
 
 def list_teams(conn: sqlite3.Connection) -> tuple[Team, ...]:
-    """Every non-archived team, sorted by name (SPEC-070 §2.3.1)."""
+    """Every non-archived team, sorted by name."""
     from hifa.adapters.sqlite.team_repo import team_from_row
 
     rows = conn.execute("SELECT * FROM team WHERE archived_at IS NULL ORDER BY name").fetchall()
@@ -478,7 +478,7 @@ def local_member(conn: sqlite3.Connection) -> tuple[str | None, str | None]:
 
 
 def team_counts(conn: sqlite3.Connection, team_id: str) -> dict[str, int]:
-    """`{"open", "urgent", "total"}` counters of one team (SPEC-070 §2.3.2)."""
+    """`{"open", "urgent", "total"}` counters of one team."""
     row = conn.execute(
         "SELECT open_count, closed_count, urgent_open FROM v_team_progress WHERE team_id = ?",
         (team_id,),
@@ -533,7 +533,7 @@ def board_view(
 ) -> Board:
     """One pass over the visible issues, grouped by `workflow_state.position`.
 
-    `filters` is the same `ListFilters` of the listing (SPEC-040 §2.2): only the fields the
+    `filters` is the same `ListFilters` of the listing: only the fields the
     board understands (`state_id`, `assignee_id`, `label_ids` first element, `project_id`,
     `cycle_id`, `q`) are applied. `limit_per_group` caps each column, not the query.
     """
@@ -600,7 +600,7 @@ def issue_detail(
     """Detail of one issue by identifier or ULID; `None` when it does not exist.
 
     `include` gates the heavy collections (`comments`, `history`, `attachments`). A name outside
-    `DETAIL_INCLUDE` is a `Validation(rule="INCLUDE_INVALID")`, not a silent no-op (SPEC-040 §2.2).
+    `DETAIL_INCLUDE` is a `Validation(rule="INCLUDE_INVALID")`, not a silent no-op.
     """
     from hifa.adapters.sqlite.comment_repo import comment_from_row
     from hifa.adapters.sqlite.state_repo import state_from_row

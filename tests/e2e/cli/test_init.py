@@ -1,4 +1,4 @@
-"""E2E for `hifa init` (SPEC-050 §2.5.1, SPEC-100 §2.5/§3.1/§4.2).
+"""E2E for `hifa init`.
 
 Runs the real Typer binary through `CliRunner` against an `HIFA_DB` in `tmp_path` and checks the
 seeded database, permissions, idempotency, `--force`, `--no-labels`, `--json` and the validation

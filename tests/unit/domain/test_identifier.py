@@ -1,4 +1,4 @@
-"""`domain.identifier` — regex exactos, `format`/`parse` inversas (REQ-F020-02)."""
+"""`domain.identifier` — regex exactos, `format`/`parse` inversas."""
 
 from __future__ import annotations
 

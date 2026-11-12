@@ -1,10 +1,10 @@
-"""`hifa state` — workflow state subcommands (SPEC-050 §2.5.3).
+"""`hifa state` — workflow state subcommands.
 
 `list`, `create` and `update` only parse flags, resolve the database and delegate to
 `app/teams.py`: no business rule and no SQL lives at this edge. The neighbour of
 `--before`/`--after` is resolved here **by name** through `list_states` (an app read), and the
 fractional midpoint comes from `domain.ranking.between` — the same helper the dashboard and
-`move_issue` use — so the use case only ever receives a `position` (SPEC-050 §2.5.6).
+`move_issue` use — so the use case only ever receives a `position`.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ state_app = typer.Typer(
     add_completion=False,
 )
 
-#: Columns of `state list` / `state create` / `state update` (SPEC-050 §2.5.3).
+#: Columns of `state list` / `state create` / `state update`.
 STATE_TABLE_COLUMNS: tuple[str, ...] = (
     "position",
     "name",
@@ -53,7 +53,7 @@ STATE_TABLE_COLUMNS: tuple[str, ...] = (
 
 
 class StateTypeChoice(enum.StrEnum):
-    """`--type {triage,backlog,unstarted,started,completed,canceled}` (SPEC-020)."""
+    """`--type {triage,backlog,unstarted,started,completed,canceled}`."""
 
     triage = "triage"
     backlog = "backlog"
@@ -197,7 +197,7 @@ def update_command(
 
 
 def _reject_json_quiet(json_mode: bool, quiet_mode: bool) -> None:
-    """`--json` and `--quiet` are mutually exclusive in every leaf command (REQ-F050-05)."""
+    """`--json` and `--quiet` are mutually exclusive in every leaf command."""
     if json_mode and quiet_mode:
         raise fail(
             CliError(
@@ -207,7 +207,7 @@ def _reject_json_quiet(json_mode: bool, quiet_mode: bool) -> None:
 
 
 def _reject_anchor_pair(before: str | None, after: str | None) -> None:
-    """`--before` and `--after` cannot travel together (SPEC-050 §2.5.3)."""
+    """`--before` and `--after` cannot travel together."""
     if before is not None and after is not None:
         raise fail(
             CliError(
@@ -219,7 +219,7 @@ def _reject_anchor_pair(before: str | None, after: str | None) -> None:
 
 
 def _config(db_flag: str | None) -> Config:
-    """Resolve the process configuration once per invocation (SPEC-100 §2.1)."""
+    """Resolve the process configuration once per invocation."""
     return resolve_config(db_flag=db_flag)
 
 
@@ -237,7 +237,7 @@ def _uow(cfg: Config) -> UnitOfWork:
 
 
 def _team_ref(cfg: Config, uow: UnitOfWork, team: str | None) -> str:
-    """`--team`, else the SPEC-050 §2.2.2 resolution (exit 2 when it cannot be resolved)."""
+    """`--team`, else the configured default resolution (exit 2 when it cannot be resolved)."""
     if team is not None and team.strip():
         return team.strip()
     return default_team(cfg, uow)
@@ -395,7 +395,7 @@ def _run_update(
 
 
 def _state(state: WorkflowState) -> dict[str, Any]:
-    """Complete `State` object in SPEC-050 §2.4.2 order."""
+    """Complete `State` object in canonical order."""
     return {
         "id": state.id,
         "name": state.name,
@@ -407,19 +407,19 @@ def _state(state: WorkflowState) -> dict[str, Any]:
 
 
 def _row(summary: StateSummary) -> dict[str, Any]:
-    """`state list` JSON item: the canonical object plus `issues_count` (additive, D-026)."""
+    """`state list` JSON item: the canonical object plus `issues_count` (additive)."""
     return {**_state(summary.state), "issues_count": summary.issues_count}
 
 
 def _position_text(value: float | None) -> str:
-    """One decimal, always: `1.0`, `2.0`, `2.5` (SPEC-050 §2.5.6 fixes that rendering)."""
+    """One decimal, always: `1.0`, `2.0`, `2.5`."""
     if value is None:  # pragma: no cover - the column is NOT NULL
         return "–"
     return f"{value:.1f}"
 
 
 def _table_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Table-shaped row: POSITION NAME TYPE COLOR DEFAULT ISSUES (SPEC-050 §2.5.6).
+    """Table-shaped row: POSITION NAME TYPE COLOR DEFAULT ISSUES.
 
     `DEFAULT` is the marker of the board's default column: `*` for the `is_default` row and `–`
     for the rest, never `yes`/`no`.

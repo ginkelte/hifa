@@ -1,4 +1,4 @@
-"""`LabelRepo` — `label` (SPEC-030 §2.4, SPEC-010 §3, D-010)."""
+"""`LabelRepo` — `label`."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def label_from_row(row: sqlite3.Row | dict[str, Any]) -> Label:
 
 
 class LabelRepo(BaseRepo):
-    """Label repository; never opens connections nor deletes rows (R11)."""
+    """Label repository; never opens connections nor deletes rows."""
 
     def __init__(
         self,

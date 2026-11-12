@@ -1,4 +1,4 @@
-"""Purity of `domain/`: no infrastructure imports and no clock reads (REQ-F020-15, A2)."""
+"""Purity of `domain/`: no infrastructure imports and no clock reads."""
 
 from __future__ import annotations
 

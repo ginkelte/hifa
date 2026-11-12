@@ -1,9 +1,9 @@
-"""Issue use cases (SPEC-040 §2.2 and §5.1).
+"""Issue use cases.
 
 `create_issue` is the only write implemented in T-05. It runs entirely inside **one**
 `uow.write()` and is invoked through `with_write_retry` with `CREATE_RETRY_CODES`
-(`DB_BUSY`, `DUPLICATE_NUMBER`) — D-018: the retry loop lives outside the context
-manager, so every attempt is a fresh transaction.
+(`DB_BUSY`, `DUPLICATE_NUMBER`); the retry loop lives outside the context manager, so
+every attempt is a fresh transaction.
 
 `identifier` atomicity: `number` comes from `IssueRepo.next_number` (MAX+1) under the
 UoW's `BEGIN IMMEDIATE`, and `UNIQUE(team_id, number)` closes the race; a collision
@@ -131,7 +131,7 @@ def _create_once(uow: UnitOfWork, cmd: CreateIssue, actor: Actor) -> Issue:
 
 
 def _resolve_state(tx: Repos, team: Team, ref: str | None) -> WorkflowState:
-    """R5: requested name/ULID; otherwise triage (when enabled), `is_default`, first `unstarted`."""
+    """Requested name/ULID; otherwise triage (when enabled), `is_default`, first `unstarted`."""
     if ref is not None:
         state = tx.states.get_by_name(team.id, ref) or tx.states.get(ref)
         if state is None:
@@ -242,7 +242,7 @@ def _reject_unlinked_relations(cmd: CreateIssue) -> None:
 def _milestones(
     state_type: WorkflowStateType, now: datetime
 ) -> tuple[datetime | None, datetime | None, datetime | None]:
-    """R7bis: applies R7's milestone table with `current=None`."""
+    """Applies the milestone table with `current=None`."""
     return (
         now if state_type is WorkflowStateType.STARTED else None,
         now if state_type is WorkflowStateType.COMPLETED else None,

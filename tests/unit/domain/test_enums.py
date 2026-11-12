@@ -1,4 +1,4 @@
-"""`domain.enums` — canonical values, labels, ranks and scales (REQ-F020-01)."""
+"""`domain.enums` — canonical values, labels, ranks and scales."""
 
 from __future__ import annotations
 

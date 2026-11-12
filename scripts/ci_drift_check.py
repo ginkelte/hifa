@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the applied DDL matches the one declared in SPEC-010.
+"""Check that the applied DDL matches the one declared in the data-model spec.
 
 CI usage: create a temporary database, apply the migrations and compare `sqlite_master`
 against the `CREATE TABLE`/`CREATE INDEX`/`CREATE VIEW` statements of the spec.

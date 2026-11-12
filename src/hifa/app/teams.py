@@ -1,12 +1,12 @@
-"""Workspace bootstrap (`hifa init`, SPEC-100 §2.5 and §3.1, D-013).
+"""Workspace bootstrap for `hifa init`.
 
 `bootstrap` seeds in **one** transaction: 1 `workspace`, 1 `team`, the 6 canonical
 `workflow_state` rows (`Todo` with `is_default=1`), the 4 workspace `label`s,
-1 local `member` and its `team_membership`. Every step is *get-or-create* by natural key
-(R11): a second run returns `created=[]` and `already_initialized=True`.
+1 local `member` and its `team_membership`. Every step is *get-or-create* by natural key:
+a second run returns `created=[]` and `already_initialized=True`.
 
 This module formats nothing and knows nothing about the CLI: it receives the already built
-`UnitOfWork` plus the clock/ID generator via `uow.clock` / `uow.idgen` (D-017).
+`UnitOfWork` plus the clock/ID generator via `uow.clock` / `uow.idgen`.
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ from hifa.domain.identifier import KEY_PATTERN, normalize_key
 from hifa.domain.ranking import UNIT_GAP, between, last
 from hifa.ports import Clock, IdGen
 
-#: Default states: `(name, type, color, position, is_default)` — literals from SPEC-100 §2.5.
-#: `Todo` sits between `Triage` and `Backlog` and is the default one (D-034): the canonical
+#: Default states: `(name, type, color, position, is_default)`.
+#: `Todo` sits between `Triage` and `Backlog` and is the default one: the canonical
 #: order is Triage · Todo · Backlog · In Progress · Done · Canceled.
 DEFAULT_STATES: tuple[tuple[str, str, str, float, int], ...] = (
     ("Triage", "triage", "#6B6F76", 1.0, 0),
@@ -61,9 +61,9 @@ _COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 @dataclass(frozen=True)
 class BootstrapOptions:
-    """Validated `hifa init` flags (SPEC-100 §2.5).
+    """Validated `hifa init` flags.
 
-    Validation runs in `__post_init__` (before touching the database, R15): an invalid flag
+    Validation runs in `__post_init__` (before touching the database): an invalid flag
     raises `ConfigError(config_invalid_value)` with `field` populated.
     """
 
@@ -106,7 +106,7 @@ class BootstrapResult:
     already_initialized: bool = False
 
     def to_dict(self) -> dict[str, object]:
-        """Exact shape of the `--json` output of SPEC-100 §2.7 / SPEC-050 §2.5.1."""
+        """Exact shape of the `--json` output of `hifa init`."""
         return {
             "created": list(self.created),
             "skipped": list(self.skipped),
@@ -118,7 +118,7 @@ class BootstrapResult:
         }
 
 
-# --- flag validation (R15) -----------------------------------------------------------
+# --- flag validation -----------------------------------------------------------
 
 
 def _invalid(field_name: str, value: object, expected: str) -> ConfigError:
@@ -163,7 +163,7 @@ def _validate_color(value: str) -> str:
 
 
 def _initials(display_name: str) -> str:
-    """First two letters, uppercased (SPEC-100 §3.1)."""
+    """First two letters, uppercased."""
     letters = [ch for ch in display_name.strip() if ch.isalnum()]
     return ("".join(letters[:2]) or display_name.strip()[:2] or "??").upper()
 
@@ -202,7 +202,7 @@ def bootstrap(
     clock: Clock,
     ids: IdGen,
 ) -> BootstrapResult:
-    """Seed the workspace idempotently inside a single `uow.write()` (R9/R10/R11)."""
+    """Seed the workspace idempotently inside a single `uow.write()`."""
     now = clock.now()
     name = _workspace_name(opts)
     url_key = slugify(name)
@@ -344,12 +344,12 @@ def bootstrap(
     )
 
 
-# --- create_team (SPEC-040 §2.2, REQ-F040-14) --------------------------------------------
+# --- create_team --------------------------------------------
 
 
 @dataclass(frozen=True)
 class TeamSummary:
-    """One row of `team list`: the entity plus its counters (SPEC-050 §2.5.2).
+    """One row of `team list`: the entity plus its counters.
 
     `issues_count` is `open + closed` — every live issue of the team, which is the ISSUES
     column of the table.
@@ -361,7 +361,7 @@ class TeamSummary:
 
     @property
     def issues_count(self) -> int:
-        """Every live issue of the team: `open_count + closed_count` (SPEC-050 §2.5.2)."""
+        """Every live issue of the team: `open_count + closed_count`."""
         return self.open_issues + self.closed_issues
 
 
@@ -440,7 +440,7 @@ def _reject_default_state(value: str | None) -> None:
 
 
 def create_team(uow: UnitOfWork, cmd: CreateTeam, actor: Actor) -> Team:
-    """Create a team and its six canonical states in **one** transaction (REQ-F040-14).
+    """Create a team and its six canonical states in **one** transaction.
 
     The workspace is created when it is missing and reused otherwise; `DEFAULT_STATES` is the
     only source of the six states, so `create_team` and `bootstrap` cannot drift apart. A key
@@ -517,11 +517,11 @@ def create_team(uow: UnitOfWork, cmd: CreateTeam, actor: Actor) -> Team:
     return team
 
 
-# --- team reads (SPEC-040 §2.3) -----------------------------------------------------------
+# --- team reads -----------------------------------------------------------
 
 
 def list_teams(uow: UnitOfWork, *, include_archived: bool = False) -> tuple[TeamSummary, ...]:
-    """Teams with their issue counters, sorted by `key` ascending (SPEC-050 §2.5.2).
+    """Teams with their issue counters, sorted by `key` ascending.
 
     Archived teams are excluded unless `include_archived`; the `WHERE` lives in the query
     (`TeamRepo.list_with_progress`), because filtering in Python after `list()` was a dead
@@ -556,7 +556,7 @@ def team_detail(uow: UnitOfWork, ref: str) -> TeamDetail:
         )
 
 
-# --- workflow states: create_state / update_state (SPEC-040 §2.2) -------------------------
+# --- workflow states: create_state / update_state -------------------------
 
 #: Longest accepted state name (the column is `TEXT`; the limit keeps the board readable).
 STATE_NAME_MAX_LENGTH: int = 80
@@ -661,7 +661,7 @@ def _unique_position(
 
 
 def create_state(uow: UnitOfWork, cmd: CreateState, actor: Actor) -> WorkflowState:
-    """Create one custom state for a team in a single `uow.write()` (SPEC-040 §2.2).
+    """Create one custom state for a team in a single `uow.write()`.
 
     The team comes by key or ULID; the name is unique per team case-insensitively (an archived
     state still owns its name, because the table declares `UNIQUE (team_id, name)`). The new
@@ -734,7 +734,7 @@ def _resolve_state(tx: Repos, ref: str) -> WorkflowState:
 
 
 def update_state(uow: UnitOfWork, cmd: UpdateState, actor: Actor) -> WorkflowState:
-    """Rename, recolor and/or reorder one state in a single `uow.write()` (SPEC-040 §2.2).
+    """Rename, recolor and/or reorder one state in a single `uow.write()`.
 
     Renaming repeats the case-insensitive duplicate check; `color=None` keeps the current one
     (`workflow_state.color` is `NOT NULL`). Reordering is the explicit `position` the edge
@@ -787,7 +787,7 @@ def update_state(uow: UnitOfWork, cmd: UpdateState, actor: Actor) -> WorkflowSta
         )
 
 
-# --- state reads (SPEC-050 §2.5.3 `hifa state list`) ---------------------------------------
+# --- state reads (`hifa state list`) ---------------------------------------
 
 
 def list_states(uow: UnitOfWork, team: str) -> tuple[StateSummary, ...]:

@@ -1,4 +1,4 @@
-"""Single CLI output formatter: table / `--json` / `--quiet` (SPEC-050 §2.4, A6).
+"""Single CLI output formatter: table / `--json` / `--quiet`.
 
 No command prints on its own: it builds the object and calls `emit(obj)`. The formatting
 rules live here and in no other module of the edge.
@@ -80,7 +80,7 @@ def write_line(text: str = "") -> None:
 
 # --- table -----------------------------------------------------------------------------
 
-#: Columns whose content is truncated (SPEC-050 §2.4.1).
+#: Columns whose content is truncated.
 _TRUNCATING_COLUMNS = frozenset({"TITLE"})
 
 
@@ -231,7 +231,7 @@ def emit(
         items = list(obj)
         if current.json:
             # A list may still declare an envelope (`{items: [...]}`); ignoring it here silently
-            # emitted a bare array and broke the SPEC-050 §2.4 shape for every list command.
+            # emitted a bare array and broke the envelope shape for every list command.
             write_json(json_obj if json_obj is not None else [_jsonable(item) for item in items])
             return
         if current.quiet:
@@ -255,7 +255,7 @@ def emit(
         return
     columns = list(table_cols or list(payload))
     if table_cols is None and len(columns) > 4:
-        # Key-value block for wide entities (SPEC-050 §2.4.1, `issue show`). The column is
+        # Key-value block for wide entities (`issue show`). The column is
         # sized from the keys so a 10-character key (`visibility`) is not glued to its value.
         width = max(len(str(key)) for key in columns) + 2
         for key in columns:

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# SPEC-110 §2.4.2 / §2.9 — the outcome classifier of step 9.
+# The outcome classifier of step 9.
 #
 # One run, one line. It reads the repository and the engine log step 8 captured, applies the
-# evaluation orders of §2.4.2 in their precedence, and prints exactly one of:
+# evaluation orders in their precedence, and prints exactly one of:
 #
 #   green: nothing written        (G1 — a dry run that proved it wrote nothing)
-#   green: no relevant changes    (G3 — R4, nothing to release)
+#   green: no relevant changes    (G3 — nothing to release)
 #   green: released <tag>         (G2 — the residual green of a completed release)
 #   release_<code>                (catalogue ids 3-12)
 #
 # Exit status: 0 only for the three greens, 1 for every code. Diagnostics go to stderr and never
 # carry a secret or the credential.
 #
-# Interface (§2.4.2) — environment plus the working directory. No arguments, no stdin:
+# Interface — environment plus the working directory. No arguments, no stdin:
 #
 #   RELEASE_LOG          log captured by step 8                        required; empty is never green
 #   RELEASE_EXIT_CODE    ${PIPESTATUS[0]}; unset reads as the 255 sentinel, never 0
@@ -47,7 +47,7 @@ green() {
 }
 
 # --- no arguments: an argument is a usage this script does not have -----------------------------
-# §2.4.2: every input is an environment variable plus the working directory. Failing open here
+# Every input is an environment variable plus the working directory. Failing open here
 # would classify `--help` as a release, in the one place the pipeline is supposed to fail closed.
 if [ "$#" -ne 0 ]; then
     note "this classifier takes no arguments (§2.4.2); got $# argument(s): $*"
@@ -177,7 +177,7 @@ if [ "$dry_run" = "true" ] && [ "$status" -eq 0 ] \
     fi
 fi
 
-# --- Order 3 — G3, green: no relevant changes (R4) --------------------------------------------
+# --- Order 3 — G3, green: no relevant changes ------------------------------------------------
 if [ "$status" -eq 0 ] && has 'no relevant changes'; then
     if [ -z "$tag" ] \
         && ! printf '%s' "$head_subject" | grep -qE -- "$release_subject_re"; then
@@ -233,7 +233,7 @@ if [ -n "$tag" ]; then
 fi
 
 # --- Order 8 — catalogue id 7, release_forbidden ----------------------------------------------
-# The API refused the Release creation: the tag exists, the Release does not (§5.4).
+# The API refused the Release creation: the tag exists, the Release does not.
 if has_re 'Resource not accessible by integration|status: 403|403 Forbidden|must have admin rights'; then
     note "the API refused the Release creation (403): the tag exists, the Release does not (§5.4)"
     emit release_forbidden
@@ -242,8 +242,8 @@ fi
 # --- Order 9 — catalogue id 8, release_notes_missing ------------------------------------------
 # The changelog at the tag must mention the version. Two limits, so the row cannot be read wider
 # than it is: the Release body has no observable in the repository or in the log, and a tag the
-# remote refused is §5.5's state — the notes are not missing, they were never published, so order
-# 10 is the diagnosis and this row must not take that line from it.
+# remote refused is a different state — the notes are not missing, they were never published, so
+# order 10 is the diagnosis and this row must not take that line from it.
 push_rejected_re='remote rejected|pre-receive hook declined|failed to push some refs|protected branch|GH013|cannot lock ref'
 if [ -n "$tag" ] && ! has_re "$push_rejected_re"; then
     if ! git show "$tag:CHANGELOG.md" 2>/dev/null | grep -qF -- "# [${tag#v}]"; then
@@ -254,14 +254,14 @@ fi
 
 # --- Order 10 — catalogue id 9, release_tag_push_rejected -------------------------------------
 # The remote refused the tag push (ruleset, expired token, no `contents: write`): the commit is on
-# `main`, the tag is not → §5.5. The message never echoes the credential.
+# `main`, the tag is not. The message never echoes the credential.
 #
 # The message alone is not the state it names: `failed to push some refs`, `protected branch` and
 # `cannot lock ref` also appear when the *release commit*'s push failed for auth or network
-# reasons, and §5.5 repairs a state in which that commit exists. So the id is emitted only when
-# one of its two observables holds — `origin/main`'s head is the release commit, or the tag exists
-# locally — and a bare message falls through to order 13 instead of sending the operator into a
-# repair that does not apply.
+# reasons, and the tag-push repair only applies when that commit exists. So the id is emitted only
+# when one of its two observables holds — `origin/main`'s head is the release commit, or the tag
+# exists locally — and a bare message falls through to order 13 instead of sending the operator
+# into a repair that does not apply.
 main_sha=$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 || true)
 main_ref=${main_sha:-origin/main}
 main_subject=$(git log -1 --format=%s "$main_ref" 2>/dev/null || true)
@@ -283,7 +283,7 @@ fi
 
 # --- Order 11 — catalogue id 10, release_partial_state ---------------------------------------
 # `origin/main`'s head is a release commit whose literal is its version, and the tag it names does
-# not exist on the remote: the state §5.5 repairs, never a re-run.
+# not exist on the remote: a state to repair, never a re-run.
 if printf '%s' "$main_subject" | grep -qE -- "$release_subject_re"; then
     version=${main_subject#chore(release): }
     version=${version% \[skip ci\]}

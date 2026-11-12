@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Compare the repo methods with the ones SPEC-040 §2 declares as consumed.
+"""Compare the repo methods with the ones the application services declare as consumed.
 
 Usage: python scripts/check_repo_methods.py [--strict]
 
 Exits 0 when no method is missing; 1 (with `--strict`) when one is. Methods that
-SPEC-030 §2.4 declares and no use case consumes are listed as "extra" (not an error).
+a spec names and no use case consumes are listed as "extra" (not an error).
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def main() -> int:
         )
         extra = sorted(implemented - consumed[repo])
         if extra:
-            print(f"{'':10} extras (SPEC-030 §2.4): {', '.join(extra)}")
+            print(f"{'':10} extras: {', '.join(extra)}")
 
     print(f"\nmissing in total: {missing_total}")
     if "--strict" in sys.argv and missing_total:

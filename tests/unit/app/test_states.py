@@ -1,4 +1,4 @@
-"""Unit tests for `app.teams.create_state` / `update_state` (SPEC-040 §2.2, D-035).
+"""Unit tests for `app.teams.create_state` / `update_state`.
 
 The transaction and the SQL are covered by `tests/integration/app/test_state_reorder_db.py`;
 here we pin the rules of the use case against in-memory fakes: type and color validation, the

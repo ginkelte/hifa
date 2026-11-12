@@ -1,4 +1,4 @@
-"""`UnitOfWork`: transactions, readonly, no retry and the exception boundary (SPEC-030 §2.2)."""
+"""`UnitOfWork`: transactions, readonly, no retry and the exception boundary."""
 
 from __future__ import annotations
 
