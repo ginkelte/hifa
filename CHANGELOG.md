@@ -1,3 +1,10 @@
+## [0.1.5](https://github.com/ginkelte/hifa/compare/v0.1.4...v0.1.5) (2026-11-12)
+
+
+### Bug Fixes
+
+* **release:** judge the run by its delta, and a notes refusal by the remote ([#10](https://github.com/ginkelte/hifa/issues/10)) ([cc04d45](https://github.com/ginkelte/hifa/commit/cc04d45caf23afd07b158c8a5e39099f1f237470))
+
 ## [0.1.4](https://github.com/ginkelte/hifa/compare/v0.1.3...v0.1.4) (2026-11-12)
 
 
