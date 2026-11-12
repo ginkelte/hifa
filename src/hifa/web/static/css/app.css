@@ -404,4 +404,18 @@ tr.row-empty td { color: var(--text-muted); }
 @media (max-width: 900px) {
   .sidebar { display: none; }
   .shell { margin-left: 0; }
+  /* One column below another: the page itself scrolls, with no nested scrollers to fight over
+     the gesture and no horizontal pan to get lost in. */
+  .board { flex-direction: column; overflow-x: visible; overflow-y: visible; min-height: 0; }
+  .column {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .column-body { overflow-y: visible; }
+  /* A finger needs a target it can hit. */
+  .card { padding: 10px 12px; }
+  .column-head { height: 40px; padding: 0 12px; }
 }
