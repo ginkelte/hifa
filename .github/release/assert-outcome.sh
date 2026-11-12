@@ -178,12 +178,21 @@ if [ "$dry_run" = "true" ] && [ "$status" -eq 0 ] \
 fi
 
 # --- Order 3 — G3, green: no relevant changes ------------------------------------------------
+# The question is what *this run* did, not what the checkout looks like: a scheduled run starts on
+# the release commit the previous run wrote, and answers `no relevant changes` because nothing
+# follows the tag. An empty delta — no tag created, head not moved — is the green. The baseline of
+# step 4 is what makes the delta observable, and an empty baseline is a baseline error, exactly as
+# in order 2: it proves nothing and must not be read as a green.
 if [ "$status" -eq 0 ] && has 'no relevant changes'; then
-    if [ -z "$tag" ] \
-        && ! printf '%s' "$head_subject" | grep -qE -- "$release_subject_re"; then
-        green "green: no relevant changes"
+    if [ -z "${PRE_RUN_HEAD:-}" ]; then
+        note "PRE_RUN_HEAD is missing or empty: without the run's baseline the answer cannot be told from the state"
+    else
+        head_now=$(git rev-parse HEAD 2>/dev/null || true)
+        if [ -z "$tag" ] && [ "$head_now" = "${PRE_RUN_HEAD}" ]; then
+            green "green: no relevant changes"
+        fi
+        note "the run answered 'no relevant changes' but it created tag ${tag:-none} or moved head to ${head_now:-none} from ${PRE_RUN_HEAD}"
     fi
-    note "the run answered 'no relevant changes' but a tag or a release commit exists"
 fi
 
 # --- Order 4 — catalogue id 3, release_signing_key_invalid ------------------------------------
@@ -252,33 +261,47 @@ if [ -n "$tag" ] && ! has_re "$push_rejected_re"; then
     fi
 fi
 
-# --- Order 10 — catalogue id 9, release_tag_push_rejected -------------------------------------
-# The remote refused the tag push (ruleset, expired token, no `contents: write`): the commit is on
-# `main`, the tag is not. The message never echoes the credential.
+# --- Order 10 — catalogue ids 13 and 9, the refused push ---------------------------------------
+# The engine pushes two refs that can be refused independently: the tag (with the release commit)
+# and `refs/notes/semantic-release`. `failed to push some refs`, `protected branch` and
+# `cannot lock ref` are produced by a refusal of either one, and also when the *release commit*'s
+# own push failed, so the message is a signal and never the fact: the row asks the remote which
+# state it left behind.
 #
-# The message alone is not the state it names: `failed to push some refs`, `protected branch` and
-# `cannot lock ref` also appear when the *release commit*'s push failed for auth or network
-# reasons, and the tag-push repair only applies when that commit exists. So the id is emitted only
-# when one of its two observables holds — `origin/main`'s head is the release commit, or the tag
-# exists locally — and a bare message falls through to order 13 instead of sending the operator
-# into a repair that does not apply.
+#   id 9  — the tag the log says was created is not on the remote: the commit is on `main` and the
+#           tag is not, the state the tag-push repair is written for.
+#   id 13 — that tag IS on the remote, and the refusal names the notes ref: the commit, the tag and
+#           the Release are published, only `refs/notes/semantic-release` is missing. Reporting this
+#           as a tag refusal claims two things that are false.
+#
+# Neither code is emitted without that `ls-remote` query, and a run with no `Created tag` line can
+# reach neither: the failed push was then the release commit's. The message never echoes the
+# credential.
 main_sha=$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 || true)
 main_ref=${main_sha:-origin/main}
 main_subject=$(git log -1 --format=%s "$main_ref" 2>/dev/null || true)
 if has_re "$push_rejected_re"; then
-    tag_is_local=false
-    if [ -n "$tag" ] && git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null 2>&1; then
-        tag_is_local=true
+    tag_on_remote=false
+    if [ -n "$tag" ] && git ls-remote --tags origin "refs/tags/$tag" 2>/dev/null | grep -q .; then
+        tag_on_remote=true
     fi
-    commit_is_on_main=false
-    if printf '%s' "$main_subject" | grep -qE -- "$release_subject_re"; then
-        commit_is_on_main=true
+    notes_rejected=false
+    if has_re '\[(remote )?rejected\].*refs/notes/'; then notes_rejected=true; fi
+    if has 'refs/notes/' && has_re 'failed to push|\[(remote )?rejected\]'; then
+        notes_rejected=true
     fi
-    if [ "$tag_is_local" = true ] || [ "$commit_is_on_main" = true ]; then
-        note "the remote rejected the tag push: the commit is on main, the tag is not (§5.5)"
-        emit release_tag_push_rejected
+    if [ "$tag_on_remote" = false ]; then
+        if [ -n "$tag" ]; then
+            note "the remote rejected the tag push: the release commit is on main and refs/tags/$tag is not on the remote"
+            emit release_tag_push_rejected
+        fi
+        note "the log reports a rejected push, but no tag was created and origin/main carries no release commit: the failed push was the release commit's, not the tag's"
+    elif [ "$notes_rejected" = true ]; then
+        note "the remote refused refs/notes/semantic-release while refs/tags/$tag is on the remote: the release is published, its notes ref is not"
+        emit release_notes_push_rejected
+    else
+        note "the log reports a rejected push while refs/tags/$tag is on the remote, and the refusal names neither the tag nor the notes ref: nothing to repair"
     fi
-    note "the log reports a rejected push, but origin/main carries no release commit and no tag exists locally: the failed push was the release commit's, not the tag's"
 fi
 
 # --- Order 11 — catalogue id 10, release_partial_state ---------------------------------------

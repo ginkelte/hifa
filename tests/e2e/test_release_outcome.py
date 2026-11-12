@@ -292,7 +292,25 @@ POSITIVE_CASES = [
         dry_run="true",
         baseline=True,
     ),
-    Case(3, "no-relevant-changes", NOTHING, "order03_no_relevant_changes.log", GREEN_NO_CHANGES),
+    Case(
+        3,
+        "no-relevant-changes",
+        NOTHING,
+        "order03_no_relevant_changes.log",
+        GREEN_NO_CHANGES,
+        baseline=True,
+    ),
+    # The scheduled run: the checkout starts on the release commit the previous run wrote, the tag
+    # is on the remote, the engine answers `no relevant changes` and creates nothing. The delta is
+    # empty, so this is G3 — the state at HEAD is the normal state of every six-hour tick.
+    Case(
+        3,
+        "no-relevant-changes-on-the-previous-release-commit",
+        RELEASED,
+        "order03_no_relevant_changes.log",
+        GREEN_NO_CHANGES,
+        baseline=True,
+    ),
     Case(
         4,
         "signing-key-invalid",
@@ -338,6 +356,17 @@ POSITIVE_CASES = [
         LOCAL_TAG_ONLY,
         "order10_tag_push_rejected.log",
         "release_tag_push_rejected",
+        status="1",
+    ),
+    # The other refused-push shape: the log says the tag was created and published, the refusal
+    # names `refs/notes/semantic-release`, and `ls-remote` lists the tag. The release is public and
+    # only the notes ref is missing — its own code, never the tag-push one.
+    Case(
+        10,
+        "notes-push-rejected",
+        RELEASED,
+        "order10_notes_push_rejected.log",
+        "release_notes_push_rejected",
         status="1",
     ),
     Case(
@@ -462,9 +491,23 @@ NEGATIVE_CASES = [
         dirty=True,
         forbidden=GREEN_NOTHING_WRITTEN,
     ),
+    # A run that moved HEAD created something: it cannot answer "nothing to release", whatever the
+    # log says. The state it leaves is order 11's.
     Case(
         3,
-        "no-relevant-changes-on-a-release-commit",
+        "head-moved-during-the-run",
+        RELEASE_NO_TAG,
+        "order03_no_relevant_changes.log",
+        "release_partial_state",
+        baseline=True,
+        move_head=True,
+        forbidden=GREEN_NO_CHANGES,
+    ),
+    # No baseline, no delta: the answer cannot be told from the state, so this is not a green even
+    # though HEAD is a release commit and the log says there was nothing to release.
+    Case(
+        3,
+        "a-run-without-the-baseline-cannot-claim-g3",
         RELEASE_NO_TAG,
         "order03_no_relevant_changes.log",
         "release_partial_state",
@@ -540,6 +583,27 @@ NEGATIVE_CASES = [
         status="1",
         forbidden="release_tag_push_rejected",
     ),
+    # The verification, isolated: the same tag-refusal message, but `ls-remote` lists the
+    # tag push did not fail. No tag-push code may be emitted on the log line alone.
+    Case(
+        10,
+        "a-refused-push-whose-tag-is-on-the-remote",
+        RELEASED,
+        "order10_tag_push_rejected.log",
+        "release_engine_aborted",
+        status="1",
+        forbidden="release_tag_push_rejected",
+    ),
+    # A notes refusal is not a tag refusal either, in the same direction as ^.
+    Case(
+        10,
+        "a-notes-refusal-is-not-a-tag-refusal",
+        RELEASED,
+        "order10_notes_push_rejected.log",
+        "release_notes_push_rejected",
+        status="1",
+        forbidden="release_tag_push_rejected",
+    ),
     Case(
         11,
         "main-does-not-carry-a-release-commit",
@@ -564,6 +628,7 @@ NEGATIVE_CASES = [
         NOTHING,
         "order03_no_relevant_changes.log",
         GREEN_NO_CHANGES,
+        baseline=True,
         forbidden="release_engine_aborted",
     ),
 ]

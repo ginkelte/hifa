@@ -85,11 +85,16 @@ jobs:
       # Step 4 — `npm ci --ignore-scripts` from the versioned lockfile, never `npm install`, never
       # an inline manifest. No secret is in scope here. An empty
       # baseline is not a baseline, so every capture is asserted non-empty before it is written.
+      # It also adopts the remote notes ref: the clone carries none, so the engine's push of
+      # refs/notes/semantic-release has no common ancestor with the remote's and the remote refuses
+      # it as a non-fast-forward — after the tag is already published. A failure here is not a
+      # release failure; the classifier reports the refused notes push as its own outcome.
       - name: Install the pinned release engine
         run: |
           npm ci --ignore-scripts
           test -f node_modules/.package-lock.json
           git diff --exit-code -- package-lock.json
+          git fetch --no-tags origin 'refs/notes/*:refs/notes/*' || true
           head_sha=$(git rev-parse HEAD)
           main_sha=$(git ls-remote origin refs/heads/main | cut -f1)
           test -n "$head_sha" && test -n "$main_sha"

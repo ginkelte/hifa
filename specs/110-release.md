@@ -4,7 +4,7 @@ title: Semantic release pipeline
 component: support
 status: draft
 version: 3
-spec_revision: 8
+spec_revision: 9
 depends_on: [SPEC-000, SPEC-050]
 implements:
   - .github/workflows/release.yml
@@ -280,7 +280,7 @@ Steps, in this order. Each row is a contract: a step may be renamed, the effects
 | 1 | checkout | `actions/checkout@v4`, `fetch-depth: 0`, **`persist-credentials: false`** (public repository: no token needed to fetch, none may be written to `.git/config`) | `grep -c extraheader .git/config` ⇒ `0` |
 | 2 | node | `actions/setup-node@v4`, **`node-version: '22.22.3'`** (the pair the lockfile was generated with, §2.8), `cache: npm`, `cache-dependency-path: package-lock.json` | `node --version` ⇒ `v22.22.3` |
 | 3 | token gate | `env: HIFA_RELEASE_TOKEN` only; empty ⇒ print `release_token_missing`, write the dedupe mark `$RUNNER_TEMP/release_code_emitted`, `exit 1` | red before any write; the token value never in the log; the code printed **once** (§2.4.2) |
-| 4 | install | **`npm ci --ignore-scripts`** — never `npm install`, never an inline `package.json`, never a lifecycle script (§2.4.3) | `node_modules/.package-lock.json` present; `git diff --exit-code package-lock.json` clean; `PRE_RUN_HEAD`, `PRE_RUN_MAIN` and the tag list captured, each asserted non-empty before it is written |
+| 4 | install and baseline | **`npm ci --ignore-scripts`** — never `npm install`, never an inline `package.json`, never a lifecycle script (§2.4.3). It also **adopts the remote notes ref** (`git fetch --no-tags origin 'refs/notes/*:refs/notes/*'`, failure tolerated): the runner's clone carries no notes, so the engine's `git push … refs/notes/semantic-release` would not be a fast-forward and the remote would refuse it — *after* the tag was already published | `node_modules/.package-lock.json` present; `git diff --exit-code package-lock.json` clean; `PRE_RUN_HEAD`, `PRE_RUN_MAIN` and the tag list captured, each asserted non-empty before it is written; `refs/notes/semantic-release` exists locally when the remote has one |
 | 5 | dry-run split | `inputs.dry_run` true ⇒ `SEMANTIC_RELEASE_ARGS=--dry-run`, otherwise empty; **always** writes `RELEASE_DRY_RUN=true`/`false` to `$GITHUB_ENV` — the key §2.4.2 requires and §2.4.1 authorises as non-secret | `::notice::` with the argument set and the flag |
 | 6 | identity and signing | exactly the block of §2.4.1, with `env: HIFA_RELEASE_SIGNING_KEY` only; empty secret ⇒ `release_signing_key_missing`, flag, `exit 1` | `git var GIT_COMMITTER_IDENT`; `ssh-keygen -y -f "$RUNNER_TEMP/hifa_signing_key"` succeeded |
 | 7 | credential scope check | proves that nothing persisted the credential: `$GITHUB_ENV` carries no `HIFA_RELEASE_TOKEN`, `HIFA_RELEASE_SIGNING_KEY`, `GIT_CONFIG_*` or `AUTHORIZATION`, and `.git/config` carries no `extraheader`. Declares no `env:` and writes nothing | both greps ⇒ `0` |
@@ -323,6 +323,11 @@ files and its signature is verified by the classifier of step 9.
     npm ci --ignore-scripts
     test -f node_modules/.package-lock.json
     git diff --exit-code -- package-lock.json
+    # Adopt the remote notes ref. The clone has none, so the engine's push of
+    # refs/notes/semantic-release has no common ancestor with the remote's and is refused as a
+    # non-fast-forward — after the tag is already published. Fetching first makes it a
+    # fast-forward; a failure here is not a release failure, the classifier reports it instead.
+    git fetch --no-tags origin 'refs/notes/*:refs/notes/*' || true
     head_sha=$(git rev-parse HEAD)
     main_sha=$(git ls-remote origin refs/heads/main | cut -f1)
     test -n "$head_sha" && test -n "$main_sha"   # fail closed: an empty baseline is not a baseline
@@ -444,7 +449,7 @@ the repository, and the log is what separates failures that leave an identical s
 | `RELEASE_LOG` | step 8: the captured engine log | yes — a missing or empty log can never produce a green |
 | `RELEASE_EXIT_CODE` | step 8: `${PIPESTATUS[0]}`. **When unset the script reads the sentinel `255`, never `0`** — that is the *input* sentinel, not the script's own exit status (§8 step 8) | yes |
 | `RELEASE_DRY_RUN` | step 5: `true` or `false`, written to `$GITHUB_ENV` (§2.4 step 5) | yes |
-| `PRE_RUN_HEAD`, `PRE_RUN_MAIN`, `PRE_RUN_TAGS` | step 4. The two hashes must be **non-empty** to grant a green | for G1 |
+| `PRE_RUN_HEAD`, `PRE_RUN_MAIN`, `PRE_RUN_TAGS` | step 4. `PRE_RUN_HEAD` must be **non-empty** to grant G1 **or G3** (both are statements about what this run did, and the delta needs a baseline); `PRE_RUN_MAIN` and `PRE_RUN_TAGS` additionally for G1 | for G1 and G3 |
 | `RELEASE_CODE_MARKER` | path to the dedupe mark; default `$RUNNER_TEMP/release_code_emitted` | optional |
 | `TAG` | the name on the log line `Created tag <tag>` — the **only** source. Absent (no such line) ⇒ the tag-dependent orders 5, 6 and 7 cannot be evaluated and the run lands on order 13. It is never "the last tag", never the subject of the head commit and never `tagFormat` plus the computed version | for G2 and for orders 5–7 |
 | working directory | the checkout: `git`, `refs/tags/*`, `.git/config` and `$GITHUB_ENV` are read from it | yes |
@@ -474,7 +479,7 @@ and it is enforced by ownership, not by luck:
 |---|---|---|
 | 1 `release_token_missing` | step 3 | prints the code, writes the mark, exits `1`. The classifier **never evaluates catalogue ids 1 and 2**, so a missing secret cannot be printed twice |
 | 2 `release_signing_key_missing` | step 6 | same |
-| G1–G3 and catalogue ids 3–12 | step 9 (the classifier) | step 8 prints **no** code, only `RELEASE_EXIT_CODE` and the log |
+| G1–G3 and catalogue ids 3–13 | step 9 (the classifier) | step 8 prints **no** code, only `RELEASE_EXIT_CODE` and the log |
 
 - **The mark is the mechanism.** A gate that prints a code writes `$RUNNER_TEMP/release_code_emitted`; when
   the classifier finds it, it prints no classification line at all and exits `1` with a diagnostic. It
@@ -492,15 +497,15 @@ and exits.
 |---|---|---|---|
 | 1 | 12 `release_credential_persisted` | `$GITHUB_ENV` or `.git/config` carries the token, the signing key, an `extraheader`, a base64 of either, **or a value that is a credential by value** — a `ghp_…`/`gho_…`/`ghu_…`/`ghs_…`/`ghr_…`/`github_pat_…` prefix, or a base64 blob that decodes to `x-access-token:` or to a `PRIVATE KEY` header | the credential existed only in the memory of step 8; otherwise the run is red and the token is rotated |
 | 2 | G1 — green, nothing written | `RELEASE_DRY_RUN=true` **and** `RELEASE_EXIT_CODE == 0` **and** the log carries `next release version is` or `no relevant changes` **and** `PRE_RUN_HEAD`/`PRE_RUN_MAIN` are non-empty and unchanged **and** `git status --porcelain` is empty **and** the tag list is unchanged | the plan was computed **and** nothing was written — both, or it is not green |
-| 3 | G3 — green, no release (R4) | `RELEASE_EXIT_CODE == 0` **and** the log carries `no relevant changes` **and** `HEAD` is not a `chore(release): … [skip ci]` commit | no new tag, no release commit, the literal unchanged |
+| 3 | G3 — green, no release (R4) | `RELEASE_EXIT_CODE == 0` **and** the log carries `no relevant changes` **and** `PRE_RUN_HEAD` is non-empty and equal to the `HEAD` of the checkout **and** the log carries no `Created tag` line — i.e. this run created no tag and moved no head | the run's **delta** is empty. The head being a `chore(release): … [skip ci]` commit is *not* the question: a scheduled run starts on the commit the previous release wrote and answers `no relevant changes` because there is nothing after the tag, and a state-shaped test makes that run red forever |
 | 4 | 3 `release_signing_key_invalid` | `RELEASE_EXIT_CODE != 0` **and** the log carries `signing pre-flight: starting` without the closing `signing pre-flight ok` | `main` untouched, nothing pushed, and no `preflight-*` ref **in `origin`**: a local ref left behind when the `set -eu` chain aborted before `git tag -d` is removed by step 10, so it is not asserted here |
 | 5 | 4 `release_tag_not_signed` | a tag was created in this run and `git cat-file -t` is not `tag`, or `git verify-tag` fails | the tag is public and immutable: **not** deleted |
 | 6 | 5 `release_commit_unsigned` | `git verify-commit "$TAG^{commit}"` fails against `allowed_signers` | the commit is on `main`; reported so it can be re-signed forward |
 | 7 | 6 `release_version_mismatch` | (a) the log carries the pre-flight literal guard's message and no release commit exists; or (b) the literal at `$TAG` ≠ `${TAG#v}`, or `grep -c '^version = "'` ≠ `1` | (a) nothing was written; (b) tag + commit on the remote, and the next release fixes it |
 | 8 | 7 `release_forbidden` | the log shows the API refused release creation (403) | the tag exists, no Release (§5.4) |
 | 9 | 8 `release_notes_missing` | `CHANGELOG.md` at the tag does not mention the version — and the log carries no rejected-push signal, because a tag the remote refused is §5.5's state, not a missing note. (The other half this row used to claim — an empty Release body — has no observable in the repository or in the log, so it is not part of the row) | tag + commit exist; the body is recoverable from the commit message (R13) |
-| 10 | 9 `release_tag_push_rejected` | the log shows the remote rejected the tag push (ruleset, expired token, no `contents: write`) **and** the state it names holds: `origin/main`'s head is the release commit, or the tag exists locally. A bare `failed to push some refs` / `protected branch` / `cannot lock ref` also appears when the *release commit*'s push failed for auth or network reasons, and §5.5 assumes that commit exists; the message never echoes the credential | commit on `main`, no tag → §5.5 |
-| 11 | 10 `release_partial_state` | `origin/main`'s head is `chore(release): X.Y.Z [skip ci]`, its literal is `X.Y.Z`, `git ls-remote --tags origin "refs/tags/vX.Y.Z"` is empty, and order 10 did not fire | commit on `main`, no tag → §5.5 |
+| 10 | 13 `release_notes_push_rejected`, then 9 `release_tag_push_rejected` | one row, two codes, because a refused push names two possible refs. **13** — the log rejected a push of `refs/notes/` and `git ls-remote --tags origin` lists the tag: the commit, the tag and the Release are public, only the notes ref is not. **9** — the log carries a rejected-push signal **and** `git ls-remote --tags origin` does **not** list the tag that the log says was created, so the tag push is the one that failed. A rejected-push message alone (`failed to push some refs`, `protected branch`, `cannot lock ref`) fires neither code when the tag is on the remote, and a log with no `Created tag` line cannot reach either. The message never echoes the credential | 13: tag on the remote, notes ref missing → one `git push origin refs/notes/semantic-release` repairs it, the notes are also in the commit body. 9: commit on `main`, no tag → §5.5 |
+| 11 | 10 `release_partial_state` | `origin/main`'s head is `chore(release): X.Y.Z [skip ci]`, its literal is `X.Y.Z`, `git ls-remote --tags origin "refs/tags/vX.Y.Z"` is empty, and order 10 emitted nothing | commit on `main`, no tag → §5.5 |
 | 12 | G2 — green, release | `RELEASE_EXIT_CODE == 0` **and** no earlier evaluation order matched **and** the tag named in the log exists locally and on `origin`, **and** the assertions of orders 5–9 all passed | tag on the remote, annotated and signed; commit signed; literal == tag; `CHANGELOG.md` mentions the version |
 | 13 | 11 `release_engine_aborted` | none of the above: the engine exited without a release and without the `no relevant changes` token, **or** a green cannot be proven (no log, no baseline, no exit code) | depends on the phase; reported instead of passing as a no-op |
 
@@ -509,13 +514,31 @@ and exits.
   release it is reachable only when no failure matched.
 - **Catalogue id and evaluation order are two different numbers, and the columns now say which is which.**
   The `Catalogue id` column — and the leading number of a code, `3 release_signing_key_invalid` — is the id
-  this spec uses whenever it names a code (§6 lists the same twelve by name); the
+  this spec uses whenever it names a code (§6 lists the same thirteen by name); the
   `Evaluation order` column is the position in the
   precedence. They disagree on purpose: `release_credential_persisted` is id 12 and is evaluated first
-  (a leaked credential invalidates every green below it), ids 3–10 sit at `order = id − 1`, and id 11 is
-  the residual at order 13. **An invariant phrased against the first two positions suppresses order 1
-  (`release_credential_persisted`) and G1** — that is why no text here says "row N" without naming which
-  column it means.
+  (a leaked credential invalidates every green below it), ids 3–10 sit at `order = id − 1`, id 11 is
+  the residual at order 13, and id 13 shares order 10 with id 9 because both answer the same question
+  — *which ref did the remote refuse?* **An invariant phrased against the first two positions suppresses
+  order 1 (`release_credential_persisted`) and G1** — that is why no text here says "row N" without naming
+  which column it means.
+- **A green states a delta, a code states an observed fact.** G1, G2 and G3 answer *what did this run
+  do*, so each one compares the checkout with the baseline step 4 captured before the engine ran; the
+  codes answer *what is true now*, so each one is verified against the repository or against
+  `git ls-remote` before it is printed. A substring of the log is a **signal**, never the fact: the same
+  refusal text is produced by a refusal of any ref, and a release commit at `HEAD` is the normal state of
+  every scheduled run six hours after a release.
+- **G3 is not "HEAD is not a release commit".** That was the shape of this row before rev 9, and it makes
+  the six-hour schedule red forever: the run starts *on* the commit the previous release wrote, answers
+  `no relevant changes` because nothing follows the tag, and the state-shaped test then sees the release
+  subject at `HEAD` and refuses the green. The delta — no tag created, head not moved — is the only
+  observable that distinguishes "nothing to release" from "this run released something".
+- **A refused push names a ref, and the ref decides the code.** The engine pushes two things that can be
+  refused independently: the tag (with the release commit) and `refs/notes/semantic-release`. A refusal of
+  the second is *not* a tag refusal — the commit and the tag are public at that point — so order 10 asks
+  `git ls-remote --tags origin` which of the two states actually holds, and prints the code that matches.
+  Reading `failed to push some refs` without that question reported a successful release as a failed tag
+  push, with two false claims in the diagnostic.
 - **Catalogue ids 1 and 2 do not appear in this table** because the classifier does not evaluate them: a
   gate owns each line.
 - **G1 and G3 are not "the step did not fail".** Both require `RELEASE_EXIT_CODE == 0` **and** a positive
@@ -844,7 +867,7 @@ token.
 | `.github/workflows/release.yml` | §2.4, ten steps in order |
 | `.releaserc.json` | §2.5, verbatim |
 | `.github/release/tag-message.sh` | the `GIT_EDITOR` helper: requires exactly one argument, reads the tag name git is creating from the message file's own header, writes that name back and exits non-zero on anything ambiguous or outside the two accepted patterns (§2.3.3). It never reads `pyproject.toml` |
-| `.github/release/assert-outcome.sh` | the outcome classifier of §2.4.2: reads `RELEASE_LOG`, `RELEASE_EXIT_CODE` (the **input** sentinel `255` when unset, never `0`), `RELEASE_DRY_RUN`, `PRE_RUN_*`, `TAG` (taken only from the log line `Created tag <tag>`, absent ⇒ order 13), the dedupe mark and the repository; **takes no arguments and reads no stdin**; prints **exactly one** classification line — `green: nothing written`, `green: no relevant changes`, `green: released <tag>`, or `release_<code>` — and exits `0` only for G1/G2/G3, `1` otherwise. Executable, `bash`, **no network writes**: `git ls-remote` is read only (two queries, `refs/heads/main` and `refs/tags/*`), there is no `fetch` and no `push`; no write to the repository; deterministic given its inputs |
+| `.github/release/assert-outcome.sh` | the outcome classifier of §2.4.2: reads `RELEASE_LOG`, `RELEASE_EXIT_CODE` (the **input** sentinel `255` when unset, never `0`), `RELEASE_DRY_RUN`, `PRE_RUN_*`, `TAG` (taken only from the log line `Created tag <tag>`, absent ⇒ order 13), the dedupe mark and the repository; **takes no arguments and reads no stdin**; prints **exactly one** classification line — `green: nothing written`, `green: no relevant changes`, `green: released <tag>`, or `release_<code>` — and exits `0` only for G1/G2/G3, `1` otherwise. Executable, `bash`, **no network writes**: `git ls-remote` is read only (for `refs/heads/main` and `refs/tags/*`, re-queried wherever an order must verify the fact it is about to print), there is no `fetch` and no `push`; no write to the repository; deterministic given its inputs |
 | `tests/e2e/test_release_outcome.py` | executes both governed scripts: one fixture per evaluation order of §2.4.2 and per catalogue id, a negative fixture per order (the precedence), and a throwaway git repository in `$TMPDIR` for every assertion that reads refs or signatures |
 | `package.json`, `package-lock.json` | §2.8; `private: true`, `version: "0.0.0"` |
 | `CHANGELOG.md` | §2.6, machine-owned |
@@ -1091,6 +1114,7 @@ A re-run at an already released commit takes the same path (R13).
 | a prepare-phase failure (the commit cannot be signed, the `sed` fails, the commit is refused) | nothing pushed: `add`/`commit` precede `push` in `prepare` | fix, re-run from a clean checkout |
 | **the commit push is rejected** (bypass removed, expired token, no `contents: write`) | the release commit exists **locally only** and **no tag exists**: the tag is created after `prepare` (§2.3.1), so the failure lands before it. Nothing of this release is on the remote; `main` unchanged | restore the bypass/token, re-run: it recomputes the same version, nothing is duplicated because nothing arrived |
 | **the tag push is rejected**, or `git tag` itself fails (key, empty message, broken editor, tag already exists) | commit + literal on `main`, **no tag**: the partial state | §5.5 — never a re-run |
+| **the notes push is rejected** (`refs/notes/semantic-release` not a fast-forward, or a ruleset on the notes namespace) | **the release itself is complete**: commit, tag and Release are public; only the notes ref is missing | one `git push origin refs/notes/semantic-release` from a checkout that fetched the remote ref; the notes are also the body of the release commit, so nothing is rebuilt (step 4 makes the push a fast-forward in the first place) |
 | release creation failed after the tag was pushed | tag on the remote, no Release, a re-run is a no-op | `gh release create "$TAG" --title "$TAG" --notes-file <body of the release commit>` (R13) |
 | `release_version_mismatch` — the guard in `verifyConditions` | **nothing written, nothing pushed** | fix the literal's spelling in `pyproject.toml` and re-run (§2.5.1) |
 | `release_version_mismatch` — the literal at the tag | tag and commit on the remote, literal not bumped | fix §2.5 / the literal's spelling, then release the next version (never move the tag) |
@@ -1146,7 +1170,8 @@ fires and *what it leaves behind*.
 | `release_credential_persisted` | `$GITHUB_ENV` or `.git/config` carries the token, the key, an `extraheader` or a base64 of either, **after** step 8 ran | the repository state is whatever the engine produced; the credential is rotation debt, not a repository defect |
 | `release_tag_not_signed` | `git cat-file -t refs/tags/$TAG` is not `tag`, or `git verify-tag` fails | tag is public and immutable: **not** deleted |
 | `release_commit_unsigned` | `git verify-commit "$TAG^{commit}"` fails against `allowed_signers` | commit on `main`; the report names it so it can be re-signed forward |
-| `release_tag_push_rejected` | the remote rejected the tag push (ruleset, expired token, no `contents: write`); the message never echoes the credential | commit on `main`, no tag → §5.5 |
+| `release_tag_push_rejected` | the remote rejected the tag push (ruleset, expired token, no `contents: write`), verified: the tag the log says was created is absent from `git ls-remote --tags origin`. A rejected push of `refs/notes/` is `release_notes_push_rejected`, not this code; the message never echoes the credential | commit on `main`, no tag → §5.5 |
+| `release_notes_push_rejected` | the remote rejected the push of `refs/notes/semantic-release` while `git ls-remote --tags origin` lists the tag the log says was created: the commit, the tag and the Release are public and only the notes ref is not | nothing to rebuild: `git push origin refs/notes/semantic-release` restores the ref, and the notes are also the body of the release commit |
 | `release_forbidden` | the API refused release creation (403) | tag exists, no Release (§5.4) |
 | `release_notes_missing` | `CHANGELOG.md` at the tag does not mention the version — the Release body is not observable from the runner, so the changelog is its local proxy (§2.4.2, catalogue id 8) | tag + commit exist; the body is recoverable from the commit message (R13) |
 
@@ -1338,6 +1363,19 @@ Feature: Semantic release pipeline
     And the exit status is 0 for G1, G2 and G3 only
     And each green equals its literal: "green: nothing written", "green: no relevant changes", "green: released <tag>"
     And the six mutations of D-040 turn the suite red instead of passing it
+  Scenario: a scheduled run with nothing to release is green
+    Given a checkout whose HEAD is the release commit the previous run wrote, with its tag on "origin"
+    When the engine answers "no relevant changes" and creates no tag
+    Then the classifier prints "green: no relevant changes" and exits 0
+    And a run that created a tag, or that moved HEAD away from "PRE_RUN_HEAD", prints no green at all
+    And a run without "PRE_RUN_HEAD" cannot claim that green either
+  Scenario: a refused notes push is not a refused tag push
+    Given a run whose log shows "Created tag v0.2.0" and then "[remote rejected] refs/notes/semantic-release"
+    When the classifier runs against that log and "git ls-remote --tags origin" lists "v0.2.0"
+    Then it prints "release_notes_push_rejected"
+    And it never prints "release_tag_push_rejected": the commit and the tag are on the remote
+    And a log whose refusal names the tag, with the tag absent from the remote, prints "release_tag_push_rejected"
+    And a refusal message with the tag on the remote prints neither code
   Scenario: the tag helper messages the name git is creating
     Given the ".github/release/tag-message.sh" helper and a message file seeded by git
     When the helper is executed with that file as its only argument
@@ -1431,6 +1469,17 @@ bash -n .github/release/assert-outcome.sh && ls -l .github/release/assert-outcom
 .github/release/assert-outcome.sh --help >/dev/null 2>&1; echo $?                             # 1 — an argument is a usage, never a green
 .venv/bin/pytest -q tests/e2e/test_release_outcome.py                  # every order of §2.4.2 + precedence
 .venv/bin/pytest -q tests/e2e/test_release_contract.py                 # the document-level contract
+# §2.4.2 orders 3 and 10 — the two refusals and the delta, each fixture proved against a state:
+grep -c 'refs/notes/semantic-release' tests/fixtures/release/order10_notes_push_rejected.log      # >= 1
+grep -c 'Created tag' tests/fixtures/release/order10_notes_push_rejected.log                      # 1 — the tag exists in the same log
+grep -c 'refs/notes/' tests/fixtures/release/order10_tag_push_rejected.log                        # 0 — this refusal names the tag
+grep -c 'no relevant changes' tests/fixtures/release/order03_no_relevant_changes.log              # 1 — and no `Created tag` line
+# The classifier on the scheduled-run shape: HEAD is the previous release commit, the tag is on the
+# remote, the engine answered `no relevant changes` and created nothing -> green, exit 0.
+grep -c 'PRE_RUN_HEAD' .github/release/assert-outcome.sh                                           # >= 2 — G1 and G3 both read the baseline
+grep -c 'ls-remote --tags' .github/release/assert-outcome.sh                                       # >= 3 — the fact behind every tag code
+grep -c 'refs/notes/' .github/release/assert-outcome.sh                                            # >= 1 — the notes refusal is its own code
+grep -c 'git fetch --no-tags origin' .github/workflows/release.yml                                 # 1 — the notes ref is adopted before the engine
 # §2.4.2 — the precedence is a SEQUENCE, not a set: the contract suite exchanges two whole order blocks
 # (5↔6 and 9↔10, each marker keeping its own body) and requires the checks to go red, because `bash`
 # reads the file top to bottom.
@@ -1655,6 +1704,22 @@ template, so it has no empty/loading/error states, keyboard path or breakpoints.
 | Release page (§2.6) | a release without a body fails the run (`release_notes_missing`) | the summary names the failing step and the §6 code |
 
 ## 12. Notes
+
+- **spec_revision 9 (2026-11-11): a green states the delta of the run, and a refused push is classified
+  by the ref it names.** `version` stays 3 — no signature moved. In terms of the system: (1) G3 compares
+  the checkout with the `PRE_RUN_HEAD` baseline instead of the shape of `HEAD` — a scheduled run starts on
+  the release commit the previous run wrote, so a state-shaped row refused the green on every schedule tick
+  and the six-hour fallback could never succeed, while an empty baseline is a baseline error and grants
+  nothing (the criterion G1 already used); (2) step 4 adopts the remote notes ref before the engine runs,
+  because the runner's clone carries none and the engine's push of `refs/notes/semantic-release` was
+  therefore not a fast-forward and was refused *after* the tag became public; (3) the push-rejection row
+  now asks `git ls-remote --tags origin` which state actually holds before it prints a code, and splits
+  into two: a refusal of `refs/notes/` with the tag on the remote is the new catalogue id 13
+  `release_notes_push_rejected` (commit, tag and Release public, notes ref missing, one push repairs it),
+  and `release_tag_push_rejected` is emitted only when the tag the log claims is absent from the remote.
+  The invariant the row now carries: **a code is emitted on an observed fact, never on a substring of the
+  log** — the same refusal text is produced by a refusal of any ref. Two fixtures pin the shapes: a
+  rejected notes push with the tag present, and a rejected tag push with the tag absent.
 
 - **spec_revision 8 (2026-11-11): a push that is skipped is now released within six hours.**
   `version` stays 3 — no signature moved. In terms of the system: GitHub honours the skip token as a
