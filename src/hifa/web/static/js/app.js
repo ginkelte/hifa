@@ -109,10 +109,40 @@
     }
   });
 
+  // A finger that moved is a scroll, not a tap. A touch gesture over a row or a card leaves a
+  // click behind when the browser decides the movement was small enough, and that click opens the
+  // panel in the middle of a scroll. The distance is measured here and the click is swallowed in
+  // the capture phase, before the element's own trigger sees it.
+  var tap = { x: 0, y: 0, moved: false };
+  var TAP_SLOP = 10;
+  document.addEventListener("touchstart", function (event) {
+    if (event.touches.length !== 1) { tap.moved = true; return; }
+    tap.x = event.touches[0].clientX;
+    tap.y = event.touches[0].clientY;
+    tap.moved = false;
+  }, { passive: true });
+  document.addEventListener("touchmove", function (event) {
+    if (event.touches.length !== 1) { tap.moved = true; return; }
+    if (Math.abs(event.touches[0].clientX - tap.x) > TAP_SLOP ||
+        Math.abs(event.touches[0].clientY - tap.y) > TAP_SLOP) {
+      tap.moved = true;
+    }
+  }, { passive: true });
+  document.addEventListener("click", function (event) {
+    if (!tap.moved) return;
+    if (!event.target.closest) return;
+    if (!event.target.closest(".card, .row, [data-href]")) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
   // opening a panel by clicking a row keeps the URL in the history (hx-push-url).
   document.body.addEventListener("click", function (event) {
     var closer = event.target.closest ? event.target.closest("[data-close-panel]") : null;
-    if (closer) closePanel();
+    if (closer) {
+      event.preventDefault();
+      closePanel();
+    }
   });
 
   // a successful quick add answers with HX-Trigger: issue-created; empty the box again.

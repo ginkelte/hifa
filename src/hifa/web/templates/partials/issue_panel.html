@@ -1,7 +1,8 @@
 <aside id="panel" class="panel" aria-label="Issue {{ vm.identifier }}">
   <header class="panel-head">
     <a class="identifier" href="{{ vm.url }}">{{ vm.identifier }}</a>
-    <a class="btn btn-ghost" href="{{ vm.url }}" data-close-panel>Open</a>
+    <button type="button" class="btn btn-ghost" data-close-panel aria-label="Close">Close</button>
+    <a class="btn btn-ghost" href="{{ vm.url }}">Open</a>
   </header>
   <h2 class="panel-title">{{ vm.title }}</h2>
   <dl class="meta">

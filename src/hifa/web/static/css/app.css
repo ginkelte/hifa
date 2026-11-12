@@ -364,7 +364,8 @@ tr.row-empty td { color: var(--text-muted); }
   overflow-y: auto;
   z-index: 10;
 }
-.panel-head { display: flex; align-items: center; justify-content: space-between; }
+.panel-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.panel-head .identifier { margin-right: auto; }
 .panel-title { font-size: 15px; font-weight: 600; margin: 6px 0 12px; }
 .panel-foot { margin-top: 16px; }
 
@@ -404,6 +405,19 @@ tr.row-empty td { color: var(--text-muted); }
 @media (max-width: 900px) {
   .sidebar { display: none; }
   .shell { margin-left: 0; }
+  /* The panel covers the whole screen at this width: the heading stays put so the way out is
+     always under the thumb, however far the issue has been scrolled. */
+  .panel { width: 100vw; border-left: 0; padding: 0; }
+  .panel-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-head .btn { min-height: 40px; }
+  .panel > :not(.panel-head) { margin-left: 16px; margin-right: 16px; }
   /* One column below another: the page itself scrolls, with no nested scrollers to fight over
      the gesture and no horizontal pan to get lost in. */
   .board { flex-direction: column; overflow-x: visible; overflow-y: visible; min-height: 0; }
