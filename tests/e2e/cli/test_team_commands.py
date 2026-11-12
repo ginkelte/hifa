@@ -60,9 +60,10 @@ STATE_KEYS = ["id", "name", "type", "color", "position", "is_default"]
 
 @pytest.fixture
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """Isolated cwd + HIFA_DB (never the real environment) with one initialized team."""
+    """Isolated cwd inside a work tree + HIFA_DB (never the real environment) with one team."""
     project = tmp_path / "proj"
     project.mkdir()
+    (project / ".git").mkdir()  # R13/D-041: the sandbox is a project, so `init` writes the config
     monkeypatch.chdir(project)
     monkeypatch.setenv("HIFA_DB", str(tmp_path / "hifa.db"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))

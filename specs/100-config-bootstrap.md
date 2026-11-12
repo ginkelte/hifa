@@ -4,7 +4,7 @@ title: Configuration and bootstrap
 component: support
 status: review
 version: 1
-spec_revision: 5
+spec_revision: 6
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/config.py
@@ -110,6 +110,7 @@ class ConfigError(Exception):
     field: str | None  # "team.key", "web.port", …
 
 def find_config_file(start: Path) -> Path | None
+def find_project_root(start: Path) -> Path | None
 def load_config_file(path: Path) -> ConfigFile
 def resolve_config(
     *,
@@ -130,6 +131,13 @@ def validate_timezone(name: str) -> str
 
 `resolve_config` is **pure with respect to the DB**: it opens no connections, creates no directories and writes
 nothing. The creation of the directory and the file happens in `hifa init` (§5.1).
+
+`find_project_root(start)` returns the nearest ancestor of `start` — `start` included — that contains
+`.git`, or `None` when there is none. `.git` is a **directory** in a normal clone and a **file**
+(`gitdir: …`) in a linked work tree or a submodule, so the test is existence, never `is_dir()`.
+It is the single notion of project root in this module: `find_config_file` bounds its walk-up with
+it (R3) and the write guard of `hifa init` consumes it (R13, D-041). It reads no file and resolves
+no symlink beyond `Path.resolve()` on `start`.
 
 ### 2.2 Path resolution order
 
@@ -336,6 +344,31 @@ hifa is already initialized at /home/vicho/proj/.hifa/hifa.db
   workspace Ginkelte · team ENG · 0 changes
 ```
 
+The `config` field of the `init` report takes exactly four shapes, and the fourth is not a path:
+
+| Value | When |
+|---|---|
+| `<path> (created)` | the file did not exist in the work tree and `init` wrote it (R13) |
+| `<path> (existing)` | a `.hifa.toml` exists in the cwd or in an ancestor below the project root and was left untouched (R13) |
+| `<path> (rewritten)` | `--force` rewrote an existing file, leaving `<path>.bak` (R12) |
+| `none (outside a git work tree)` | the cwd has no `.git` in itself or in any ancestor, so nothing was written and the database is the one resolution produced (R13) |
+
+Outside a work tree the human block is therefore:
+
+```
+initialized hifa at /home/vicho/.local/share/hifa/hifa.db
+  workspace  Tmp (tmp)
+  team       ENG — Engineering 🚀
+  states     Triage, Todo, Backlog, In Progress, Done, Canceled
+  labels     Bug, Feature, Improvement, Docs
+  member     vicho <vicho@local>
+  config     none (outside a git work tree)
+next: hifa issue create "My first issue" --team ENG
+```
+
+`--json` is unaffected: the envelope is the `BootstrapResult` of §2.5, which carries `db_path` and
+not the config file. `--quiet` prints the three IDs and no report.
+
 Human output of `doctor`: a `CHECK | SEVERITY | COUNT | DETAIL` table and a footer
 `4 ok, 1 warning, 0 critical` (it never prints `ok` in the footer if there is a `critical`).
 
@@ -389,8 +422,11 @@ Invariants that `hifa init` guarantees on completion:
   `cwd` → `resolve()`. A value pointing to an existing directory ⇒
   `ConfigError(config_invalid_value, field="db")`. `":memory:"` is preserved literally (without
   `resolve()`) and `source` is reported normally.
-- **R3 — Walk-up (REQ-F100-03).** `find_config_file` starts from the resolved `cwd` and walks up to `/`,
-  a maximum of 32 levels, looking for `.hifa.toml`. It does not follow symlinks outside the tree (it uses the
+- **R3 — Walk-up (REQ-F100-03).** `find_config_file` starts from the resolved `cwd` and walks up
+  looking for `.hifa.toml`, bounded by `find_project_root` (§2.1): it stops at the first ancestor
+  that contains `.git` and never climbs above it, so a config that sits above the project root is
+  not consulted. Without a `.git` ancestor the historical cap of 32 levels and the filesystem root
+  apply. It does not follow symlinks outside the tree (it uses the
   resolved directory). An unreadable `.hifa.toml` ⇒ `config_unreadable`, without continuing the search.
 - **R4 — Path relative to the file (REQ-F100-04).** If the `.hifa.toml` declares `[workspace] db`, the
   path is resolved against the **directory of the file**, not against the cwd. A `db = ".hifa/hifa.db"`
@@ -433,14 +469,23 @@ Invariants that `hifa init` guarantees on completion:
   `created=[]`, `already_initialized=True` and exit 0.
 - **R12 — `--force` (REQ-F100-12).** It runs the seeding again to create whatever is missing (for
   example, a state deleted by hand, or the labels if the first run used `--no-labels`), **without**
-  touching existing rows and **without** deleting issues. It also rewrites `.hifa.toml` even if it exists,
-  leaving a copy of the previous one in `.hifa.toml.bak` (overwriting the earlier copy). `--force` is not
-  equivalent to reset: there is no reset flag in v1.
-- **R13 — `.hifa.toml` (REQ-F100-13).** `init` writes the file **only if** no
-  `.hifa.toml` exists in the cwd or in an ancestor. If one exists in an ancestor, nothing is written and the
-  report says so (`config: /repo/.hifa.toml (existing)`). The generated content is the one in §2.3
-  with the effective values, with `db` as a path **relative** to the file's directory when the
-  database is inside that tree, and absolute when it is not.
+  touching existing rows and **without** deleting issues. Inside a work tree it also rewrites
+  `.hifa.toml` even if it exists, leaving a copy of the previous one in `.hifa.toml.bak` (overwriting
+  the earlier copy). Outside a work tree `--force` lifts nothing: R13 writes no file there, so there
+  is nothing to rewrite and no `.bak` appears. `--force` is not equivalent to reset: there is no
+  reset flag in v1.
+- **R13 — `.hifa.toml` (REQ-F100-13).** `init` writes the file **only when the cwd is inside a git
+  work tree** — some ancestor of the cwd, the cwd included, contains `.git` (`find_project_root` of
+  §2.1, which is also the bound of the walk-up of R3). Outside a work tree it writes **nothing**:
+  it does not fail, it keeps exit code `0`, and it reports `config: none (outside a git work tree)`
+  (§2.7). Inside a work tree it writes the file only if no `.hifa.toml` exists in the cwd or in an
+  ancestor below the project root; if one exists, nothing is written and the report says so
+  (`config: /repo/.hifa.toml (existing)`). The guard concerns the **write** and never the
+  resolution: `--db`, `HIFA_DB` and an ancestor `.hifa.toml` keep deciding the database exactly as
+  in R1, so outside a work tree the effective base is the global one of R5 unless one of those
+  sources says otherwise. The generated content is the one in §2.3 with the effective values, with
+  `db` as a path **relative** to the file's directory when the database is inside that tree, and
+  absolute when it is not.
 - **R14 — Existing database detection (REQ-F100-14).** Three cases: (a) nonexistent file ⇒ it is
   created and seeded; (b) existing and migrated file (`user_version >= 1`) with a workspace ⇒
   `already_initialized` and only what is missing is completed; (c) existing file **without** a `workspace`
@@ -550,7 +595,11 @@ the `team`/`cli`/`web` values come from it; if not, from the defaults.
        get-or-create team_membership
     COMMIT
  8. chmod(db_path, 0o600)
- 9. if there is no .hifa.toml in the tree (or --force) → write_config_file(0o600)  (+ .bak if --force)
+ 9. find_project_root(cwd) is None            → write no config; report
+                                                `config: none (outside a git work tree)`
+    else if there is no .hifa.toml in [cwd..project root] (or --force)
+                                                → write_config_file(0o600)  (+ .bak if --force)
+    else                                        → report the existing file, write nothing
 10. BootstrapResult(created, skipped, ids, db_path, already_initialized)
 11. exit 0
 ```
@@ -618,7 +667,7 @@ other spec may use it (D-014). An internal bug is `6`, never `1`.
 Feature: Configuration, bootstrap and database diagnostics
 
   Scenario: init in an empty directory seeds a usable workspace
-    Given an empty directory without .hifa.toml
+    Given an empty directory inside a git work tree without .hifa.toml
     When "hifa init --team-key ENG --team-name Engineering" is executed
     Then the exit code is 0
     And the file ".hifa/hifa.db" exists
@@ -631,6 +680,22 @@ Feature: Configuration, bootstrap and database diagnostics
     And 4 labels exist with team_id NULL
     And 1 member exists with is_admin 1
     And 1 team_membership exists with is_owner 1
+
+  Scenario: init outside a git work tree writes no config and uses the global database
+    Given an empty directory with no .git in itself or in any ancestor
+    And XDG_DATA_HOME pointing to "/tmp/xdg"
+    When "hifa init" is executed
+    Then the exit code is 0
+    And the file ".hifa.toml" does not exist in the directory
+    And the resolved database is "/tmp/xdg/hifa/hifa.db"
+    And the report shows "config" equal to "none (outside a git work tree)"
+
+  Scenario: --force outside a git work tree still writes no config
+    Given an empty directory with no .git in itself or in any ancestor
+    When "hifa init --force" is executed
+    Then the exit code is 0
+    And the file ".hifa.toml" does not exist in the directory
+    And the file ".hifa.toml.bak" does not exist in the directory
 
   Scenario: init is idempotent
     Given a directory already initialized with "hifa init"
@@ -848,6 +913,16 @@ Feature: Configuration, bootstrap and database diagnostics
 
 ## 11. Notes
 
+- **spec_revision 6 (2026-11-11): `init` writes `.hifa.toml` only inside a git work tree (D-041,
+  closes P-12).** The write guard of R13 is stated in terms of `find_project_root` (§2.1), the same
+  notion of project root that bounds the walk-up of R3 — so the file is written where a project
+  exists and nowhere else. Outside a work tree `init` writes nothing, keeps exit `0`, resolves the
+  database through R1 as always (the global one of R5 when no other source speaks) and reports
+  `config: none (outside a git work tree)` (§2.7); `--force` lifts nothing, because there is no
+  file inside the tree to rewrite. The guard is about the **write**, never about the resolution:
+  `--db`, `HIFA_DB` and an ancestor `.hifa.toml` keep winning the path, and nothing about R1-R6
+  changes. R3 is restated with the `.git` bound that had been implemented since P-11 without a
+  sentence in this spec.
 - **spec_revision 5 (2026-11-11): the canonical order puts `Todo` before `Backlog` (D-034).**
   `DEFAULT_STATES` is now `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) ·
   Done(5.0) · Canceled(6.0)`: same six names, same types, same colors, same `is_default`, only the

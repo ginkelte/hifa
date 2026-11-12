@@ -43,6 +43,7 @@ from hifa.config import (
     ConfigError,
     TeamConfig,
     find_config_file,
+    find_project_root,
     resolve_config,
     slugify,
     write_config_file,
@@ -185,7 +186,7 @@ def _run_init(
         "states": [state[0] for state in DEFAULT_STATES],
         "labels": [label[0] for label in DEFAULT_LABELS] if options.seed_labels else [],
         "member": _member_label(member),
-        "config": f"{config_path} ({config_status})",
+        "config": _config_report(config_path, config_status),
         "already_initialized": result.already_initialized,
     }
     return result, meta
@@ -312,16 +313,33 @@ def _member_label(member: Any) -> str | None:
     return str(member.display_name)
 
 
+def _config_report(path: Path | None, status: str) -> str:
+    """`<path> (created|existing|rewritten)` or `none (outside a git work tree)` (R13, §2.7)."""
+    if path is None:
+        return f"none ({status})"
+    return f"{path} ({status})"
+
+
 def _write_config(
     cfg: Config,
     options: BootstrapOptions,
     db_path: Path,
     *,
     force: bool,
-) -> tuple[Path, str]:
-    """`created` | `existing` | `rewritten`."""
-    existing = find_config_file(Path.cwd())
-    target = existing if existing is not None else Path.cwd() / CONFIG_FILENAME
+) -> tuple[Path | None, str]:
+    """`created` | `existing` | `rewritten` inside a work tree, `outside a git work tree` outside.
+
+    The guard is about **writing** the file and never about resolving the database: when the working
+    directory has no `.git` in itself or in an ancestor, nothing is written, no error is raised and
+    the base the caller resolved stands. `--force` does not lift it — there is no file to rewrite.
+    """
+
+    cwd = Path.cwd()
+    if find_project_root(cwd) is None:
+        return None, "outside a git work tree"
+
+    existing = find_config_file(cwd)
+    target = existing if existing is not None else cwd / CONFIG_FILENAME
 
     if existing is None:
         write_config_file(target, _effective_config(cfg, options, db_path, target))
