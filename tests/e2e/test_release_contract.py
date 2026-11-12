@@ -320,6 +320,11 @@ def _check_workflow_steps(steps: Any) -> list[str]:
     )
     _needs(
         violations,
+        "refs/notes/*:refs/notes/*" in install,
+        "Step 4 adopts the remote notes ref before the engine pushes it",
+    )
+    _needs(
+        violations,
         "test -s" in install,
         "The tag list is asserted non-empty — an empty capture is not a baseline",
     )
@@ -797,6 +802,21 @@ def check_classifier(text: str) -> list[str]:
         violations,
         "base64 -d" in order_one,
         "Order 1 decodes a base64 value instead of trusting the key name",
+    )
+
+    # Order 10 asks the remote which state the refused push left behind. The message is a signal,
+    # never the fact: `failed to push some refs` is produced by a refusal of the tag, of the notes
+    # ref and of the release commit's own push, and only `ls-remote` can tell them apart.
+    order_ten = sections.get(10, "")
+    _needs(
+        violations,
+        "ls-remote --tags" in order_ten,
+        "Order 10 queries the remote for the tag before emitting a tag-push code",
+    )
+    _needs(
+        violations,
+        ".github" not in order_ten and "refs/notes/" in order_ten,
+        "Order 10 tells a notes refusal apart from a tag refusal",
     )
     _needs(
         violations,

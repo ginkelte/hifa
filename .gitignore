@@ -16,3 +16,5 @@ node_modules/
 
 # config de proyecto generada por `hifa init` (contiene la ruta de la DB, no se versiona)
 .hifa.toml
+# a symlinked venv (a worktree pointing at another one) is not matched by the trailing slash
+.venv
