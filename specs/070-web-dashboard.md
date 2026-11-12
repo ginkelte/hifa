@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 1
-spec_revision: 10
+spec_revision: 11
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -720,6 +720,18 @@ no nested `overflow-y` scrollers competing for the gesture, and no horizontal pa
 
 The page never scrolls horizontally at 320 px: with one column per row there is no width to pan.
 
+The panel is a full-width sheet at this breakpoint (`width: 100vw`, no left border) and its heading
+is `position: sticky` at the top. A panel that covers the screen while its only way out scrolls
+away with the content is a trap: the heading, with the `Close` control in it, stays under the thumb
+at any scroll offset.
+
+| Rule | Value |
+|---|---|
+| `.panel` | `width: 100vw`, no left border, no side padding |
+| `.panel-head` | `position: sticky`, `top: 0`, `padding: 10px 16px`, surface background, bottom border |
+| `.panel-head .btn` | `min-height: 40px` |
+| panel content | `margin-left/right: 16px`, since the sheet has no side padding |
+
 
 ### 2.6 Interaction
 
@@ -931,6 +943,25 @@ function columnPayload(evt) {
 - Without JS there is no column drag: the order is changed from the CLI with
   `hifa state update NAME --before A | --after A` (SPEC-050 §2.5.6) and the next page load renders
   the persisted order.
+
+#### 2.6.7 A finger that moves is a scroll, not a tap
+
+Rows and cards answer `click`; opening a detail is the only thing a tap on one does. On a touch
+screen the browser can still deliver that `click` at the end of a gesture whose purpose was to
+scroll, so the page opens a panel in the middle of a scroll and the reader loses the place — and on
+a phone, where the panel covers the screen, loses the page.
+
+The gesture is measured before the trigger sees it:
+
+| Step | Rule |
+|---|---|
+| `touchstart` | record the first contact; more than one finger means "not a tap" |
+| `touchmove` | a displacement past `10px` on either axis marks the gesture as movement |
+| `click`, capture phase | if the gesture moved, `preventDefault()` and `stopPropagation()` on `.card`, `.row` and `[data-href]` |
+
+Capture matters: the element's own `hx-get` listens on the bubble phase, so a closer registered
+there runs too late. The threshold is a slop, not a drag detector — a deliberate tap with a shaky
+thumb stays a tap.
 
 #### 2.6.6 Progressive enhancement
 
@@ -1494,6 +1525,9 @@ Feature: hifa web dashboard
   the static template test rejects `|default(` as well as `|length`, and the quick-add form and the
   rows fragment receive `form_oob`, `form_error` and `form_errors` from every route that renders
   them, so a missing key breaks the test instead of silently rendering the wrong HTML.
+- spec_revision 11 (2026-11-12): a gesture that moves never opens a panel (§2.6.7), and on a
+  phone the panel is a full-width sheet whose heading stays put so its `Close` control does
+  not scroll away (§2.5.6).
 - spec_revision 10 (2026-11-12): the board declares its phone layout (§2.5.6) and the column drag
   declares its touch options (§2.6.5). One column per row below `900px`, so the page is the only
   vertical scroller and there is no width to pan at 320 px; `delay`/`touchStartThreshold` keep a

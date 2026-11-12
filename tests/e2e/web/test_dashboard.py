@@ -320,6 +320,14 @@ def test_row_card_and_panel_fragments(seeded: SimpleNamespace) -> None:
     assert panel.headers["HX-Push-Url"] == "/ENG/issue/ENG-1"
 
 
+def test_the_panel_can_be_closed_without_navigating(seeded: SimpleNamespace) -> None:
+    """The panel covers the screen on a phone; a control that also navigates is not a way out."""
+    panel = seeded.client.get("/_/issues/ENG-1/panel", headers=HTMX).text
+    closers = re.findall(r"<(a|button)\b[^>]*data-close-panel[^>]*>", panel)
+    assert closers == ["button"], f"a close control must be a button, got {closers}"
+    assert ">Close</button>" in panel
+
+
 def test_list_filters_by_state(seeded: SimpleNamespace) -> None:
     done = seeded.client.get("/ENG/list", params={"state": "Done"})
     assert done.status_code == 200
