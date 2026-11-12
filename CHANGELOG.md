@@ -1,3 +1,10 @@
+## [0.1.4](https://github.com/ginkelte/hifa/compare/v0.1.3...v0.1.4) (2026-11-12)
+
+
+### Bug Fixes
+
+* **web:** a phone can scroll the board again ([#9](https://github.com/ginkelte/hifa/issues/9)) ([7b78ddb](https://github.com/ginkelte/hifa/commit/7b78ddbb944be4989db06e60080adddc5cf5c068))
+
 ## [0.1.3](https://github.com/ginkelte/hifa/compare/v0.1.2...v0.1.3) (2026-11-12)
 
 ## [0.1.2](https://github.com/ginkelte/hifa/compare/v0.1.1...v0.1.2) (2026-11-11)
