@@ -1,3 +1,10 @@
+## [0.1.7](https://github.com/ginkelte/hifa/compare/v0.1.6...v0.1.7) (2026-11-12)
+
+
+### Bug Fixes
+
+* **web:** a swipe must not open a panel, and a panel must have a way out ([#12](https://github.com/ginkelte/hifa/issues/12)) ([c036263](https://github.com/ginkelte/hifa/commit/c036263d822d1ed5c28b4fe225539cfa770d2824))
+
 ## [0.1.6](https://github.com/ginkelte/hifa/compare/v0.1.5...v0.1.6) (2026-11-12)
 
 
