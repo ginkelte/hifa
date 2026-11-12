@@ -43,9 +43,10 @@ JSON_KEYS = [
 
 @pytest.fixture
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """isolated cwd + HIFA_DB/XDG/HOME in tmp_path (never touches the real environment)."""
+    """Isolated cwd inside a work tree, with HIFA_DB/XDG/HOME in tmp_path."""
     project = tmp_path / "proj"
     project.mkdir()
+    (project / ".git").mkdir()  # R13/D-041: `init` writes `.hifa.toml` only inside a work tree
     monkeypatch.chdir(project)
     monkeypatch.setenv("HIFA_DB", str(tmp_path / "hifa.db"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))

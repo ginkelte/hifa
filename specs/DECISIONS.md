@@ -1244,3 +1244,64 @@ push is not a missing note, and `failed to push some refs` alone is not proof th
 step 9 tests that the classifier is on disk before invoking it, and the classifier refuses an argument
 instead of classifying `--help` as a release. Nothing in the design moves: this is the criterion of R20
 applied to the decision that wrote it.
+
+## D-041 — `hifa init` writes `.hifa.toml` only inside a git work tree; P-12 is closed
+**Date:** 2026-11-11 · **Wins:** SPEC-100 §4.2 R13 · **Touches:** SPEC-100 §2.1, §2.7, R3, R12, R13,
+§5.2, §7, Notes; `src/hifa/config.py`; `src/hifa/cli/commands/init.py`; `tests/unit/config/`,
+`tests/e2e/cli/`; `README.md`; `specs/INDEX.md`
+
+`hifa init` used to write `.hifa.toml` in the cwd unconditionally. A single run in a shared scratch
+directory therefore put a workspace file above everything created below it, and the walk-up of R3
+handed that database to every one of those projects, silently. P-11 (the walk-up stops at the first
+`.git`) narrowed the blast radius but not the class: a directory with no `.git` ancestor still
+inherits whatever config sits above it — and the file is written *before* anybody knows whether a
+project exists there.
+
+**Resolution:** the write is conditional on the working directory being inside a git work tree, and
+nothing else changes. The guard lives in `config.py` as `find_project_root(start)` — the nearest
+ancestor of `start`, itself included, that contains `.git`, whether that path is a directory (a
+clone) or a file (`gitdir: …`, a linked work tree or a submodule). It is the **same** notion of
+project root that bounds `find_config_file`'s walk-up, and `find_config_file` is now expressed in
+terms of it, so the write guard and the resolution guard cannot drift apart. `init` consumes it:
+`_write_config` returns "no path" plus the status `outside a git work tree` when the guard
+suppresses the write, and the report prints `config: none (outside a git work tree)` — the fourth
+shape of a field that already had `created`, `existing` and `rewritten`.
+
+What the guard deliberately does **not** do:
+
+- **It does not touch resolution.** `--db`, `HIFA_DB` and an ancestor `.hifa.toml` keep deciding the
+  database exactly as R1 says; outside a work tree the effective base is the global one of R5
+  (`$XDG_DATA_HOME/hifa/hifa.db` or `~/.local/share/hifa/hifa.db`) when no other source speaks. A
+  guard on the *path* would have broken `hifa init --db /tmp/x.db` from a scratch directory, which
+  is a legitimate way to seed a database on purpose.
+- **It does not fail and does not change the exit code.** Writing no file is the correct outcome,
+  not an error: exit stays `0` and the seeding is complete, so the report has to say which base was
+  used — otherwise the user cannot tell a project-local run from a global-DB run.
+- **`--force` does not lift it.** There is no file inside the tree to rewrite, and a flag that means
+  "re-seed what is missing" is not a licence to invent a project. No `.bak` appears either.
+- **It is not a git call.** `Path.exists()` on `.git` is enough for "is there a work tree here", and
+  `config.py` stays stdlib-only (REQ-N100-04): no `git` subprocess, no `subprocess` import, no
+  work-tree parsing, so `hifa init` keeps working with git absent from `PATH`.
+
+**Why not the alternatives.** (a) *Write the config only when the directory already has a `.git`,
+and otherwise print a warning*: a warning does not undo a file that poisons every sibling below it —
+the class of failure is "a stray ancestor file", and the only reliable cure is not creating it.
+(b) *Drop `.hifa.toml` from `init` altogether*: it is the only place where `[team]`, `[cli]` and
+`[web]` are materialised for a project (SPEC-100 §2.3, R16 `0600`), and every other command reads it;
+removing the write would leave `[web] host/port` and `default_team` with no file to live in.
+(c) *A `--no-config` flag*: it makes the safe behaviour opt-in, and the default is the one that
+poisons the tree.
+(d) *Put the guard in `init.py`*: the notion of project root already lives in `config.py` next to
+`find_config_file`, and a second copy in the CLI edge is exactly the duplication P4 forbids.
+
+**Verification.** Unit tests cover the helper (the repo directory, a subdirectory of the repo, a
+`.git` that is a file, and a tree with no `.git` ancestor); the CLI tests cover the four states of
+the `config` field and the two guards — outside a work tree no `.hifa.toml` and no `.hifa.toml.bak`
+appear, the resolved database is the XDG one, `HIFA_DB`/`--db` still win, and the report carries
+`none (outside a git work tree)`; inside a work tree the file is written, a second run reports
+`existing` and `--force` reports `rewritten` with a `.bak`. The outside-a-work-tree test is required
+to fail against the previous implementation: it asserts the absence of the file, which the old
+code created on every run, and it was run red before the fix landed.
+
+P-12 is closed by this decision and its entry is left as written (append-only); nothing in P-12's
+description loses, the proposed fix it recorded is what R13 now states.

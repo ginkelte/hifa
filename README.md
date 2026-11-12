@@ -97,18 +97,26 @@ hifa serve                                              # http://127.0.0.1:7777/
 ```
 
 `hifa init` creates the database and seeds a workspace, one team, its six workflow states, four
-labels and your local member. It is idempotent, and it writes `.hifa.toml` next to the database:
+labels and your local member. It is idempotent, and inside a git work tree it writes `.hifa.toml`
+next to the database:
 
 ```
-$ hifa init --team-key ENG --team-name "Engineering"
-initialized hifa at /tmp/demo/demo.db
-  workspace  Demo (demo)
+$ cd ~/proj && hifa init --team-key ENG --team-name "Engineering"
+initialized hifa at ~/proj/.hifa/hifa.db
+  workspace  Proj (proj)
   team       ENG — Engineering 🚀
   states     Triage, Todo, Backlog, In Progress, Done, Canceled
   labels     Bug, Feature, Improvement, Docs
   member     administrator
-  config     /tmp/demo/.hifa.toml (created)
+  config     /home/administrator/proj/.hifa.toml (created)
 ```
+
+The config file is written **only inside a git work tree**: a project config that belongs to no
+project is worse than no config, because everything created below it inherits that database. Run
+`hifa init` outside a repository (a scratch directory, `$HOME`) and it writes nothing, seeds the
+global database (`$XDG_DATA_HOME/hifa/hifa.db`, or `~/.local/share/hifa/hifa.db`) and says so — the
+`config` line reads `none (outside a git work tree)`. `--db` and `HIFA_DB` still choose the
+database in that case; the guard is on writing the file, not on resolving the path.
 
 Every command speaks three dialects: a human table, `--json` for agents, `-q` for scripts that only
 want the identifier. `--json` prints the canonical entity, with nulls included so a consumer never

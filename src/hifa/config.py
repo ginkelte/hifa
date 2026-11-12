@@ -2,7 +2,7 @@
 
 Public contract (SPEC-100 §2.1): the `DEFAULT_*` constants, the `TeamConfig`,
 `CliConfig`, `WebConfig`, `Config`, `ConfigFile`, `ConfigError` dataclasses, and the
-`find_config_file`, `load_config_file`, `resolve_config`, `resolve_db_path`,
+`find_config_file`, `find_project_root`, `load_config_file`, `resolve_config`, `resolve_db_path`,
 `write_config_file`, `slugify`, `validate_timezone` functions.
 
 Rules:
@@ -235,6 +235,25 @@ def _stat_file(path: Path) -> bool:
         ) from exc
 
 
+def find_project_root(start: Path) -> Path | None:
+    """Nearest ancestor of `start` (itself included) containing `.git`; `None` outside a work tree.
+
+    `.git` is a directory in a clone and a file (`gitdir: …`) in a linked work tree or a
+    submodule, so the test is existence and never `is_dir()`. This is the one notion of project
+    root in this module: `find_config_file` bounds its walk-up with it and `hifa init` consumes it
+    to decide whether a `.hifa.toml` may be written at all (R3/R13, D-041).
+    """
+    current = Path(start).resolve()
+    for _ in range(MAX_WALK_UP):
+        if (current / ".git").exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+    return None
+
+
 def find_config_file(start: Path) -> Path | None:
     """Walk up from `start` looking for `.hifa.toml`, never past the project root (P-11).
 
@@ -245,6 +264,7 @@ def find_config_file(start: Path) -> Path | None:
     cap of 32 levels and the filesystem root still apply.
     """
     current = Path(start).resolve()
+    root = find_project_root(current)
     for _ in range(MAX_WALK_UP):
         candidate = current / CONFIG_FILENAME
         if _stat_file(candidate):
@@ -258,7 +278,7 @@ def find_config_file(start: Path) -> Path | None:
                     field=str(candidate),
                 ) from exc
             return candidate
-        if (current / ".git").exists():
+        if root is not None and current == root:
             break
         parent = current.parent
         if parent == current:
@@ -630,6 +650,7 @@ __all__ = [
     "TeamConfig",
     "WebConfig",
     "find_config_file",
+    "find_project_root",
     "load_config_file",
     "resolve_config",
     "resolve_db_path",
