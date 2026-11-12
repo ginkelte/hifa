@@ -1,3 +1,10 @@
+## [0.1.6](https://github.com/ginkelte/hifa/compare/v0.1.5...v0.1.6) (2026-11-12)
+
+
+### Bug Fixes
+
+* **release:** a refusal is a line git writes, not a sentence someone typed ([#11](https://github.com/ginkelte/hifa/issues/11)) ([c01731f](https://github.com/ginkelte/hifa/commit/c01731fcd848479885cd6fc1554347cc4ee0bedb))
+
 ## [0.1.5](https://github.com/ginkelte/hifa/compare/v0.1.4...v0.1.5) (2026-11-12)
 
 
