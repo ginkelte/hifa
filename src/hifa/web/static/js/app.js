@@ -180,6 +180,11 @@
       draggable: ".column",
       filter: ".card",
       ghostClass: "column-ghost",
+      // A finger that swipes must scroll. Dragging a column starts only after a long press, and
+      // only once the finger has moved past a few pixels, so the gesture is never ambiguous.
+      delay: 220,
+      delayOnTouchOnly: true,
+      touchStartThreshold: 6,
       onStart: function (event) {
         origin = {
           index: event.oldIndex,

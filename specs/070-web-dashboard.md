@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 1
-spec_revision: 9
+spec_revision: 10
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -704,6 +704,23 @@ column shows `empty_state.html` with the text `Nothing in <state>`, in `--text-m
 | Overdue | `--urgent` in `DUE` and in the state dot only if `is_overdue` |
 | Labels | chip 18 px tall, `border-radius: 4px`, background `color-mix(in srgb, <label.color> 18%, var(--surface))`, `--text` text at 11 px |
 
+#### 2.5.6 Breakpoints — the board on a phone
+
+Below `900px` the shell drops the sidebar and the board stops being a horizontal strip. Each column
+takes the full width and sits below the previous one, so the **page** is the only vertical scroller:
+no nested `overflow-y` scrollers competing for the gesture, and no horizontal pan to get lost in.
+
+| Rule | Value |
+|---|---|
+| `.board` | `flex-direction: column`, `overflow-x/y: visible` |
+| `.column` | `flex: 0 0 auto`, `width: 100%`, no right border, bottom border as a separator |
+| `.column-body` | `overflow-y: visible` — the page scrolls, not the column |
+| `.column-head` | `40px` tall, so the strip is a comfortable target |
+| `.card` | `10px 12px` padding — every card is at least a 44 px tall target |
+
+The page never scrolls horizontally at 320 px: with one column per row there is no width to pan.
+
+
 ### 2.6 Interaction
 
 #### 2.6.1 Command palette (`Cmd+K` / `Ctrl+K`)
@@ -874,6 +891,10 @@ nothing else. It does not move issues, does not touch `issue.state_id`, `issue.b
   card instance of §2.6.4 lives **inside** each column and keeps its own `group: "board"`; the
   `filter` makes a drag that starts on a card belong to the card instance, so dropping a card on
   another column is still a state change and never a column move.
+- Touch is not ambiguous: `delay: 220`, `delayOnTouchOnly: true`, `touchStartThreshold: 6`. A finger
+  that swipes scrolls the page; a drag begins only after a long press that has also moved past a few
+  pixels. Without them a column drag starts on the first `touchmove` and `Sortable` cancels the
+  scroll, which on a phone means the page cannot be scrolled at all.
 - `onEnd` reads **only** state ids from the DOM: the previous and next siblings of the moved
   column, `data-state-id` each, `null` at the edges.
 
@@ -1473,6 +1494,10 @@ Feature: hifa web dashboard
   the static template test rejects `|default(` as well as `|length`, and the quick-add form and the
   rows fragment receive `form_oob`, `form_error` and `form_errors` from every route that renders
   them, so a missing key breaks the test instead of silently rendering the wrong HTML.
+- spec_revision 10 (2026-11-12): the board declares its phone layout (§2.5.6) and the column drag
+  declares its touch options (§2.6.5). One column per row below `900px`, so the page is the only
+  vertical scroller and there is no width to pan at 320 px; `delay`/`touchStartThreshold` keep a
+  swipe a scroll and make a column drag require a long press.
 - spec_revision 5 (2026-11-11): **the dashboard's contract, closed against SPEC-030 and SPEC-040
   (D-025, D-026, D-027), plus `/healthz` (D-028).** (1) §2.1.1 states that `q` on the board and on the
   list is a **title filter** (`LIKE '%term%'` over `title`, `ESCAPE`, case-insensitive) and not the
