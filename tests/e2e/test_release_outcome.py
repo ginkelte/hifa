@@ -369,6 +369,15 @@ POSITIVE_CASES = [
         "release_notes_push_rejected",
         status="1",
     ),
+    # The engine exited zero: nothing was refused, and the words in the log are a commit message the
+    # analyzer echoed back. A refusal is a line git writes, never a sentence someone typed.
+    Case(
+        10,
+        "prose-is-not-a-refusal",
+        RELEASED,
+        "order10_prose_is_not_a_refusal.log",
+        GREEN_RELEASED,
+    ),
     Case(
         11,
         "partial-state",
