@@ -1,3 +1,10 @@
+# [0.4.0](https://github.com/ginkelte/hifa/compare/v0.3.1...v0.4.0) (2026-11-13)
+
+
+### Features
+
+* **domain:** relations have one stored order and a tree that cannot loop ([#18](https://github.com/ginkelte/hifa/issues/18)) ([4000158](https://github.com/ginkelte/hifa/commit/40001588f6a5ce844d70d8fd53872080d2a22307))
+
 ## [0.3.1](https://github.com/ginkelte/hifa/compare/v0.3.0...v0.3.1) (2026-11-13)
 
 
