@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
 from hifa.app.commands import (
@@ -32,8 +32,10 @@ from hifa.app.commands import (
     ArchiveIssue,
     CreateIssue,
     MoveIssue,
+    RelateIssues,
     RestoreIssue,
     TrashIssue,
+    UnrelateIssues,
     Unset,
     UpdateIssue,
 )
@@ -41,8 +43,8 @@ from hifa.app.retry import CREATE_RETRY_CODES, with_write_retry
 from hifa.app.rules import apply_milestones, branch_name
 from hifa.domain import identifier as identifier_module
 from hifa.domain import ranking, rules
-from hifa.domain.entities import Issue, Label, Member, Team, WorkflowState
-from hifa.domain.enums import WorkflowStateType
+from hifa.domain.entities import Issue, IssueRelation, Label, Member, Team, WorkflowState
+from hifa.domain.enums import RelationType, WorkflowStateType
 from hifa.domain.errors import HifaError, InvalidTransition, NotFound, Validation
 
 #: Columns an edit can change, in the order their history rows are written.
@@ -522,6 +524,134 @@ def _restore_once(uow: UnitOfWork, cmd: RestoreIssue, actor: Actor) -> Issue:
         return saved
 
 
+# --- relations ----------------------------------------------------------------------------
+
+
+def relate_issues(uow: UnitOfWork, cmd: RelateIssues, actor: Actor) -> IssueRelation:
+    """Join two issues with one edge of the requested type and leave its history row.
+
+    The type is parsed before the first read, so an unknown token is a field error even when
+    neither reference exists. `blocked_by` is the input alias of the inverse direction: it
+    parses to `blocks` plus a swap, and the swapped pair is what the caller meant. The stored
+    order of the pair is not decided here — the type itself normalises it in the repository,
+    which is also what makes the reversed spelling of a symmetric edge the same row.
+
+    raises: `NotFound(issue)`, `Validation(COMMAND_FIELD|RELATION_SELF|`
+    `RELATION_WORKSPACE_MISMATCH)`,
+    `Conflict(RELATION_DUPLICATE)`
+    """
+    return with_write_retry(lambda: _relate_once(uow, cmd, actor))
+
+
+def _relate_once(uow: UnitOfWork, cmd: RelateIssues, actor: Actor) -> IssueRelation:
+    relation_type, swap = RelationType.parse(cmd.type)
+    with uow.write() as tx:
+        issue = tx.issues.require(cmd.issue)
+        related = tx.issues.require(cmd.related)
+        source_id, target_id = _edge_triple(issue, related, relation_type, swap)[:2]
+        rules.validate_relation_scope(issue, related)
+        rules.validate_relation(
+            source_id,
+            target_id,
+            relation_type,
+            [
+                (row.issue_id, row.related_issue_id, row.type)
+                for row in tx.issues.relations(issue.id)
+            ],
+        )
+
+        now = uow.clock.now()
+        stored = tx.issues.add_relation(
+            IssueRelation(
+                id=uow.idgen.new(),
+                issue_id=source_id,
+                related_issue_id=target_id,
+                type=relation_type,
+                created_at=now,
+            )
+        )
+        tx.history.record(
+            issue.id,
+            [("relation", None, _relation_value(stored, issue, related))],
+            actor_id=actor.member_id,
+            now=now,
+        )
+        return stored
+
+
+def unrelate_issues(uow: UnitOfWork, cmd: UnrelateIssues, actor: Actor) -> None:
+    """Delete the edge between two issues and leave its history row.
+
+    `type=None` deletes whichever edge joins the pair; a type matches the normalised triple,
+    so `blocked_by` addresses the row `blocks` created. A pair without an edge is
+    `NotFound(resource='relation')`: a delete cannot be undone silently, and the caller that
+    asked to remove something has to learn that there was nothing to remove.
+
+    raises: `NotFound(issue|relation)`, `Validation(COMMAND_FIELD)`
+    """
+    with_write_retry(lambda: _unrelate_once(uow, cmd, actor))
+
+
+def _unrelate_once(uow: UnitOfWork, cmd: UnrelateIssues, actor: Actor) -> None:
+    relation_type: RelationType | None = None
+    swap = False
+    if cmd.type is not None:
+        relation_type, swap = RelationType.parse(cmd.type)
+    with uow.write() as tx:
+        issue = tx.issues.require(cmd.issue)
+        related = tx.issues.require(cmd.related)
+        wanted = (
+            None if relation_type is None else _edge_triple(issue, related, relation_type, swap)
+        )
+        existing = tx.issues.relations(issue.id)
+        edge = next((row for row in existing if _matches_edge(row, issue, related, wanted)), None)
+        if edge is None:
+            raise NotFound(resource="relation", key=cmd.related)
+
+        now = uow.clock.now()
+        tx.issues.remove_relation(edge.id)
+        tx.history.record(
+            issue.id,
+            [("relation", _relation_value(edge, issue, related), None)],
+            actor_id=actor.member_id,
+            now=now,
+        )
+
+
+def _edge_triple(
+    issue: Issue, related: Issue, type: RelationType, swap: bool
+) -> tuple[str, str, RelationType]:
+    """The `(issue_id, related_issue_id, type)` this request stores.
+
+    `swap` is the `blocked_by` spelling: the far end is the source, because `issue` being
+    blocked by `related` is the row `related blocks issue`. The order of the pair inside a
+    type is not decided here either: the type answers it, and that one answer is what the
+    reverse spelling of a symmetric edge collapses onto.
+    """
+    source, target = (related.id, issue.id) if swap else (issue.id, related.id)
+    return (*type.canonical_pair(source, target), type)
+
+
+def _matches_edge(
+    row: IssueRelation,
+    issue: Issue,
+    related: Issue,
+    wanted: tuple[str, str, RelationType] | None,
+) -> bool:
+    """True when `row` joins this pair, with `wanted`'s type and order when one was given."""
+    if {row.issue_id, row.related_issue_id} != {issue.id, related.id}:
+        return False
+    if wanted is None:
+        return True
+    return (row.issue_id, row.related_issue_id, row.type) == wanted
+
+
+def _relation_value(row: IssueRelation, issue: Issue, other: Issue) -> str:
+    """Value of the `relation` history row: the type as `issue` reads it, plus the far end."""
+    direction: Literal["out", "in"] = "out" if row.issue_id == issue.id else "in"
+    return f"{row.type.name_as_seen(direction)} {other.identifier}"
+
+
 # --- history values ----------------------------------------------------------------------
 
 
@@ -821,7 +951,9 @@ __all__ = [
     "archive_issue",
     "create_issue",
     "move_issue",
+    "relate_issues",
     "restore_issue",
     "trash_issue",
+    "unrelate_issues",
     "update_issue",
 ]

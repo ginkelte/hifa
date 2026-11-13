@@ -1570,3 +1570,78 @@ address and makes the archive a subtree operation (D-015, D-043).
 `specs/acceptance/001-mvp-v1/07-hierarchy-relations.feature`, and the `# raises:` lines of SPEC-040 §2.2 and
 the use-case matrix of SPEC-040 §6, which list every code above.
 
+## D-048 — The relation reads: the row travels, the direction is derived, `blocked` is its own read
+
+**Date:** 2026-11-13 · **Wins:** SPEC-050 §2.5.3 · **Touches:** SPEC-050 §2.3, §2.4.1, §2.5.3, §7, R5;
+SPEC-030 §2.5, §2.6, R5, §2.1 export table; SPEC-040 §2, §6
+
+The domain has the relations since v0.4.0 — four types, one stored pair, the seven refusals — and no verb of
+SPEC-050 reads them: a user can write an edge with `issue relate` and then has no way to see it, and no way to
+ask which issues are stuck. Three questions had no answer in the contract, and each edge would have answered
+them differently: what a read of one issue's edges emits, whether the reading direction travels in that
+envelope, and whether "blocked" is a filter of the listing or a query of its own.
+
+**Resolution: two read verbs, declared in SPEC-050 §2.5.3, over reads that already exist or are added once.**
+
+| Verb | Reads | `--json` | Exit |
+|---|---|---|---|
+| `hifa issue relations REF` | `issue_detail(db, REF).relations` (SPEC-030 §2.6) | `{items: Relation[]}`, the five keys of SPEC-050 §2.4.2 | 0,3 |
+| `hifa issue blocked [--team KEY]` | `list_blocked(db, team=…)` (SPEC-040 §2.2) over `blocked_view` (SPEC-030 §2.6, SQL-10) | `{items: Issue[]}`, the items `issue list --json` emits | 0,2,3 |
+
+- **`relations` emits the stored row, five keys, from either end.** `id, issue_id, related_issue_id, type,
+  created_at` and nothing else: no `direction`, no `blocked_by`, no far end's `identifier`, no `resolved`.
+  This is D-046 applied to a read: the object is the row, and the directed reading is a function of the row
+  and the issue that asks.
+- **The direction is recovered, not transported.** For a `blocks` row, `out` iff `issue_id` is the asking
+  issue's ULID and `in` iff it is `related_issue_id`; the symmetric types have no direction, because their
+  pair is stored in ULID order and that order is storage, not meaning (D-045). A consumer needs the asking
+  issue's ULID — the `id` of `issue show REF --json`, or the ULID it typed — and the row's two ULIDs, which
+  the envelope already carries. The names are `RelationType.name_as_seen` of SPEC-020 §2.1; the table prints
+  them, the JSON does not need them.
+- **`resolved` is not a field either.** Whether a blocker still blocks is `is_hard` plus the blocker's
+  `state.type` on read (SPEC-020 §4.1 R7): a property of the two issues at read time, not of the edge. A key
+  carrying it would freeze a verdict that the next `issue move` invalidates.
+- **The hierarchy is not a relation.** A sub-issue is `issue.parent_id`, not a row of `issue_relation`; the
+  hierarchy is read by `issue list --parent` and `issue show --with children` (§2.5.3, GAP-06). `relations`
+  answers with the five names of the relation table and never a sixth.
+- **`blocked` is its own read, not a listing filter.** The predicate — an incoming `blocks` edge whose source's
+  state is neither `completed` nor `canceled` — is SPEC-020 §4.1 R7 and gets one SQL expression (SPEC-030
+  SQL-10). It is not a `ListFilters` field: the filter object is the input of the listing and of the board
+  (D-011, D-027), and a relation verdict inside it would be reachable from two verbs with two different flag
+  sets, while `blocked` has neither a cursor nor a limit nor an order flag to fill. Only the two layers hide a
+  row (`visible`), never the blocked issue's own state: an issue closed while a blocker is still open is
+  exactly the row a reader has to see.
+- **`relate` stays the only verb that writes an edge.** `link` and `unlink` are not declared and no alias is
+  added: the tree of §2.5 is closed (R17) and an undeclared verb is exit 2 `invalid_option`. The reverse
+  direction is `TYPE=blocked_by` (D-046) and the undo is `--undo`. For the same reason R5 stops listing
+  `relate` among the idempotent no-ops: the duplicate is `Conflict(RELATION_DUPLICATE)` / exit 4 (D-047).
+- **The refusals keep their one field name.** `COMMAND_FIELD` carries `field: type` — the token outside the
+  five, the name the command, the parser and the `Relation` key share — and `RELATION_SELF` /
+  `RELATION_WORKSPACE_MISMATCH` carry `field: related`, as SPEC-020 §2.5 already declares. No second spelling
+  of the same field is introduced at an edge.
+
+**Why.** The two reads are what turns a stored edge into a capability: without them the CLI can write relations
+and cannot show them, so every consumer — the dashboard panel, an agent script — would build its own reading of
+the same table and its own answer to "is this blocked", which is exactly the duplication P4 removes. Keeping the
+envelope at five keys costs the consumer one comparison it can make from data it already holds, and it keeps one
+fact in one place; adding `direction` would make the same edge describable in two ways depending on which end was
+queried, the drift D-046 closed for the entity. `blocked` gets a read because the predicate is a join over two
+tables plus a state type, not a column of `issue`: it belongs where the SQL lives, next to `board_view`, and not
+in the filter matrix of a listing that must stay expressible as one `ListFilters`.
+
+**Why not the alternatives.** (a) *A `direction` key in the item*: a sixth key about one edge, derivable from the
+other five and from the caller's own reference — a second truth, and it would have to be `null` or absent for the
+symmetric types, which breaks "emitted complete, no key omitted" (R2). (b) *A nested shape per direction*
+(`{blocks: [...], blocked_by: [...]}`): a second envelope for `Relation`, and the same row would appear under two
+keys for the symmetric types. (c) *`issue show --json` gaining the collection*: `--with relations` is GAP-06 and
+the base `Issue` object is closed; a read with its own verb is cheaper than a key on the most-used object of the
+CLI. (d) *`issue list --blocked` as sugar over `ListFilters`*: the flag would have to reach the board and every
+`list_issues` caller, `blocked` would inherit a paging contract it does not want, and the two verbs would answer
+the same question with different exit sets. (e) *Deriving `blocked` in the CLI from `relations` plus
+`issue show`*: N+1 calls at the edge and a rule copied into `cli/`, which P4 forbids.
+
+**Verification.** The `# raises:` lines and §6 matrix of SPEC-040, SQL-10 and R5 of SPEC-030, the notes and the
+§7 scenarios of SPEC-050, and the `relations` / `blocked` / invalid-type scenarios of
+`specs/acceptance/001-mvp-v1/07-hierarchy-relations.feature`.
+
+

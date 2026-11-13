@@ -28,23 +28,27 @@ from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database
 from hifa.adapters.sqlite.reads import IssueListItem, IssuePage, ListFilters, OrderKey
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
-from hifa.app.boards import list_issues
+from hifa.app.boards import issue_detail, list_blocked, list_issues
 from hifa.app.commands import (
     UNSET,
     Actor,
     ArchiveIssue,
     CreateIssue,
     MoveIssue,
+    RelateIssues,
     RestoreIssue,
     TrashIssue,
+    UnrelateIssues,
     UpdateIssue,
 )
 from hifa.app.issues import (
     archive_issue,
     create_issue,
     move_issue,
+    relate_issues,
     restore_issue,
     trash_issue,
+    unrelate_issues,
     update_issue,
 )
 from hifa.cli import output
@@ -71,6 +75,12 @@ ISSUE_TABLE_COLUMNS: tuple[str, ...] = (
     "labels",
     "due",
 )
+
+#: Columns of `issue relations`: how the type reads from here, and the far end.
+RELATION_TABLE_COLUMNS: tuple[str, ...] = ("reads as", "identifier", "title", "state")
+
+#: Columns of the single row `issue relate` prints.
+RELATION_EDGE_COLUMNS: tuple[str, ...] = ("id", "type", "issue_id", "related_issue_id")
 
 #: Priority -> single-cell glyph.
 PRIORITY_GLYPHS: dict[int, str] = {0: "–", 1: "U", 2: "H", 3: "M", 4: "L"}
@@ -270,6 +280,121 @@ def list_command(
         rows,
         table_cols=ISSUE_TABLE_COLUMNS,
         json_obj=envelope,
+        quiet_obj=[row["identifier"] for row in rows],
+    )
+    if not rows and not json_mode and not quiet_mode:
+        output.write_note("0 issues")
+
+
+@issue_app.command("relate")
+def relate_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    relation_type: str = typer.Argument(
+        ..., metavar="TYPE", help="blocks, duplicate, related, similar or blocked_by."
+    ),
+    other: str = typer.Argument(..., help="The other issue (identifier or ULID)."),
+    undo: bool = typer.Option(False, "--undo", help="Remove the relation instead of adding it."),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Relate two issues, or remove the relation with --undo."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+    json_mode = output.options().json
+    try:
+        payload = _run_relate(
+            db_flag=db if db is not None else root.db,
+            ref=ref,
+            relation_type=relation_type,
+            other=other,
+            undo=undo,
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    if payload is None:
+        # Removing a relation produces no object: `--json` says so with a literal null,
+        # and the table mode has nothing to draw.
+        if json_mode:
+            output.write_json(None)
+        return
+    output.emit(
+        _relation_row(payload),
+        table_cols=RELATION_EDGE_COLUMNS,
+        json_obj=payload,
+        quiet_obj=payload["id"],
+    )
+
+
+@issue_app.command("relations")
+def relations_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Every relation of one issue, named as it reads from that issue."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+    json_mode = output.options().json
+    quiet_mode = output.options().quiet
+
+    try:
+        rows, items = _run_relations(db_flag=db if db is not None else root.db, ref=ref)
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    output.emit(
+        rows,
+        table_cols=RELATION_TABLE_COLUMNS,
+        json_obj={"items": items},
+        quiet_obj=[row["identifier"] for row in rows],
+    )
+    if not rows and not json_mode and not quiet_mode:
+        output.write_note("0 relations")
+
+
+@issue_app.command("blocked")
+def blocked_command(
+    ctx: typer.Context,
+    team: str | None = typer.Option(None, "--team", help="Team key or ULID."),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """The issues still held back by a blocker that is not finished."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+    json_mode = output.options().json
+    quiet_mode = output.options().quiet
+
+    try:
+        rows, items = _run_blocked(db_flag=db if db is not None else root.db, team=team)
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    output.emit(
+        rows,
+        table_cols=ISSUE_TABLE_COLUMNS,
+        json_obj={"items": items},
         quiet_obj=[row["identifier"] for row in rows],
     )
     if not rows and not json_mode and not quiet_mode:
@@ -516,6 +641,107 @@ def _reject_contradictory_filters(
         )
     if cycle is not None and no_cycle:
         raise CliError("use --cycle or --no-cycle, not both", code="invalid_option", field="cycle")
+
+
+def _existing_db(db_flag: str | None) -> Path:
+    """The database this invocation reads, or exit 3 when the file is not there."""
+    cfg = resolve_config(db_flag=db_flag)
+    db_path = Path(cfg.db_path)
+    if str(db_path) == ":memory:" or not db_path.is_file():
+        raise CliError(
+            f"database not found: {db_path}",
+            code="database_not_found",
+            field="db",
+            exit_code=EXIT_NOT_FOUND,
+        )
+    return db_path
+
+
+def _run_relations(*, db_flag: str | None, ref: str) -> tuple[list[dict[str, Any]], list[dict]]:
+    """Every relation of one issue.
+
+    The envelope carries the stored row and nothing else: which end of the row the asking
+    issue is on, and therefore how the type reads from here, is derived from the issue and
+    the two halves of the row instead of travelling as a second copy of the same fact.
+    """
+    db_path = _existing_db(db_flag)
+    detail = issue_detail(Database(db_path), ref)
+    asking = detail.issue.id
+    rows: list[dict[str, Any]] = []
+    items: list[dict] = []
+    for relation, far in detail.relations:
+        seen = relation.type.name_as_seen("out" if relation.issue_id == asking else "in")
+        rows.append(
+            {
+                "reads as": seen,
+                "identifier": far.identifier,
+                "title": far.title,
+                "state": far.state_name,
+            }
+        )
+        items.append(_relation_item(relation))
+    return rows, items
+
+
+def _run_blocked(*, db_flag: str | None, team: str | None) -> tuple[list[dict], list[dict]]:
+    """The issues whose blockers are not finished, resolved by the port below."""
+    cfg = resolve_config(db_flag=db_flag)
+    db_path = Path(cfg.db_path)
+    if str(db_path) == ":memory:" or not db_path.is_file():
+        raise CliError(
+            f"database not found: {db_path}",
+            code="database_not_found",
+            field="db",
+            exit_code=EXIT_NOT_FOUND,
+        )
+    blocked = list_blocked(Database(db_path), team=team)
+    return [_list_row(item) for item in blocked], [_list_item(item) for item in blocked]
+
+
+def _run_relate(
+    *,
+    db_flag: str | None,
+    ref: str,
+    relation_type: str,
+    other: str,
+    undo: bool,
+) -> dict[str, Any] | None:
+    """Add or remove one relation and return the stored row (None when removing)."""
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        if undo:
+            unrelate_issues(
+                uow, UnrelateIssues(issue=ref, related=other, type=relation_type), actor
+            )
+            return None
+        relation = relate_issues(
+            uow, RelateIssues(issue=ref, related=other, type=relation_type), actor
+        )
+        return _relation_item(relation)
+    finally:
+        uow.close()
+
+
+def _relation_item(relation: Any) -> dict[str, Any]:
+    """The stored relation, the five keys a reader needs to place both ends."""
+    return {
+        "id": relation.id,
+        "issue_id": relation.issue_id,
+        "related_issue_id": relation.related_issue_id,
+        "type": str(relation.type),
+        "created_at": _iso(relation.created_at),
+    }
+
+
+def _relation_row(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": payload["id"],
+        "type": payload["type"],
+        "issue_id": payload["issue_id"],
+        "related_issue_id": payload["related_issue_id"],
+    }
 
 
 def _run_list(

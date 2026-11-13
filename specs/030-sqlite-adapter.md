@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 2
-spec_revision: 9
+spec_revision: 10
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -61,7 +61,7 @@ that feed the CLI, the API and the dashboard (board, list, detail, agenda).
 | `UnitOfWork`, `Repos`, `RetryPolicy`, `UNSET`, `Unset` | `uow` | classes / sentinel | yes |
 | `migrate`, `current_version`, `pending_migrations`, `backup_database`, `MigrationResult` | `migrate` | functions / dataclass | yes |
 | `TeamRepo`, `IssueRepo`, `LabelRepo`, `ProjectRepo`, `CycleRepo`, `CommentRepo`, `HistoryRepo` | `*_repo` | classes | yes |
-| `ListFilters`, `IssuePage`, `SORT_KEYS`, `encode_cursor`, `decode_cursor`, `LabelRef`, `IssueListItem`, `Board`, `BoardGroup`, `IssueDetail`, `AgendaEntry`, `board_view`, `list_view`, `issue_detail`, `agenda` | `reads` | dataclasses / functions | yes |
+| `ListFilters`, `IssuePage`, `SORT_KEYS`, `encode_cursor`, `decode_cursor`, `LabelRef`, `IssueListItem`, `Board`, `BoardGroup`, `IssueDetail`, `AgendaEntry`, `board_view`, `list_view`, `blocked_view`, `issue_detail`, `agenda` | `reads` | dataclasses / functions | yes |
 
 ### 2.1 `connection.py`
 
@@ -625,6 +625,39 @@ ORDER BY i.due_date,
 `agenda(team, days)` with `days` in `[1, 366]`; `end = start + days - 1`. `include_overdue=True` by
 default: it also shows what is overdue and open, which is the real use case (what was left behind).
 
+**SQL-10 — `blocked_view`.** The projection is SQL-4's, one row per issue with the labels aggregated the
+same way (one query, no N+1); what changes is the predicate, which is the derived verdict of SPEC-020
+§4.1 R7 and not a rule of this layer:
+
+```sql
+-- SELECT list: identical to SQL-4, from the same FROM/JOIN and with the same labels_json subselect
+FROM v_issue i
+JOIN workflow_state s ON s.id = i.state_id
+JOIN team t          ON t.id = i.team_id
+LEFT JOIN member m   ON m.id = i.assignee_id
+WHERE (:team_id IS NULL OR i.team_id = :team_id)
+  AND i.visible = 1
+  AND EXISTS (
+        SELECT 1
+        FROM issue_relation r
+        JOIN issue blocker      ON blocker.id = r.issue_id
+        JOIN workflow_state bs  ON bs.id = blocker.state_id
+        WHERE r.type = 'blocks'
+          AND r.related_issue_id = i.id
+          AND bs.type NOT IN ('completed', 'canceled')
+      )
+ORDER BY i.identifier;
+```
+
+The `EXISTS` reads the edge in the direction it is stored — `issue_id` is the blocker and
+`related_issue_id` the blocked issue (D-045) — so no inverse row and no `blocked_by` name is needed: the
+type is a literal of the `CHECK`, and the release condition is `bs.type`, the blocker's state, never a
+column on the edge (D-046). `visible = 1` is the archive axis of SPEC-010 §3.3 and the only thing that
+hides a row: the blocked issue's own `state_type` is not filtered, because an issue closed while a
+blocker is still open is a row the reader has to see. `:team_id IS NULL` is the workspace-wide form, and
+the single index this predicate needs is the `UNIQUE(issue_id, related_issue_id, type)` of SPEC-010 read
+from its second column, which is why the subquery starts from `issue_relation`.
+
 ### 2.6 `reads.py` — read models
 
 ```python
@@ -1037,6 +1070,15 @@ def list_view(conn: sqlite3.Connection, filters: ListFilters) -> IssuePage:
     A cursor whose anchor does not exist in `filters.team_id` -> Validation(rule='INVALID_CURSOR')."""
 
 
+def blocked_view(
+    conn: sqlite3.Connection, *, team_id: str | None = None
+) -> tuple[IssueListItem, ...]:
+    """One query (SQL-10): the live issues that are the target of a `blocks` edge whose source is not
+    finished (SPEC-020 §4.1 R7, D-046). `team_id=None` is the workspace-wide form, not "no team".
+    Ordered by `identifier` ASC. The reference is resolved by the caller (`team_by_ref`), so a
+    `team_id` that matches no team is not a verdict of this layer."""
+
+
 def issue_detail(
     conn: sqlite3.Connection, ref: str, *, include: frozenset[str] = frozenset()
 ) -> IssueDetail | None:
@@ -1210,8 +1252,8 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
   the body of the `with`, because from a generator that is impossible. Waits of 50/100/200 ms; once the
   attempts are exhausted the `Conflict(code='DB_BUSY')` is propagated. A commit that fails is **never** retried
   without a previous rollback.
-- **R5 — No N+1.** `list_view` is 1 query; `board_view` is 1 query; `issue_detail` is exactly
-  7; `agenda` is 1. Executing SQL inside a loop over rows is forbidden.
+- **R5 — No N+1.** `list_view` is 1 query; `board_view` is 1 query; `blocked_view` is 1 query;
+  `issue_detail` is exactly 7; `agenda` is 1. Executing SQL inside a loop over rows is forbidden.
 - **R6 — Reading does not write.** The repos obtained from `read()` raise `Conflict(code='READ_ONLY_UOW')`
   in any write method. `reads.py` only receives read-only connections.
 - **R7 — Bound parameters.** Zero value interpolation in SQL (REQ-S002). The only
@@ -1706,6 +1748,14 @@ Feature: SQLite adapter
   shows a `SCAN`, the solution is a new index in a migration, not a change in the adapter.
 
 ## Notes
+
+- spec_revision 10 (2026-11-13): **the blocked read is one query, and its predicate is cited, not
+  restated (D-048).** §2.6 gains `blocked_view` and §2.5 gains SQL-10: the live issues that are the
+  target of a `blocks` edge whose source's `state.type` is neither `completed` nor `canceled`. The
+  projection is SQL-4's, the predicate is SPEC-020 §4.1 R7 read in the stored direction (`issue_id` is
+  the blocker, D-045), and no column, flag or name `blocked_by` is involved (D-046). R5 counts it as
+  one query and §2.1 exports it. `team_id=None` is the workspace-wide form. No existing signature,
+  shape or code changed, so `version` stays at 2.
 
 - spec_revision 9 (2026-11-13): **the repository publishes what the depth bound is measured against.** `subtree_height` is declared next to `ancestor_chain`, and `add_relation` is declared to apply the canonical pair before the `INSERT`: the order is a property of the writer, and the constraint only stands behind it.
 

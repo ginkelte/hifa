@@ -2,10 +2,11 @@
 Feature: Hierarchy and relations
 
   # Sub-issues with bounded depth and directional relations.
-  # The hierarchy is created with `issue create --parent`; the tree and the directed `blocked_by`
-  # reading are read models of the web edge (SPEC-050 §2.5 publishes no tree verb; SPEC-070 §2.3.4
-  # declares `direction` and the `blocked_by` label). The CLI prints the stored `Relation` row, whose
-  # `type` is never `blocked_by` (SPEC-050 §2.4.2, D-046).
+  # The hierarchy is created with `issue create --parent` and read with `issue list --parent`; there is
+  # no tree verb in SPEC-050 and `issue show --with children` stays GAP-06. The CLI reads an edge with
+  # `issue relations REF` (SPEC-050 §2.5.3), which prints the stored `Relation` row whose `type` is never
+  # `blocked_by` (SPEC-050 §2.4.2, D-046), and answers "what is stuck" with `issue blocked` — the read of
+  # the directed verdict (SPEC-020 §4.1 R7, D-048).
   # The codes asserted here are the ones of SPEC-020 §6 and D-047: a hierarchy or relation
   # refusal is `validation_error` (exit 2) except a duplicate edge, which is `conflict` (exit 4).
 
@@ -71,8 +72,8 @@ Feature: Hierarchy and relations
     Given the issues "ENG-1" and "ENG-2"
     When I run "hifa issue relate ENG-1 blocks ENG-2"
     Then there is 1 row in "issue_relation" with type "blocks"
-    And "hifa issue show ENG-1 --with relations --json" returns exactly one relation, with issue_id "ENG-1" and related_issue_id "ENG-2"
-    And "hifa issue show ENG-2 --with relations --json" returns exactly one relation, with issue_id "ENG-1" and related_issue_id "ENG-2"
+    And "hifa issue relations ENG-1 --json" returns exactly one relation, with issue_id "ENG-1" and related_issue_id "ENG-2"
+    And "hifa issue relations ENG-2 --json" returns exactly one relation, with issue_id "ENG-1" and related_issue_id "ENG-2"
     And both outputs carry the same relation id and the type "blocks"
     And neither output carries a "direction" or a "blocked_by" key
 
