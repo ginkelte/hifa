@@ -1,3 +1,10 @@
+## [0.1.8](https://github.com/ginkelte/hifa/compare/v0.1.7...v0.1.8) (2026-11-13)
+
+
+### Bug Fixes
+
+* **web:** a touch that lands on a card still scrolls the page ([#13](https://github.com/ginkelte/hifa/issues/13)) ([e6beb80](https://github.com/ginkelte/hifa/commit/e6beb805d80e93758b19fe6e3b228e23a5b05906))
+
 ## [0.1.7](https://github.com/ginkelte/hifa/compare/v0.1.6...v0.1.7) (2026-11-12)
 
 
