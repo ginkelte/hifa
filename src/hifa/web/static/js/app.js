@@ -89,55 +89,43 @@
 
   function flushRevision() {
     if (revision.pending === null || revision.busy) return;
+    var number = revision.pending;
     if (blocked()) {
       // The panel is the one element allowed to re-render while it is open, and only while it
-      // holds nothing the user typed and no element inside it has the focus.
-      var url = panelUrl();
-      if (url && !panelIsDirtyOrFocused()) renderPanel(url);
+      // holds nothing the user typed and no element inside it has the focus. The pending value is
+      // spent before the request: one observed revision is one re-render, not one per tick.
+      var panel = panelUrl();
+      if (!panel || panelIsDirtyOrFocused()) return;
+      revision.pending = null;
+      swapInto(PANEL, panel, "innerHTML");
       return;
     }
     var target = refreshTarget();
     var fragment = document.body.dataset.refresh || "";
-    var number = revision.pending;
-    var node = target ? document.querySelector(target) : null;
-    if (!node || !fragment) {
+    if (!target || !fragment) {
       revision.pending = null;
       adopt(number);
       return;
     }
     revision.pending = null;
-    revision.busy = true;
-    window
-      .fetch(fragment, { headers: { "HX-Request": "true" }, credentials: "same-origin" })
-      .then(function (response) {
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        return response.text().then(function (html) {
-          node.innerHTML = html;
-          adopt(response.headers.get("HX-Revision") || number);
-        });
-      })
-      .catch(function () {
-        // The page keeps what it shows and the next tick tries again with a fresh number.
-      })
-      .then(function () {
-        revision.busy = false;
-      });
+    swapInto(target, fragment, "outerHTML");
   }
 
-  function renderPanel(url) {
-    var panel = document.querySelector(PANEL);
-    if (!panel) return;
-    window
-      .fetch(url, { headers: { "HX-Request": "true" }, credentials: "same-origin" })
-      .then(function (response) {
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        return response.text().then(function (html) {
-          panel.innerHTML = html;
-        });
-      })
-      .catch(function () {
-        // An open panel that cannot re-render keeps the markup it already has.
-      });
+  // The reload is an htmx request and never a plain fetch: the fragment arrives with the id of the
+  // element it targets and with the `hx-get`, `hx-target` and `hx-push-url` of its cards and rows,
+  // and only htmx binds those attributes. `outerHTML` because of the id — the fragment replaces the
+  // node instead of filling it, which would leave a #board inside a #board, every card under it
+  // inert. Its own `HX-Revision` is adopted by the afterRequest hook below.
+  function swapInto(target, url, style) {
+    revision.busy = true;
+    window.htmx.ajax("GET", url, { target: target, swap: style }).then(settle, settle);
+  }
+
+  // The request is back: whatever was observed while it was in flight applies now, once. A fragment
+  // that failed to swap adopts nothing and the next tick tries again with a fresh number.
+  function settle() {
+    revision.busy = false;
+    flushRevision();
   }
 
   function onProbe(xhr) {
@@ -339,7 +327,10 @@
 
   function persistColumn(board, item, origin) {
     var stateId = item.getAttribute("data-state-id");
-    if (!stateId) return;
+    if (!stateId) {
+      flushRevision();
+      return;
+    }
     window
       .fetch(columnPositionUrl(stateId), {
         method: "POST",
@@ -352,7 +343,9 @@
       .catch(function () {
         revertColumn(board, item, origin);
         toast("could not move the column", true);
-      });
+      })
+      // The drop has returned, so the revision the drag was holding back applies now.
+      .then(flushRevision);
   }
 
   function initBoardSortable() {
@@ -378,6 +371,8 @@
       delayOnTouchOnly: true,
       touchStartThreshold: 6,
       onStart: function (event) {
+        // A swap during a drag would move the node out from under the pointer.
+        document.body.dataset.dragging = "true";
         origin = {
           index: event.oldIndex,
           previous: event.item.previousElementSibling,
@@ -385,7 +380,11 @@
         };
       },
       onEnd: function (event) {
-        if (event.oldIndex === event.newIndex) return;
+        document.body.dataset.dragging = "false";
+        if (event.oldIndex === event.newIndex) {
+          flushRevision();
+          return;
+        }
         persistColumn(board, event.item, origin);
       }
     });

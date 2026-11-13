@@ -111,18 +111,27 @@ def _revisions(request: Request) -> RevisionWatch:
     return request.app.state.revisions
 
 
+def _observed(request: Request) -> int | None:
+    """`PRAGMA data_version` of this request, read once and cached on the request.
+
+    The probe is defined as **one** read: the middleware asks before the route runs, the route asks
+    again, and the header is written after it. Caching the raw answer — `None` included, hence
+    `hasattr` and not a default — is what keeps it to one read and makes the JSON body, the page
+    marker and the `HX-Revision` header one observation instead of three that can disagree.
+    """
+    if not hasattr(request.state, "revision"):
+        request.state.revision = _revisions(request).read()
+    return request.state.revision
+
+
 def _revision(request: Request) -> int:
     """The revision this request observed: one read, shared by the page marker and the header.
 
     The number is opaque, so an unreadable probe becomes `0` (never a number a live connection
     reports): the page still renders, and the first probe tick that answers reloads it once.
     """
-    observed = getattr(request.state, "revision", None)
-    if observed is None:
-        number = _revisions(request).read()
-        observed = 0 if number is None else number
-        request.state.revision = observed
-    return observed
+    number = _observed(request)
+    return 0 if number is None else number
 
 
 def _today() -> date:
@@ -766,10 +775,12 @@ def revision(request: Request) -> JSONResponse:
 
     It is the `data_version` of the process's own read connection, so it moves when *another*
     connection commits — the CLI, a second tab, the request connections of this same process —
-    and stays put when nothing writes. A probe that cannot answer is `{"revision": null}`: the
-    client skips the tick instead of reloading on a number it cannot trust.
+    and stays put when nothing writes. It is the number this request already observed (`_observed`),
+    so the body cannot disagree with the `HX-Revision` header of the same answer. A probe that
+    cannot answer is `{"revision": null}`: the client skips the tick instead of reloading on a
+    number it cannot trust.
     """
-    number = _revisions(request).read()
+    number = _observed(request)
     return JSONResponse(
         {"revision": number},
         status_code=200 if number is not None else 503,

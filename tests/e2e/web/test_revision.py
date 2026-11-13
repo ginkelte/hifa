@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from hifa.adapters.sqlite.connection import Database
+from hifa.adapters.sqlite.connection import Database, RevisionWatch
 from hifa.cli.main import app as cli_app
 from hifa.web.app import REVISION_POLL, create_app
 
@@ -134,6 +134,44 @@ def test_probe_opens_one_connection_for_the_process(
     assert len(opened) == 1
 
 
+def test_the_probe_executes_one_pragma(
+    served: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One request, one read: the middleware caches the observation and the route reuses it.
+
+    A second `PRAGMA` is not a performance detail — the body and the `HX-Revision` header would be
+    two observations of a number that is only meaningful as one, so a commit landing between them
+    answers a page it did not render.
+    """
+    statements: list[str] = []
+    original = Database.ro_connection
+
+    def traced(self: Database):  # type: ignore[no-untyped-def]
+        connection = original(self)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(Database, "ro_connection", traced)
+    response = served.client.get("/_/revision", headers=HTMX)
+
+    assert response.status_code == 200
+    assert statements == ["PRAGMA data_version"], statements
+    assert response.headers["HX-Revision"] == str(response.json()["revision"])
+
+
+def test_probe_without_a_number_is_a_503_and_a_null(
+    served: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe that cannot answer says so: the client skips the tick instead of reloading."""
+    monkeypatch.setattr(RevisionWatch, "read", lambda self: None)
+
+    response = served.client.get("/_/revision", headers=HTMX)
+
+    assert response.status_code == 503
+    assert response.json() == {"revision": None}
+    assert "no-store" in response.headers["cache-control"]
+
+
 def test_lifespan_closes_the_probe_connection(workspace: Path) -> None:
     app = create_app(workspace, default_team="ENG")
     with TestClient(app) as client:
@@ -158,8 +196,10 @@ def test_read_only_mode_does_not_change_the_probe(read_only: SimpleNamespace) ->
 # --- the page carries the revision it was rendered at ----------------------------------
 
 
-@pytest.mark.parametrize("path", ["/ENG/board", "/ENG/list"])
-def test_page_carries_the_revision_and_the_refresh_url(served: SimpleNamespace, path: str) -> None:
+@pytest.mark.parametrize(("path", "view"), [("/ENG/board", "board"), ("/ENG/list", "list")])
+def test_page_carries_the_revision_and_the_refresh_url(
+    served: SimpleNamespace, path: str, view: str
+) -> None:
     response = served.client.get(path)
     assert response.status_code == 200
 
@@ -169,11 +209,21 @@ def test_page_carries_the_revision_and_the_refresh_url(served: SimpleNamespace, 
 
     refresh = BODY_REFRESH.search(response.text)
     assert refresh is not None, "the body must carry data-refresh"
-    assert refresh.group(1).startswith("/_/issues?view=")
+    # The page reloads the collection it *is*: a list URL on a board page would swap the wrong
+    # fragment into #board on the first foreign write.
+    assert refresh.group(1).startswith(f"/_/issues?view={view}&"), refresh.group(1)
 
     probe = PROBE.search(response.text)
     assert probe is not None, "the page must carry the poller"
     assert "/_/revision" in probe.group(0)
+
+
+def test_the_poller_inserts_nothing(served: SimpleNamespace) -> None:
+    """`hx-swap="none"`: the number is read, never put anywhere in the page."""
+    response = served.client.get("/ENG/board")
+    probe = PROBE.search(response.text)
+    assert probe is not None
+    assert 'hx-swap="none"' in probe.group(0)
 
 
 def test_poller_trigger_carries_the_constant_and_no_filter(served: SimpleNamespace) -> None:
@@ -207,6 +257,28 @@ def test_pages_without_a_collection_carry_no_poller(served: SimpleNamespace) -> 
     assert refresh.group(1) == ""
 
 
+def test_the_fragment_that_reloads_the_collection_carries_its_own_target(
+    served: SimpleNamespace,
+) -> None:
+    """The reload has to replace the node: the fragment is the target, id included.
+
+    And the cards and rows inside it arrive with `hx-get`, `hx-target` and `hx-push-url`, which
+    only an htmx swap binds — a fetch and an `innerHTML` leaves them inert.
+    """
+    board = served.client.get("/_/issues", params={"team": "ENG", "view": "board"}, headers=HTMX)
+    assert board.status_code == 200
+    assert board.text.startswith('<div class="board" id="board"')
+    assert board.text.count('hx-target="#panel"') >= 2, "cards carry their own panel request"
+    assert "hx-push-url=" in board.text
+
+    rows = served.client.get("/_/issues", params={"team": "ENG", "view": "list"}, headers=HTMX)
+    assert rows.status_code == 200
+    assert rows.text.startswith('<tbody id="issues-tbody">')
+
+    page = served.client.get("/ENG/board")
+    assert 'hx-target="#board" hx-swap="outerHTML"' in page.text, "the filter bar replaces too"
+
+
 # --- the header on the rest of the layer ------------------------------------------------
 
 
@@ -228,8 +300,87 @@ def test_a_write_of_the_page_adopts_the_number_it_produced(served: SimpleNamespa
 # --- the client --------------------------------------------------------------------------
 
 
-def test_the_visibility_guard_lives_in_the_client(served: SimpleNamespace) -> None:
+def _block(marker: str) -> str:
+    """The brace-matched block that follows `marker` in `app.js`.
+
+    A substring search for a name proves nothing — the guard of this section passed with its
+    condition inverted — so the assertions below run over one block each, and a name that moved
+    into another handler is no longer inside the block that is being checked.
+    """
     source = JS.read_text(encoding="utf-8")
-    assert "document.hidden" in source
-    assert "htmx:beforeRequest" in source
-    assert "revision-probe" in source
+    start = source.index(marker)
+    opening = source.index("{", start)
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening : index + 1]
+    raise AssertionError(f"unbalanced braces after {marker}")
+
+
+def test_the_visibility_guard_cancels_the_poll_only_while_the_tab_is_hidden(
+    served: SimpleNamespace,
+) -> None:
+    """The cancel has a direction: hidden cancels, visible runs. Both halves are pinned."""
+    guard = _block('addEventListener("htmx:beforeRequest"')
+
+    assert "isProbe(event.detail.elt)" in guard
+    # the probe branch decides before the visibility condition is consulted
+    assert guard.index("isProbe(") < guard.index("document.hidden")
+    # `if (document.hidden) event.preventDefault()` and nothing looser
+    assert re.search(r"if\s*\(\s*document\.hidden\s*\)\s*\{?\s*event\.preventDefault\(\)", guard)
+    assert not re.search(r"!\s*document\.hidden", guard), "an inverted guard polls a hidden tab"
+    assert guard.count("preventDefault") == 1, "an unconditional cancel never polls"
+
+
+def test_the_collection_reload_is_an_htmx_swap_of_the_whole_node() -> None:
+    """A plain `fetch` + `innerHTML` leaves the fragment's attributes bound to nothing."""
+    swap = _block("function swapInto(")
+    assert "htmx.ajax(" in swap
+    assert "settle" in swap, "the busy flag is released and the pending value re-applied"
+
+    flush = _block("function flushRevision(")
+    collection = flush[flush.index("swapInto(target, fragment") :]
+    assert '"outerHTML"' in collection, "the fragment carries #board and #issues-tbody itself"
+
+
+def test_no_fragment_arrives_through_a_plain_fetch() -> None:
+    """The only `fetch` left is the position write, which binds nothing."""
+    calls = [
+        match for match in re.finditer(r"window\s*\.\s*fetch\(", JS.read_text(encoding="utf-8"))
+    ]
+    assert calls, "the column drag still writes through fetch"
+    source = JS.read_text(encoding="utf-8")
+    for call in calls:
+        assert 'method: "POST"' in source[call.start() : call.start() + 220]
+
+
+def test_the_panel_re_render_spends_the_revision_before_it_asks() -> None:
+    """One re-render per observed revision: the next tick cannot see the same difference."""
+    flush = _block("function flushRevision(")
+    swap = flush.index("swapInto(PANEL")
+    branch = flush[:swap]
+    assert "revision.pending = null;" in branch[branch.index("panelUrl(") :]
+    # ...and the answer is adopted by the afterRequest hook, so `known` moves with the markup.
+    assert 'adopt(xhr.getResponseHeader("HX-Revision"))' in JS.read_text(encoding="utf-8")
+
+
+def test_the_drag_flag_is_written_in_on_start_and_cleared_in_on_end() -> None:
+    """The board swap reads `data-dragging`; before this it was read and never written."""
+    start = _block("onStart: function")
+    end = _block("onEnd: function")
+    assert re.search(r'dataset\.dragging\s*=\s*"true"', start)
+    assert not re.search(r'dataset\.dragging\s*=\s*"true"', end)
+    assert re.search(r'dataset\.dragging\s*=\s*"false"', end)
+
+
+def test_the_drop_applies_the_revision_it_deferred() -> None:
+    """The drop is what the deferred swap waits for, so its return flushes the pending number."""
+    persist = _block("function persistColumn(")
+    assert "flushRevision" in persist
+    fetch_at = persist.index("window")
+    flush_at = persist.index(".then(flushRevision)")
+    assert fetch_at < flush_at, "the flush has to be on the way back from the write"

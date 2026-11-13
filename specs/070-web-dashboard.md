@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 3
-spec_revision: 15
+spec_revision: 16
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -137,7 +137,7 @@ exception is declared here, in one place, instead of being left for a reader to 
 
 | Aspect | Contract |
 |---|---|
-| Body | `{"revision": <int>}` — exactly one key, no envelope, no timestamp, no `ok` flag |
+| Body | `{"revision": <int>}` — exactly one key, no envelope, no timestamp, no `ok` flag. The single exception is the `503`: the probe could not read a number, the key stays and its value is `null`, because a key that disappears turns a server fault into a parse error on the client |
 | `Content-Type` | `application/json` |
 | `Cache-Control` | `no-store`, on **every** answer of the route, the `400` and the `503` included: a cached revision would freeze the page for as long as the cache holds it |
 | `HX-Request: true` | still required, like every other `/_/*` (R5, §6). The guard is the family's, not the payload's: it is what keeps the probe out of a bookmark, an `<iframe>`, a crawler and a browser navigation |
@@ -1061,7 +1061,9 @@ anything.
 | Poller | `<div id="revision-probe" hx-get="/_/revision" hx-swap="none" hx-trigger="every {{ page.revision_poll }}">` in `base.html`: one request per **visible** tab per interval, and none while the tab is hidden. The visibility condition is **not** a `hx-trigger` filter: htmx compiles a `[condition]` through `Function`, which `script-src 'self'` forbids, and a filter that throws is treated as *do not fire*, so the poll would never run — the condition is enforced on the client by cancelling `htmx:beforeRequest` for this element while `document.hidden` |
 | Page marker | `<body data-revision="{{ page.revision }}">` — the number this page was rendered with |
 | Adopt | every `200`/`201` of this layer carries `HX-Revision` (§2.1.3); on `htmx:afterRequest` the poller stores it as the page's known number |
-| Reload | only when the probe's number differs from the known one: `page["refresh_url"]` (§2.3.1) into `#board` / `#issues-tbody` with `innerHTML` — the same fragment the filter bar reloads, filters included |
+
+**Which pages carry the poller.** The board and the list carry it: they hold a collection that a write can change. The detail page (§2.3.1) carries its revision in `data-revision` and answers `HX-Revision`, and its `data-refresh` is empty — there is no collection to reload, so there is nothing for the poller to swap and it is not rendered. An empty `data-refresh` is the marker, not a missing value: the client reads it and spends the pending revision without a request.
+| Reload | only when the probe's number differs from the known one: an **htmx** GET of `page["refresh_url"]` (§2.3.1) into `#board` / `#issues-tbody` with `innerHTML` — the same fragment the filter bar reloads, filters included. It travels through htmx and not through `fetch`: the fragment arrives carrying `hx-get`, `hx-target` and `hx-push-url` on its rows and cards, htmx binds attributes on the nodes it swaps, and a body written with `innerHTML` on a plain response leaves a board of inert cards — the tab stops opening panels until a manual reload |
 | Never | the whole page, `history`, the URL; and never while a blocking state below holds |
 
 **The do-not-interrupt rule.** A swap deletes whatever is inside the element it replaces, so the
@@ -1269,7 +1271,10 @@ Component-specific requirements:
    yes ⇒ R' becomes the single pending value; nothing is swapped now.
 6. no ⇒ htmx GET page["refresh_url"] (the fragment the filter bar would load, filters included) into
    #board or #issues-tbody with innerHTML; the answer carries HX-Revision: R'' ⇒ adopt R'' as the
-   known revision. An open, clean panel is re-rendered from /_/issues/{identifier}/panel the same way.
+   known revision. An open, clean panel is re-rendered from /_/issues/{identifier}/panel the same way,
+   **and that re-render adopts R'' too**: a panel that re-rendered without adopting leaves the pending
+   revision alive, so the next tick sees the same difference and re-renders it again, forever, resetting
+   its scroll each interval. A blocking state is deferred once per observed revision, not once per tick.
 7. A blocking state that ends with a pending revision applies it immediately: back to step 6, no
    waiting for the next tick.
 8. A write of the page itself (quick add, inline edit, drop, filter change) answers with HX-Revision
