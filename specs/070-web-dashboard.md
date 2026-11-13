@@ -1283,12 +1283,13 @@ Component-specific requirements:
 4. app.js: R' == R ⇒ nothing happens. No fragment request, no swap, no flicker.
 5. R' != R ⇒ is a blocking state holding (panel open, quick add non-empty, drag in flight)?
    yes ⇒ R' becomes the single pending value; nothing is swapped now.
-6. no ⇒ htmx GET page["refresh_url"] (the fragment the filter bar would load, filters included) into
-   #board or #issues-tbody with innerHTML; the answer carries HX-Revision: R'' ⇒ adopt R'' as the
-   known revision. An open, clean panel is re-rendered from /_/issues/{identifier}/panel the same way,
-   **and that re-render adopts R'' too**: a panel that re-rendered without adopting leaves the pending
-   revision alive, so the next tick sees the same difference and re-renders it again, forever, resetting
-   its scroll each interval. A blocking state is deferred once per observed revision, not once per tick.
+6. no ⇒ htmx GET page["refresh_url"] (the fragment the filter bar would load) with the filter form's
+   live values appended, into #board or #issues-tbody, replacing the node; the answer carries
+   HX-Revision: R'' ⇒ adopt R'' as the known revision and spend the pending value. The panel is not
+   re-rendered here: it is a blocking state, and it shows what the click that opened it asked for.
+   A blocking state is deferred once per observed revision, not once per tick, and the pending value
+   survives until the collection is really reloaded — spending it while the swap is deferred would
+   leave the board old and the poller with nothing left to apply.
 7. A blocking state that ends with a pending revision applies it immediately: back to step 6, no
    waiting for the next tick.
 8. A write of the page itself (quick add, inline edit, drop, filter change) answers with HX-Revision
