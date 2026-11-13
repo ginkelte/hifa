@@ -1644,4 +1644,110 @@ the same question with different exit sets. (e) *Deriving `blocked` in the CLI f
 §7 scenarios of SPEC-050, and the `relations` / `blocked` / invalid-type scenarios of
 `specs/acceptance/001-mvp-v1/07-hierarchy-relations.feature`.
 
+## D-049 — The revision is one opaque number from `data_version` on a single long-lived read connection, polled
 
+**Date:** 2026-11-13 · **Wins:** SPEC-070 §2.1.3.1 · **Touches:** SPEC-070 §2.1.3, §2.1.3.1, §2.1.4, §2.3.1,
+§2.6.6, §2.6.8, §3, §4 (R12, R26), §5.6, §6, §7, §8, §10, §11
+
+The dashboard renders a page and the page keeps showing that render. The CLI is a second writer to the same
+SQLite file — D-030 already accepted that for the sidebar — so an issue created in a terminal, or five of them
+moved by an agent, are invisible in an open tab until the user reloads it. The fix must be a **change signal**
+and not a timer: re-rendering on a schedule fights the scroll position, the open panel and the half-typed quick
+add, and pays a query for a page nobody changed.
+
+Three sources were on the table and the choice among them is not stylistic, because the cheapest one is
+worthless under the connection model the edge has today. Measured on this host, three connections over one
+database:
+
+| Reading | `data_version` |
+|---|---|
+| the same connection, before a foreign commit | 1 |
+| the same connection, after that commit | 2 — it changed |
+| a **new** connection after the same commit | 1 |
+| another new connection | 1 — it never changes between requests |
+
+And the edge opens a connection **per call**: `Database.connect`/`ro_connection` →
+`open_db` (`src/hifa/adapters/sqlite/connection.py:102,105`), while `create_app` builds a single `Database`
+object and every request asks it for a connection (`src/hifa/web/app.py:894`). So `data_version` is the right
+answer only if the probe stops using that path.
+
+**Resolution: the probe owns one long-lived read-only connection per process, and the number is its raw
+`data_version`.**
+
+- **One connection, created lazily, closed by `lifespan`.** The first `GET /_/revision` opens a read-only
+  connection (`Database.ro_connection()`), the app keeps it on `app.state`, every later probe reuses it, and a
+  `lifespan` shutdown handler closes it. One per process, not one per request, not a pool: the value is
+  per-connection state, and a connection that is opened for the request that reads it has no history to compare
+  against — it answers its baseline every time (the table above).
+- **Read in autocommit, never inside a transaction.** A connection holding a transaction keeps its snapshot and
+  `data_version` does not advance; it would also pin the WAL and keep checkpoints from running. The probe
+  executes the `PRAGMA` and nothing else, so between probes it holds no read lock — which is why SPEC-001 EC-012
+  ("`serve` opens one connection per request, no long transactions") is still true: the invariant is about
+  transactions, and this connection never opens one.
+- **The number emitted is `data_version`, with nothing added to it.** Not a sum, not an offset, not an epoch, not
+  a timestamp. One number, and it is compared for **equality** only: it is opaque, so nothing orders it, subtracts
+  it, or shows it to a user.
+- **The in-process counter is discarded, with the case it would have covered.** It would cover "the web process
+  wrote something", and that case is already covered: the process writes through its request connections, which
+  are *other* connections than the probe's, so a quick add, an inline edit or a drop bumps the number exactly
+  like the CLI does. A counter would be a second truth about the same fact, and one that every write route can
+  forget to bump — a rule without an enforcement (P8).
+- **`max(updated_at)` is discarded, with the case it cannot cover.** `workflow_state` has **no** timestamp column
+  at all (SPEC-010 §3, `001_init.sql`): a column reorder writes `position` and nothing else (R25), so the last
+  resort would not see the one change the board is most likely to be watched for. Two more reasons: `updated_at`
+  is `TEXT` whose resolution merges two writes in the same second into one value, and the check costs a scan of
+  three tables per poll per tab, where the `PRAGMA` costs nothing. It stays documented as the answer for a
+  *different* connection model: if the probe had to use a connection per request, `data_version` would be
+  unusable and this would be the only remaining source, with the column-reorder hole declared.
+- **A restart costs exactly one spurious reload.** `data_version` starts from its baseline in each process, so a
+  page rendered by the old process carries a number the new one will not produce; the poll sees a difference,
+  re-renders once, and adopts the new number — the page is correct from then on. No epoch, token or generation
+  counter is invented for it: an epoch would be a second number whose only job is to suppress a reload that is
+  cheaper than the mechanism that avoids it.
+- **A replaced file is not a commit.** The long-lived connection reports commits to the file it opened, so a
+  database swapped underneath a running server (a `.bak` put back in place, a fresh `hifa init`) is invisible to
+  the probe and `hifa serve` needs a restart. The layer already assumes a stable file for the life of the process
+  (`user_version` and the viewer are resolved at startup), so this is a boundary stated rather than a behaviour
+  introduced: per-request connections happened to follow the path, and the contract does not promise that.
+- **The over-approximation is accepted and named.** The number changes on *any* commit by another connection — a
+  write to another team, a migration, an `issue_history` row. The consequence is one redundant fragment render,
+  never a missed change: the signal errs towards showing the truth twice, which is what a poll of one `PRAGMA`
+  can afford.
+- **A write of the page itself does not provoke a reload.** Every `200`/`201` of the layer answers with
+  `HX-Revision` and the page adopts it, so the poll finds the numbers equal on the next tick instead of
+  re-rendering what the user's own action just produced. The residual is declared: a foreign commit that lands
+  between the page render and the user's own write is masked by the adopted number and shows up on the next
+  commit or on a reload — the number is opaque, so the page cannot tell how many commits it skipped.
+- **The transport is a poll, and it is honest for this deployment.** One local process, one user, one SQLite
+  file. A push channel would need a long-lived connection per tab, fan-out and reconnection state inside the
+  server, and a second protocol in a layer whose whole contract is "HTML over HTTP" — and it would still poll
+  the file underneath, because SQLite does not notify anyone. `hx-trigger="every REVISION_POLL [visible]"` is one
+  request per **visible** tab every 5 s, with no reconnect story, no state on the server and no daemon to keep
+  alive; hidden tabs cost nothing. The interval is a single constant so that changing it is one edit.
+- **The cost is bounded and declared.** One read-only connection per process (a new resource in this layer,
+  closed by `lifespan`), one `PRAGMA` per visible tab per interval, one fragment re-render per observed foreign
+  revision, and one read of one issue when an open, clean panel re-renders. Nothing is written, nothing is
+  locked, and `--read-only` is unaffected: the probe is a read, and a read-only dashboard watching a CLI writer is
+  the case it exists for.
+
+**Why one number and not listening to the database.** There is no notification to listen to across processes:
+`sqlite3_update_hook` is per connection and fires for the connection that wrote — the wrong side — and a trigger
+that wrote into a queue table would need a consumer, a poll of that queue, and a bus, which A8 forbids. One
+number that any reader can compare is the smallest thing that answers "did anything I can see change", and it
+needs no writer to cooperate.
+
+**Why not the alternatives.** (a) *Render the whole board every 5 s and let the diff be invisible*: that is the
+timer the issue rejects — queries nobody needs, flicker, and a swap that deletes an open panel or a half-typed
+quick add. (b) *SSE or a websocket*: see above — more server state and a second protocol to carry one integer.
+(c) *`data_version` from a connection per request*: measured, it answers the same value forever; it is not a
+weaker source but an inert one. (d) *A revision column in the database, bumped by triggers*: a schema change, a
+write on every mutation, and a table that exists only to be polled. (e) *A cache of the last board render keyed
+by revision*: A8 forbids the cache and the render is already cheap (REQ-N070-02), so it would buy a
+correctness risk for latency nobody is missing. (f) *Refreshing the panel only when its own issue changed*:
+the number is global and carries no identity, so that condition cannot be evaluated; the panel re-renders on its
+own state instead (clean, unfocused) and pays one read of one issue, which is what a row click already pays.
+
+**Verification.** The `/_/revision` scenarios of SPEC-070 §7 (guard, stability across two reads, change after a
+write from another connection, the page marker and the header, read-only), the four scenarios §7 marks manual
+(no swap without a change, swap with one, the open panel, the drag in flight — no Playwright on this host), and
+§2.6.8 of SPEC-070, which is where the client contract lives.
