@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 16
+spec_revision: 17
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -1003,7 +1003,7 @@ it is fixed there, not here.
 | `update_comment` | `update_comment(uow, UpdateComment(comment_id=..., body=...), actor)` | aligned |
 | `add_labels` / `remove_labels` (plural) | `add_label` / `remove_label`, one call per label; the edge iterates (GAP-05) | rename in the edge |
 | `delete_issue` / `--hard` | does not exist: `trash_issue` (soft) and `archive_issue` (D-015) | remove from the edge |
-| `list_issues(uow, *, filters, sort, cursor) -> Page[Issue]` | `list_issues(db, ListFilters(limit, cursor, order, include_archived)) -> IssuePage` | aligned (D-011) |
+| `list_issues(uow, *, filters, sort, cursor) -> Page[Issue]` | **one form only:** `list_issues(db, filters: ListFilters) -> IssuePage`, with `limit`, `cursor`, `order` and `reverse` carried by `ListFilters` (D-011); the read path opens its own read-only connection, so it takes no unit of work | the edge adapts; the port does not grow a second shape |
 | `search_issues(q, ...)` | `search_issues(db, SearchQuery)`; the envelope belongs to SPEC-090 (D-016) | aligned |
 | `bootstrap_workspace(...)` | not from this spec: `app/teams.py::bootstrap(...)` is from SPEC-100 §2.5 | no change |
 
@@ -1485,10 +1485,11 @@ Flow invariants:
     limit = f.limit or 50; 1 <= limit <= 200 otherwise => Validation(rule='LIMIT_RANGE')
     order = f.order or "manual"; order not in {manual,created,updated,priority,due}
             => Validation(rule='ORDER_INVALID')
- 2. tx = uow.read()                                # readonly repos, no BEGIN IMMEDIATE
+ 2. conn = db.ro_connection()                      # read-only connection, no BEGIN IMMEDIATE;
+                                                   # the port takes the database, not a unit of work
     team_id = f.team_id
-    ws_id = tx.teams.workspace().id                  # 030 §2.4
-    if team_id is not a 26-char ULID: team = tx.teams.get_by_key(ws_id, team_id)
+    ws_id = reads.workspace_id(conn)                 # 030 §2.4
+    if team_id is not a 26-char ULID: team = reads.team_by_key(conn, ws_id, team_id)
             -> None => NotFound(resource='team', key=team_id); team_id = team.id
  3. dir = "desc" if f.reverse else "asc"           # the direction is 030 §2.6.1's, not this layer's;
                                                    # lowercase is the token's form (030 §2.6.2); the
@@ -1500,7 +1501,7 @@ Flow invariants:
         # which is what the adapter encoded in 030 §2.6.2
         # the anchor must belong to the resolved team: reads.list_view raises INVALID_CURSOR when
         # `SELECT <SORT_KEYS[order]> FROM v_issue WHERE id = last_id AND team_id = :team_id` is empty
- 5. page = reads.list_view(tx.connection, ListFilters(team_id=team_id, <every other filter of f,
+ 5. page = reads.list_view(conn, ListFilters(team_id=team_id, <every other filter of f,
                                                      unchanged>, order=order, reverse=f.reverse,
                                                      cursor=f.cursor, limit=limit))
         # exact signature from 030 §2.6: list_view(conn, filters: ListFilters) -> IssuePage
@@ -2166,6 +2167,10 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 17 (2026-11-13): **the listing port has one shape.** `§2.3` and `§5.3`
+  described the same function once as taking a unit of work and once as taking the database;
+  `ListFilters` already carries `limit`, `cursor`, `order` and `reverse` (D-011), so the extra
+  parameters had no content and the two forms would have built two listings.
 - spec_revision 16 (2026-11-13): **the cursor is compared against the token the adapter encodes.** §5.3
   step 3 already derived `dir` in lowercase and step 4 already compared `f"{order}:{dir}"`, which is the
   canonical form of SPEC-030 §2.6.2; the steps now say so, so the validation cannot be read as accepting
