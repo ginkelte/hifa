@@ -744,6 +744,47 @@ def board_view(
     return Board(team_id=team_id, group_by=group_by, groups=tuple(groups))
 
 
+_BLOCKED_SQL = (
+    "SELECT "
+    + _ITEM_COLUMNS
+    + """
+FROM v_issue i
+JOIN workflow_state s ON s.id = i.state_id
+JOIN team t          ON t.id = i.team_id
+LEFT JOIN member m   ON m.id = i.assignee_id
+WHERE (:team_id IS NULL OR i.team_id = :team_id)
+  AND i.visible = 1
+  AND EXISTS (
+        SELECT 1
+        FROM issue_relation r
+        JOIN issue blocker     ON blocker.id = r.issue_id
+        JOIN workflow_state bs ON bs.id = blocker.state_id
+        WHERE r.type = 'blocks'
+          AND r.related_issue_id = i.id
+          AND bs.type NOT IN ('completed', 'canceled')
+      )
+ORDER BY i.identifier
+"""
+)
+
+
+def blocked_view(
+    conn: sqlite3.Connection, *, team_id: str | None = None
+) -> tuple[IssueListItem, ...]:
+    """One query: the visible issues a live `blocks` edge points at, ordered by identifier.
+
+    The edge is read in the direction it is stored — `issue_id` is the blocker and
+    `related_issue_id` the issue it holds back — and the release condition is the blocker's
+    own state type, so a blocker that reaches `completed` or `canceled` stops holding the
+    issue back without touching the edge. `EXISTS` answers "is there at least one blocker"
+    instead of joining, so an issue with several blockers is still one row. The projection is
+    the listing's, labels included, in the same statement: no N+1 and no `COUNT(*)`.
+    `team_id=None` spans the workspace; resolving the reference belongs to the caller.
+    """
+    rows = conn.execute(_BLOCKED_SQL, {"team_id": team_id}).fetchall()
+    return _items(rows)
+
+
 def _member(conn: sqlite3.Connection, member_id: str | None) -> Member | None:
     from hifa.adapters.sqlite.member_repo import member_from_row
 
@@ -910,6 +951,7 @@ __all__ = [
     "LabelRef",
     "ListFilters",
     "board_view",
+    "blocked_view",
     "decode_cursor",
     "encode_cursor",
     "issue_detail",

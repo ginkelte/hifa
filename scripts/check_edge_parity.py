@@ -179,6 +179,11 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(name="issue.archive", cli="issue archive", web=None, debt="HIFA-3"),
     Capability(name="issue.delete", cli="issue delete", web=None, debt="HIFA-3"),
     Capability(name="issue.restore", cli="issue restore", web=None, debt="HIFA-3"),
+    # Relations are read and written from the CLI; the dashboard shows their blockers once
+    # HIFA-34 lands the panel and the badge, which is the later of the two edges.
+    Capability(name="issue.relate", cli="issue relate", web=None, debt="HIFA-34"),
+    Capability(name="issue.relations", cli="issue relations", web=None, debt="HIFA-34"),
+    Capability(name="issue.blocked", cli="issue blocked", web=None, debt="HIFA-34"),
     # The CLI transport of this page is `hifa issue show`, which no verb carries yet.
     Capability(name="issue.show", cli=None, web=("GET", "/{team}/issue/{ref}"), debt="HIFA-49"),
     # HIFA-2 (T-07) ships the verb that exposes both reads; the board read MODEL

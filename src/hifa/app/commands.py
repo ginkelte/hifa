@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal, TypeVar
 
-from hifa.domain.enums import EstimationType, Priority, TeamVisibility
+from hifa.domain.enums import EstimationType, Priority, RelationType, TeamVisibility
 from hifa.domain.errors import Validation
 from hifa.domain.identifier import normalize_key
 
@@ -230,6 +230,48 @@ class MoveIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class RelateIssues:
+    """Create one edge between two issues.
+
+    `issue` and `related` are ULIDs or identifiers. `type` is kept **as it arrived** (a `str`
+    or a `RelationType`): the use case parses it, because the token `blocked_by` carries a
+    swap of the pair and a `__post_init__` that kept only the enum would lose the direction.
+    An unknown token is `Validation(rule='COMMAND_FIELD', field='type')` from the use case.
+    """
+
+    issue: str
+    related: str
+    type: str | RelationType = RelationType.RELATED
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+        _require_ref(self, "related")
+        if isinstance(self.type, str):
+            object.__setattr__(self, "type", self.type.strip())
+
+
+@dataclass(frozen=True, slots=True)
+class UnrelateIssues:
+    """Delete one edge between two issues.
+
+    `type=None` removes whichever edge joins the pair; the token `blocked_by` addresses the
+    row `blocks` created, for the same reason `RelateIssues.type` is parsed in the use case.
+    """
+
+    issue: str
+    related: str
+    type: str | RelationType | None = None
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+        _require_ref(self, "related")
+        if self.type is not None and not isinstance(self.type, (str, RelationType)):
+            raise _command_field("type", self.type)
+        if isinstance(self.type, str):
+            object.__setattr__(self, "type", self.type.strip())
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveIssue:
     """Archive one issue; the layer is reversible and never deletes the row."""
 
@@ -408,9 +450,11 @@ __all__ = [
     "CreateTeam",
     "Maybe",
     "MoveIssue",
+    "RelateIssues",
     "RestoreIssue",
     "TrashIssue",
     "Unset",
+    "UnrelateIssues",
     "UpdateIssue",
     "UpdateState",
 ]

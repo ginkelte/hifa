@@ -12,7 +12,7 @@ from dataclasses import replace
 
 from hifa.adapters.sqlite import reads
 from hifa.adapters.sqlite.connection import Database
-from hifa.adapters.sqlite.reads import Board, IssueDetail, IssuePage, ListFilters
+from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage, ListFilters
 from hifa.domain.entities import Team
 from hifa.domain.errors import NotFound, Validation
 
@@ -160,6 +160,29 @@ def board_counts(db: Database, team: str) -> dict[str, int]:
         conn.close()
 
 
+# raises: NotFound(team)
+def list_blocked(db: Database, *, team: str | None = None) -> tuple[IssueListItem, ...]:
+    """The visible issues a `blocks` edge still holds back, by `identifier`, one query.
+
+    `team` is a key or a ULID and is resolved here; `None` spans the workspace and is not
+    "no team". The verdict — blocked while a blocker's state is neither `completed` nor
+    `canceled` — is the adapter's, in a single statement: this function resolves the
+    reference, borrows one read-only connection and filters nothing on its own. It has no
+    cursor, no limit and no total, so it is never paginated and never counted.
+    """
+    conn = db.ro_connection()
+    try:
+        team_id: str | None = None
+        if team is not None:
+            resolved = reads.team_by_ref(conn, team)
+            if resolved is None:
+                raise NotFound(resource="team", key=team)
+            team_id = resolved.id
+        return reads.blocked_view(conn, team_id=team_id)
+    finally:
+        conn.close()
+
+
 def issue_detail(db: Database, ref: str, *, include: frozenset[str] = frozenset()) -> IssueDetail:
     """Detail by identifier or ULID; `NotFound(issue, key=ref)` when it does not exist."""
     conn = db.ro_connection()
@@ -228,6 +251,7 @@ __all__ = [
     "database_ok",
     "issue_detail",
     "list_board",
+    "list_blocked",
     "list_issues",
     "list_teams",
     "require_team",
