@@ -1070,7 +1070,9 @@ def list_view(conn: sqlite3.Connection, filters: ListFilters) -> IssuePage:
     A cursor whose anchor does not exist in `filters.team_id` -> Validation(rule='INVALID_CURSOR')."""
 
 
-def blocked_view(conn: sqlite3.Connection, *, team_id: str | None = None) -> tuple[IssueListItem, ...]:
+def blocked_view(
+    conn: sqlite3.Connection, *, team_id: str | None = None
+) -> tuple[IssueListItem, ...]:
     """One query (SQL-10): the live issues that are the target of a `blocks` edge whose source is not
     finished (SPEC-020 §4.1 R7, D-046). `team_id=None` is the workspace-wide form, not "no team".
     Ordered by `identifier` ASC. The reference is resolved by the caller (`team_by_ref`), so a
