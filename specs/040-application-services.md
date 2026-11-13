@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 12
+spec_revision: 13
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -909,7 +909,7 @@ in the consumer).
 | `with_write_retry` | `app/retry.py` | `(fn: Callable[[], T], *, attempts: int = 3, base_delay: float = 0.05, retry_on: frozenset[str] = frozenset({'DB_BUSY'})) -> T` | D-018: the system's only retry; it re-executes the complete transaction |
 | `slugify` | `app/rules.py` | `(text: str) -> str` | NFKD→ASCII, `[a-z0-9]` joined by `-`, capped at 60 (R17) |
 | `branch_name` | `app/rules.py` | `(identifier: str, title: str) -> str` | R17: `f"{identifier.lower()}-{slugify(title)}"` |
-| `apply_milestones` | `app/rules.py` | `(*, current: str, target: str, issue: Issue, now: datetime) -> dict[str, datetime \| None]` | R7bis; returns only the milestone columns that change |
+| `apply_milestones` | `app/rules.py` | `(*, current: str \| None, target: str, issue: Issue, now: datetime) -> dict[str, datetime \| None]` | R7bis; `current=None` is an issue that does not exist yet, so every milestone of the target type is stamped; returns only the milestone columns that change |
 | `exhausted` | `app/ranking.py` | `(column: Sequence[float]) -> bool` | `True` if the largest gap between neighbors is `< 1e-6` |
 | `validate_attachment_url` | `app/validation.py` | `(url: str) -> str` | `http`/`https`/`file`; otherwise `Validation(rule='ATTACHMENT_URL_SCHEME')` or `ATTACHMENT_URL_INVALID` |
 
@@ -2133,6 +2133,9 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 13 (2026-11-13): **one table decides which milestone a state type stamps.**
+  §3.2 declares `apply_milestones` for an issue that already exists and for one that does not,
+  so the creation path and the move path read the same table instead of carrying a copy each.
 - spec_revision 12 (2026-11-13): **every condition a write enforces is named by the function that
   enforces it.** `update_issue` publishes `TEAM_ARCHIVED` among its own conditions instead of
   inheriting it implicitly, so the list of refusals of the edit path is complete on the page
