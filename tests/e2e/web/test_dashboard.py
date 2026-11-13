@@ -653,7 +653,7 @@ def test_asset_budget_is_under_75_kb_gzip() -> None:
             total += len(gzip.compress(path.read_bytes(), compresslevel=9))
     assert total <= 75 * 1024, total
     assert (STATIC / "css" / "app.css").stat().st_size <= 20 * 1024
-    assert (STATIC / "js" / "app.js").stat().st_size <= 12 * 1024
+    assert (STATIC / "js" / "app.js").stat().st_size <= 16 * 1024
 
 
 def test_templates_carry_no_logic() -> None:

@@ -8,6 +8,7 @@ inside a transaction).
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Final
 from urllib.parse import quote
@@ -106,4 +107,70 @@ class Database:
         return open_db(self._path, readonly=True)
 
 
-__all__ = ["PRAGMAS", "Database", "connect", "is_migrated", "open_db"]
+def data_version(conn: sqlite3.Connection) -> int:
+    """`PRAGMA data_version` of this connection: a counter of the *other* writers' commits.
+
+    It reads no table, locks no row and opens no transaction, so between reads the connection
+    holds no read lock. The number is opaque: compare it for equality, never order it, never do
+    arithmetic on it and never show it to a person. A connection that cannot answer raises
+    `HifaError(code="revision_unavailable")`.
+    """
+    try:
+        row = conn.execute("PRAGMA data_version").fetchone()
+    except sqlite3.Error as exc:
+        raise HifaError(
+            "the revision cannot be read",
+            code="revision_unavailable",
+            hint="restart the dashboard",
+        ) from exc
+    if row is None:  # pragma: no cover - defensive: the pragma always answers one row
+        raise HifaError("the revision cannot be read", code="revision_unavailable")
+    return int(row[0])
+
+
+class RevisionWatch:
+    """The one read connection that outlives a request, and the number it reports.
+
+    `data_version` counts the commits of *other* connections to the file this connection
+    opened, so a connection created for the request that reads it answers its own baseline
+    forever and would never report a change. This one is opened once, lazily, read in
+    autocommit, and closed by whoever owns the process. `read()` returns `None` instead of
+    raising: a probe that cannot answer is a skipped tick, not a failed page.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+        self._lock = threading.Lock()
+        self._connection: sqlite3.Connection | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self._connection is not None
+
+    def read(self) -> int | None:
+        """The current revision, or `None` when this connection cannot answer."""
+        with self._lock:
+            try:
+                if self._connection is None:
+                    self._connection = self._database.ro_connection()
+                return data_version(self._connection)
+            except (sqlite3.Error, HifaError):
+                return None
+
+    def close(self) -> None:
+        """Close the connection. Idempotent, and a later `read()` opens a new one."""
+        with self._lock:
+            connection, self._connection = self._connection, None
+        if connection is not None:
+            connection.close()
+
+
+__all__ = [
+    "PRAGMAS",
+    "Database",
+    "RevisionWatch",
+    "connect",
+    "data_version",
+    "is_migrated",
+    "open_db",
+]

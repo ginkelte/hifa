@@ -11,10 +11,12 @@ this module.
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -32,7 +34,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 from hifa import __version__
 from hifa.adapters.clock import SystemClock
 from hifa.adapters.idgen import UlidGen
-from hifa.adapters.sqlite.connection import Database
+from hifa.adapters.sqlite.connection import Database, RevisionWatch
 from hifa.adapters.sqlite.reads import ListFilters
 from hifa.adapters.sqlite.uow import UnitOfWork
 from hifa.app import boards
@@ -59,6 +61,11 @@ SHORT_CACHE_PATHS = frozenset({"/static/js/app.js", "/static/css/app.css"})
 SEARCH_UNAVAILABLE = "search is not implemented yet"
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+#: The only place the revision poll interval is written: the template prints it as
+#: `page["revision_poll"]` and nothing else repeats the duration.
+REVISION_POLL = "5s"
+#: Methods that cannot commit: their `HX-Revision` is the number observed before they ran.
+READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class FragmentRequiresHtmx(Exception):
@@ -98,6 +105,24 @@ def _templates(request: Request) -> Jinja2Templates:
 
 def _can_write(request: Request) -> bool:
     return not request.app.state.read_only
+
+
+def _revisions(request: Request) -> RevisionWatch:
+    return request.app.state.revisions
+
+
+def _revision(request: Request) -> int:
+    """The revision this request observed: one read, shared by the page marker and the header.
+
+    The number is opaque, so an unreadable probe becomes `0` (never a number a live connection
+    reports): the page still renders, and the first probe tick that answers reloads it once.
+    """
+    observed = getattr(request.state, "revision", None)
+    if observed is None:
+        number = _revisions(request).read()
+        observed = 0 if number is None else number
+        request.state.revision = observed
+    return observed
 
 
 def _today() -> date:
@@ -159,6 +184,7 @@ def _page(
     nav: str | None,
     team: Team | None = None,
     flash: str | None = None,
+    refresh_url: str | None = None,
 ) -> dict[str, object]:
     return readmodels.build_page(
         title=title,
@@ -169,6 +195,9 @@ def _page(
         version=__version__,
         can_write=_can_write(request),
         flash=flash,
+        revision=_revision(request),
+        revision_poll=REVISION_POLL,
+        refresh_url=refresh_url,
     )
 
 
@@ -269,6 +298,19 @@ def _filters(request: Request) -> dict[str, str | None]:
         "project": query.get("project") or None,
         "q": query.get("q") or None,
     }
+
+
+#: Query-string keys the poll re-sends: the fragment it loads is the one the filter bar loads,
+#: so the filters of the page travel with it.
+REFRESH_KEYS = ("q", "state", "assignee", "label", "cycle", "project", "sort", "limit")
+
+
+def _refresh_url(request: Request, *, view: str, team: str) -> str:
+    """The fragment URL that re-renders the collection this page is showing."""
+    query = request.query_params
+    params: list[tuple[str, str]] = [("view", view), ("team", team)]
+    params.extend((key, query[key]) for key in REFRESH_KEYS if query.get(key))
+    return "/_/issues?" + urlencode(params)
 
 
 def _team_or_default(request: Request, team: str | None) -> Team:
@@ -397,7 +439,13 @@ def board_page(request: Request, team: str) -> HTMLResponse:
         today=_today(),
         can_write=_can_write(request),
     )
-    page = _page(request, title=f"Board \u00b7 {entity.key}", nav="board", team=entity)
+    page = _page(
+        request,
+        title=f"Board \u00b7 {entity.key}",
+        nav="board",
+        team=entity,
+        refresh_url=_refresh_url(request, view="board", team=entity.key),
+    )
     return _render(request, "board.html", {"page": page, "vm": vm})
 
 
@@ -406,7 +454,13 @@ def list_page(request: Request, team: str) -> HTMLResponse:
     db = _database(request)
     entity = boards.require_team(db, team)
     vm = _list_page(request, entity, _filters(request))
-    page = _page(request, title=f"List \u00b7 {entity.key}", nav="list", team=entity)
+    page = _page(
+        request,
+        title=f"List \u00b7 {entity.key}",
+        nav="list",
+        team=entity,
+        refresh_url=_refresh_url(request, view="list", team=entity.key),
+    )
     return _render(
         request,
         "list.html",
@@ -706,6 +760,23 @@ def quick_add(request: Request, team: str, body: bytes = Body(default=b"")) -> R
     return response
 
 
+@router.get("/_/revision", dependencies=[HTMX])
+def revision(request: Request) -> JSONResponse:
+    """The change signal of an open page: one number, JSON, never inserted anywhere.
+
+    It is the `data_version` of the process's own read connection, so it moves when *another*
+    connection commits — the CLI, a second tab, the request connections of this same process —
+    and stays put when nothing writes. A probe that cannot answer is `{"revision": null}`: the
+    client skips the tick instead of reloading on a number it cannot trust.
+    """
+    number = _revisions(request).read()
+    return JSONResponse(
+        {"revision": number},
+        status_code=200 if number is not None else 503,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/_/counts", dependencies=[HTMX])
 def counts_fragment(request: Request, team: str) -> HTMLResponse:
     counts = boards.board_counts(_database(request), team)
@@ -856,7 +927,19 @@ def _install_error_handlers(app: FastAPI) -> None:
 def _install_security_headers(app: FastAPI) -> None:
     @app.middleware("http")
     async def _headers(request: Request, call_next):
+        path = request.url.path
+        # One revision per request: the page marker and the header are the same number, which is
+        # what lets the client adopt the header without reloading what it was just given.
+        if not path.startswith("/static/"):
+            _revision(request)
         response = await call_next(request)
+        if not path.startswith("/static/") and response.status_code in (200, 201):
+            number = _revision(request)
+            if request.method not in READ_METHODS:
+                # A write of this request moves the counter of a *different* connection, so the
+                # number the page adopts has to be the one observed after the write.
+                number = _revisions(request).read() or number
+            response.headers.setdefault("HX-Revision", str(number))
         response.headers.setdefault("Content-Security-Policy", CSP)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -870,6 +953,15 @@ def _install_security_headers(app: FastAPI) -> None:
         elif not response.headers.get("Cache-Control"):
             response.headers["Cache-Control"] = "no-store"
         return response
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Nothing to start; one thing to stop — the read connection the probe keeps open."""
+    try:
+        yield
+    finally:
+        app.state.revisions.close()
 
 
 def create_app(
@@ -890,9 +982,14 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=_lifespan,
     )
     database = Database(db_path)
     app.state.database = database
+    # One read connection for the life of the process, opened by the first request that needs a
+    # revision and closed by `_lifespan`. A connection per request would answer its own baseline
+    # forever, which is the one thing this number cannot do.
+    app.state.revisions = RevisionWatch(database)
     app.state.db_path = Path(db_path)
     app.state.default_team = default_team
     app.state.read_only = read_only
@@ -932,6 +1029,7 @@ def create_app_from_env() -> FastAPI:
 __all__ = [
     "CSP",
     "FragmentRequiresHtmx",
+    "REVISION_POLL",
     "build_environment",
     "create_app",
     "create_app_from_env",

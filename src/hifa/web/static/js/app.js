@@ -25,7 +25,157 @@
   function closePanel() {
     var panel = document.querySelector(PANEL);
     if (panel) panel.innerHTML = "";
+    flushRevision();
   }
+
+  // --- the revision of the page -----------------------------------------------------------
+  // The page knows the revision it was rendered at and every response tells it the revision it
+  // was rendered at too. The probe is one request per visible tab per interval and answers one
+  // number: only a number that differs reloads the collection, so a tab that nobody is writing
+  // to makes no request beyond the probe and swaps nothing.
+  var revision = {
+    known: document.body.dataset.revision || "",
+    pending: null,
+    busy: false
+  };
+
+  function isProbe(elt) {
+    return !!elt && elt.id === "revision-probe";
+  }
+
+  function refreshTarget() {
+    if (document.getElementById("board")) return "#board";
+    if (document.getElementById("issues-tbody")) return "#issues-tbody";
+    return "";
+  }
+
+  function quickAddHoldsText() {
+    var input = document.querySelector("#quick-add .quick-add-input");
+    return input !== null && input.value.trim() !== "";
+  }
+
+  // A swap deletes whatever is inside the element it replaces, so it waits for the interaction
+  // instead of ending it: an open panel, a half-typed quick add, a card or column under the
+  // pointer, or the panel's own unsaved text and focus.
+  function blocked() {
+    return panelIsOpen() || quickAddHoldsText() || document.body.dataset.dragging === "true";
+  }
+
+  function panelIsDirtyOrFocused() {
+    var panel = document.querySelector(PANEL);
+    if (!panel || !panel.children.length) return false;
+    if (panel.contains(document.activeElement)) return true;
+    var fields = panel.querySelectorAll("input, textarea");
+    for (var index = 0; index < fields.length; index += 1) {
+      if (String(fields[index].value || "").trim() !== "") return true;
+    }
+    return false;
+  }
+
+  function panelUrl() {
+    var panel = document.querySelector(PANEL);
+    if (!panel || !panel.children.length) return "";
+    var link = panel.querySelector(".identifier");
+    if (!link) return "";
+    var identifier = String(link.textContent || "").trim();
+    return identifier ? "/_/issues/" + encodeURIComponent(identifier) + "/panel" : "";
+  }
+
+  function adopt(number) {
+    if (number === null || number === undefined || number === "") return;
+    revision.known = String(number);
+    if (revision.pending === revision.known) revision.pending = null;
+  }
+
+  function flushRevision() {
+    if (revision.pending === null || revision.busy) return;
+    if (blocked()) {
+      // The panel is the one element allowed to re-render while it is open, and only while it
+      // holds nothing the user typed and no element inside it has the focus.
+      var url = panelUrl();
+      if (url && !panelIsDirtyOrFocused()) renderPanel(url);
+      return;
+    }
+    var target = refreshTarget();
+    var fragment = document.body.dataset.refresh || "";
+    var number = revision.pending;
+    var node = target ? document.querySelector(target) : null;
+    if (!node || !fragment) {
+      revision.pending = null;
+      adopt(number);
+      return;
+    }
+    revision.pending = null;
+    revision.busy = true;
+    window
+      .fetch(fragment, { headers: { "HX-Request": "true" }, credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.text().then(function (html) {
+          node.innerHTML = html;
+          adopt(response.headers.get("HX-Revision") || number);
+        });
+      })
+      .catch(function () {
+        // The page keeps what it shows and the next tick tries again with a fresh number.
+      })
+      .then(function () {
+        revision.busy = false;
+      });
+  }
+
+  function renderPanel(url) {
+    var panel = document.querySelector(PANEL);
+    if (!panel) return;
+    window
+      .fetch(url, { headers: { "HX-Request": "true" }, credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.text().then(function (html) {
+          panel.innerHTML = html;
+        });
+      })
+      .catch(function () {
+        // An open panel that cannot re-render keeps the markup it already has.
+      });
+  }
+
+  function onProbe(xhr) {
+    if (xhr.status !== 200) return;
+    var number = null;
+    try {
+      number = JSON.parse(xhr.responseText).revision;
+    } catch (error) {
+      return;
+    }
+    if (typeof number !== "number") return;
+    if (String(number) === revision.known) {
+      revision.pending = null;
+      return;
+    }
+    revision.pending = String(number);
+    flushRevision();
+  }
+
+  // htmx compiles a `[...]` trigger filter with `Function`, which `script-src 'self'` forbids:
+  // the visibility condition runs here, where cancelling the request is a normal event.
+  document.body.addEventListener("htmx:beforeRequest", function (event) {
+    if (!isProbe(event.detail.elt)) return;
+    if (document.hidden) event.preventDefault();
+  });
+
+  // Every answer of the layer reports the revision it was rendered at; adopting it is what stops
+  // the next tick from re-rendering content the user's own action just produced.
+  document.body.addEventListener("htmx:afterRequest", function (event) {
+    var xhr = event.detail.xhr;
+    if (!xhr) return;
+    if (isProbe(event.detail.elt)) {
+      onProbe(xhr);
+      return;
+    }
+    adopt(xhr.getResponseHeader("HX-Revision"));
+    flushRevision();
+  });
 
   // htmx does not swap 4xx: enable the swap for 422 so the invalid field comes back (R11).
   document.body.addEventListener("htmx:beforeSwap", function (event) {
@@ -149,6 +299,14 @@
   document.body.addEventListener("issue-created", function () {
     var form = document.getElementById("quick-add");
     if (form) form.reset();
+    flushRevision();
+  });
+
+  // An emptied quick add ends the interaction that was holding the swap back.
+  document.body.addEventListener("input", function (event) {
+    var target = event.target;
+    if (!target || !target.classList || !target.classList.contains("quick-add-input")) return;
+    if (String(target.value || "").trim() === "") flushRevision();
   });
 
   // board columns: the whole header strip drags and a drag that starts on a card belongs to

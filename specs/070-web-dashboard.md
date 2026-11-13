@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 3
-spec_revision: 14
+spec_revision: 15
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -614,7 +614,7 @@ Everything lives in `src/hifa/web/static/`, served by `StaticFiles` mounted at `
 | `vendor/alpine.csp.min.js` | 3.14.8 | MIT | **16 KB** | local widget state (CSP build: no `eval`, see R14) |
 | `vendor/sortable.min.js` | 1.15.2 | MIT | **10 KB** | board drag & drop |
 | `css/app.css` | — | own | **≤ 20 KB** (target 14 KB) | the whole design (§2.5) |
-| `js/app.js` | — | own | **≤ 12 KB** (target 6 KB) | Alpine registrations, `422` listener, shortcuts, drop |
+| `js/app.js` | — | own | **≤ 16 KB** (target 10 KB) | Alpine registrations, `422` listener, shortcuts, drop, the change signal and its deferral |
 | `img/sprite.svg` | — | own (Lucide, ISC) | **3 KB** | inline icons via `<use>` |
 | `img/favicon.svg` | — | own | **1 KB** | favicon (no `.ico`) |
 

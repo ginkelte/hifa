@@ -442,8 +442,15 @@ def build_page(
     version: str = "",
     can_write: bool = True,
     flash: str | None = None,
+    revision: int = 0,
+    revision_poll: str = "",
+    refresh_url: str | None = None,
 ) -> dict[str, object]:
-    """Context every template receives: title, team, sidebar, viewer and flash."""
+    """Context every template receives: title, team, sidebar, viewer and flash.
+
+    `revision`, `revision_poll` and `refresh_url` are printed, never computed: the page marker
+    and the poller are the whole of their use.
+    """
     return {
         "title": title,
         "team": team,
@@ -456,6 +463,9 @@ def build_page(
         "version": version,
         "can_write": can_write,
         "flash": flash,
+        "revision": revision,
+        "revision_poll": revision_poll,
+        "refresh_url": refresh_url,
     }
 
 
