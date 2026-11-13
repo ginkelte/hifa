@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import CLI_ENV
 from hifa.cli.main import app
 
 runner = CliRunner()
@@ -21,7 +22,7 @@ CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "Done", "Canceled"]
 
 
 def run(*args: str):
-    return runner.invoke(app, list(args))
+    return runner.invoke(app, list(args), env=CLI_ENV)
 
 
 def out(result) -> str:

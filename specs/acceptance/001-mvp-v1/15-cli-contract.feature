@@ -29,6 +29,44 @@ Feature: CLI contract with --json
     And stdout parses as JSON with no additional text
 
   @REQ-F032 @smoke
+  Scenario: a mutation emits the canonical object without a wrapper
+    When I run "hifa issue edit ENG-1 --priority 2 --json"
+    Then stdout is a single JSON object
+    And the object has the key "identifier" and the key "updated_at"
+    And the object does not have the key "items"
+
+  @REQ-F032 @smoke
+  Scenario: a mutation prints one row with the issue columns
+    When I run "hifa issue move ENG-1 --state 'In Progress'"
+    Then the exit code is 0
+    And stdout has 2 lines
+    And the header is "IDENTIFIER  P  STATE  ASSIGNEE  TITLE  LABELS  DUE"
+
+  @REQ-F032 @smoke
+  Scenario Outline: --quiet prints only the affected identifier
+    When I run "<command> --quiet"
+    Then stdout is exactly "ENG-1"
+    Examples:
+      | command                            |
+      | hifa issue edit ENG-1 --priority 2 |
+      | hifa issue move ENG-1 --state Todo |
+      | hifa issue archive ENG-1 --yes     |
+      | hifa issue restore ENG-1           |
+
+  @REQ-F032 @smoke
+  Scenario Outline: the write verbs run without a server
+    Given an initialized workspace and no "hifa serve" process
+    When I run "<command> --json" with the socket module instrumented
+    Then the exit code is 0
+    And no socket was opened
+    Examples:
+      | command                                     |
+      | hifa issue edit ENG-1 --priority 2          |
+      | hifa issue move ENG-1 --state 'In Progress' |
+      | hifa issue archive ENG-1 --yes              |
+      | hifa issue restore ENG-1                    |
+
+  @REQ-F032 @smoke
   Scenario Outline: exit codes are stable per error type
     When I run "<command>" with --json
     Then the exit code is <code>
@@ -37,3 +75,7 @@ Feature: CLI contract with --json
       | hifa issue show ENG-999                   | 3    |
       | hifa issue edit ENG-1 --sprint 5          | 2    |
       | hifa label add --name Bug --color '#000'  | 4    |
+      | hifa issue edit ENG-1                     | 2    |
+      | hifa issue move ENG-1 --state Nope        | 3    |
+      | hifa issue archive ENG-999                | 3    |
+      | hifa issue restore ENG-999                | 3    |

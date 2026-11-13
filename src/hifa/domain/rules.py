@@ -230,7 +230,7 @@ def validate_close(target: WorkflowStateType, open_children: int) -> None:
 def validate_transition(current: WorkflowState, target: WorkflowState, open_children: int) -> None:
     """Validates the team, an archived state and closing with open children.
 
-    Never raises `InvalidTransition` (reserved class, no producer in the domain).
+    Never raises `InvalidTransition`: that class belongs to the use-case layer.
     """
     validate_state_team(current.team_id, target)
     if target.archived_at is not None:

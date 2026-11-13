@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 1
-spec_revision: 12
+version: 2
+spec_revision: 13
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -13,7 +13,7 @@ implements:
 acceptance: specs/acceptance/070-web-dashboard.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-13
 ---
 
 # SPEC-070 — Web dashboard
@@ -1107,7 +1107,8 @@ Component-specific requirements:
 3. Router validates the payload (422), resolves issue and state (404) and calls:
    - different state ⇒ app.issues.move_issue(uow, MoveIssue(...), actor)
    - same state      ⇒ app.issues.reorder_issue(uow, ReorderIssue(..., scope="board"), actor)
-4. InvalidTransition (open children) ⇒ 409 ⇒ the client reloads /_/board/{team} and shows a toast.
+4. Validation (open children) ⇒ 422 ⇒ same recovery; InvalidTransition (the issue is archived, R20) ⇒ 409 ⇒
+   the client reloads /_/board/{team} and shows a toast.
 5. RANKING_EXHAUSTED after the server's rebalance+retry ⇒ 422 ⇒ same recovery.
 6. 204 + HX-Trigger: issue-moved ⇒ the counters refresh; the DOM is untouched.
 ```
@@ -1135,7 +1136,8 @@ Component-specific requirements:
 | Validation on a page (form without JS) | 422 | same template + `form_errors` | errors next to the field |
 | Validation in a fragment / inline | 422 | partial with `.is-invalid` + `HX-Retarget` | field marked + toast |
 | `Conflict` (label in use, etc.) | 409 | partial with message | toast, no destructive swap |
-| `InvalidTransition` (illegal drop) | 409 | no body; the client reloads `/_/board/{team}` | the card returns to its place + toast |
+| `Validation` (drop with open children) | 422 | no body; the client reloads `/_/board/{team}` | the card returns to its place + toast |
+| `InvalidTransition` (drop on an archived issue, R20) | 409 | no body; the client reloads `/_/board/{team}` | the card returns to its place + toast |
 | Unknown `{state_id}` on `/_/states/{id}/position` | 404 | `text/plain` `workflow state does not exist` | the client reloads `/_/board/{team}` |
 | Neighbour of the column drop from another team, or the moved state itself | 422 | `text/plain` `invalid neighbour` | same reload; the columns return to the server order |
 | Write with `read_only` | 403 | `error.html` | read-mode banner |
@@ -1149,7 +1151,8 @@ Catalog of visible messages (exact text, lowercase initial, no trailing period):
 | 404 team | `team 'OPS' does not exist` |
 | 404 state | `workflow state does not exist` |
 | empty q | `type something to search` |
-| invalid transition | `cannot move ENG-13: it has 2 open sub-issues` |
+| move with open children | `cannot move ENG-13: it has 2 open sub-issues` |
+| write on an archived issue | `ENG-13 is archived; restore it first` |
 | read-only | `server in read-only mode` |
 | invalid field | `invalid value` + the domain `error.message` |
 
@@ -1302,10 +1305,10 @@ Feature: hifa web dashboard
     Then the status is 204
     And the board_order of ENG-13 is 3072.0
 
-  Scenario: moving to a completed state with open children returns 409
+  Scenario: moving to a completed state with open children returns 422
     Given an issue ENG-13 with two open sub-issues
     When POST /_/issues/ENG-13/move is requested with the state "Done"
-    Then the status is 409
+    Then the status is 422
     And the board_order of ENG-13 did not change
 
   Scenario: the rebalance is done by the server without the client asking
@@ -1483,6 +1486,11 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 13 (2026-11-13): **a refused drop answers with the class SPEC-020 raises, so `version` 2
+  (D-042).** The board publishes the error map of SPEC-040 §6: a move to a terminal state with open
+  sub-issues is `Validation` ⇒ 422 with the same board reload and toast it already had (§5.4 step 4, §6 and
+  the §7 scenario), while `InvalidTransition` stays 409 for its only producer — a drop on an issue whose
+  `archived_at` is not null (SPEC-040 R20), named as its own row in §6.
 - spec_revision 9 (2026-11-11): **the board columns can be dragged, and the order is persisted
   (D-034).** New §2.6.5 and §5.5 add one fragment, `POST /_/states/{state_id}/position`, with the
   same `HX-Request` guard as the rest of `/_/*`, a payload of **state ids** (`{"before", "after"}`,

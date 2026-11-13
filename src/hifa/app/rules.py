@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import datetime
+
+from hifa.domain.entities import Issue
+from hifa.domain.enums import WorkflowStateType
 
 SLUG_MAX = 60
 
@@ -37,4 +41,39 @@ def branch_name(identifier: str, title: str) -> str:
     return f"{base}-{slug}" if slug else base
 
 
-__all__ = ["SLUG_MAX", "branch_name", "slugify"]
+def apply_milestones(
+    *,
+    current: str | None,
+    target: str,
+    issue: Issue,
+    now: datetime,
+) -> dict[str, datetime | None]:
+    """Milestone columns a move from `current` to `target` changes; `{}` when the type repeats.
+
+    Entering `started` stamps `started_at` only when it was empty; entering a terminal type
+    stamps its own timestamp and clears the other one; going back to an open type clears both
+    terminal timestamps and keeps `started_at`. Only the columns whose value actually changes
+    are returned. `current=None` is a brand-new issue, whose three milestone columns are empty,
+    so the same table stamps the state it is created in.
+    """
+    target_type = WorkflowStateType(target)
+    if current is not None and WorkflowStateType(current) is target_type:
+        return {}
+
+    candidates: list[tuple[str, datetime | None]] = []
+    if target_type is WorkflowStateType.STARTED:
+        if issue.started_at is None:
+            candidates.append(("started_at", now))
+    elif target_type is WorkflowStateType.COMPLETED:
+        candidates.append(("completed_at", now))
+        candidates.append(("canceled_at", None))
+    elif target_type is WorkflowStateType.CANCELED:
+        candidates.append(("canceled_at", now))
+        candidates.append(("completed_at", None))
+    else:
+        candidates.append(("completed_at", None))
+        candidates.append(("canceled_at", None))
+    return {column: value for column, value in candidates if getattr(issue, column) != value}
+
+
+__all__ = ["SLUG_MAX", "apply_milestones", "branch_name", "slugify"]

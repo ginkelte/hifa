@@ -149,6 +149,9 @@ class Capability:
 # * HIFA-7  (T-11) brings full-text search and replaces the `/search` stub: `search.issues`.
 # * HIFA-42 is the dashboard form for a team and a workflow state from the UI: it closes
 #           `team.create` and `state.create`.
+# * HIFA-3  (dashboard stage 2) brings the web edge of the five issue writes — inline edit,
+#           move from the panel — so it closes `issue.edit`, `issue.move`, `issue.archive`,
+#           `issue.delete` and `issue.restore`.
 
 CAPABILITIES: tuple[Capability, ...] = (
     # --- operational: they build or run an edge, they are not a capability of one ---------
@@ -170,6 +173,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         web=(("POST", "/{team}/issue"), ("POST", "/_/issues")),
     ),
     Capability(name="issue.list", cli=None, web=("GET", "/{team}/list"), debt="HIFA-2"),
+    # The five writes below are CLI-only until the dashboard stage 2 lands their web edge.
+    Capability(name="issue.edit", cli="issue edit", web=None, debt="HIFA-3"),
+    Capability(name="issue.move", cli="issue move", web=None, debt="HIFA-3"),
+    Capability(name="issue.archive", cli="issue archive", web=None, debt="HIFA-3"),
+    Capability(name="issue.delete", cli="issue delete", web=None, debt="HIFA-3"),
+    Capability(name="issue.restore", cli="issue restore", web=None, debt="HIFA-3"),
     # T-06 ships `hifa issue show REF --with history`, which is the CLI of this page.
     Capability(name="issue.show", cli=None, web=("GET", "/{team}/issue/{ref}"), debt="HIFA-1"),
     # HIFA-2 (T-07) ships the verb that exposes both reads; the board read MODEL

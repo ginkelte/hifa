@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+import hifa.app.issues as issues_module
 from helpers import FrozenClock, SeqIdGen
 from hifa.app.commands import Actor, CreateIssue
 from hifa.app.issues import create_issue
@@ -21,6 +22,9 @@ from hifa.domain.enums import WorkflowStateType
 from hifa.domain.errors import Conflict, NotFound, Validation
 
 NOW = FrozenClock().now()
+
+#: Milestone columns of `issue`, in order.
+_MILESTONES: tuple[str, ...] = ("started_at", "completed_at", "canceled_at")
 
 
 def _workspace() -> Workspace:
@@ -262,6 +266,41 @@ def test_create_issue_uses_explicit_state_and_milestones() -> None:
     issue = create_issue(uow, CreateIssue(team="ENG", title="Ship", state="Done"), Actor())
     assert issue.state_id == "S-Done"
     assert issue.completed_at is not None and issue.started_at is None
+
+
+@pytest.mark.parametrize(
+    ("state_type", "stamped"),
+    [
+        (WorkflowStateType.TRIAGE, ()),
+        (WorkflowStateType.BACKLOG, ()),
+        (WorkflowStateType.UNSTARTED, ()),
+        (WorkflowStateType.STARTED, ("started_at",)),
+        (WorkflowStateType.COMPLETED, ("completed_at",)),
+        (WorkflowStateType.CANCELED, ("canceled_at",)),
+    ],
+)
+def test_create_stamps_the_state_milestones_through_the_shared_table(
+    monkeypatch: pytest.MonkeyPatch,
+    state_type: WorkflowStateType,
+    stamped: tuple[str, ...],
+) -> None:
+    """The six types are sealed by `apply_milestones`, called as a new issue (`current=None`)."""
+    calls: list[dict[str, Any]] = []
+    shared = issues_module.apply_milestones
+
+    def spy(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return shared(**kwargs)
+
+    monkeypatch.setattr(issues_module, "apply_milestones", spy)
+    name = f"State-{state_type.value}"
+    uow, _ = build(states=[_state(name, state_type, 1.0, default=True)])
+    issue = create_issue(uow, CreateIssue(team="ENG", title="Ship", state=name), Actor())
+
+    assert len(calls) == 1
+    assert calls[0]["current"] is None
+    assert calls[0]["target"] is state_type
+    assert tuple(column for column in _MILESTONES if getattr(issue, column) is not None) == stamped
 
 
 def test_create_issue_accepts_due_date_and_priority() -> None:

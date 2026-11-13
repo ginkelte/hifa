@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 2
-spec_revision: 7
+version: 3
+spec_revision: 13
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/040-application-services.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-13
 ---
 
 # SPEC-040 — Application services
@@ -432,6 +432,26 @@ class UpdateState:
     position: float | None | Unset = UNSET
 ```
 
+**Editable columns.** A write command of this layer changes exactly these `issue` columns and no others:
+
+| Command | Columns it can change |
+|---|---|
+| `UpdateIssue` | `title`, `description`, `priority`, `state_id`, `assignee_id`, `project_id`, `milestone_id`, `cycle_id`, `parent_id`, `estimate`, `due_date`, `branch_name` (derived, R17), plus the move columns when `state` is set (REQ-F040-32, R7): `board_order`, `started_at`, `completed_at`, `canceled_at` |
+| `MoveIssue` | `state_id`, `board_order`, `started_at`, `completed_at`, `canceled_at` |
+| `ReorderIssue` | one position column, the one its `scope` names: `sort_order` (`scope="backlog"`), `board_order` (`scope="board"`) or `sub_issue_sort_order` (`scope="sub"`) |
+| `RebalanceBoard` | `board_order` (`scope="board"`) or `sort_order` (`scope="backlog"`), for every issue of the scope |
+| `ArchiveIssue` / `TrashIssue` / `RestoreIssue` | `archived_at` / `trashed` |
+| `AssignIssue` / `SetPriority` / `SetDueDate` | `assignee_id` / `priority` / `due_date` |
+
+Never written by a command in v1: `team_id`, `number`, `identifier` and `creator_id` (SPEC-030 §2.5 SQL-3
+declares them non-updatable: moving an issue across teams would rewrite the `identifier`),
+`snoozed_until_at` and `auto_archived_at` (no use case owns them), and the labels (their own commands,
+§2.2). `sort_order` and `sub_issue_sort_order` are also written, but only by `create_issue` (which seeds the
+order of the scope it creates in) and by the rows above whose `scope` names them: `ReorderIssue` and
+`RebalanceBoard`. `created_at` is never updated. `updated_at` is written by this layer whenever it changes
+a column other than `archived_at`: `archive_issue` stamps `archived_at` and leaves `updated_at` alone,
+while `trash_issue` writes `trashed` together with `updated_at` (R12). It is **never** a history field (R3).
+
 Command validation (`__post_init__`, identical in all):
 
 1. It accepts the declared type **or its primitive**: `Priority | int`, `EstimationType | str`,
@@ -482,37 +502,46 @@ def create_issue(uow: UnitOfWork, cmd: CreateIssue, actor: Actor) -> Issue: ...
 def update_issue(uow: UnitOfWork, cmd: UpdateIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|state|member|project|milestone|cycle|parent), Validation, InvalidTransition
+# raises: NotFound(issue|state|member|project|milestone|cycle|parent),
+#         Validation(those of create_issue + TEAM_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|ISSUE_TRASHED|STATE_ARCHIVED),
+#         InvalidTransition(ISSUE_ARCHIVED)
+# Field-by-field diff: one history row per column that changes, none when the value is identical (§5.4).
 
 
 def assign_issue(uow: UnitOfWork, cmd: AssignIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|member), Validation(MEMBER_INACTIVE|ISSUE_TRASHED)
+# raises: NotFound(issue|member), Validation(MEMBER_INACTIVE|ISSUE_TRASHED),
+#         InvalidTransition(ISSUE_ARCHIVED)
 
 
 def set_priority(uow: UnitOfWork, cmd: SetPriority, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue), Validation(PRIORITY_RANGE)
+# raises: NotFound(issue), Validation(PRIORITY_OUT_OF_RANGE), InvalidTransition(ISSUE_ARCHIVED)
 
 
 def set_due_date(uow: UnitOfWork, cmd: SetDueDate, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue), Validation(DUE_DATE_FORMAT)
+# raises: NotFound(issue), Validation(DUE_DATE_FORMAT), InvalidTransition(ISSUE_ARCHIVED)
 
 
 def move_issue(uow: UnitOfWork, cmd: MoveIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|workflow_state|neighbor), Validation, InvalidTransition
+# raises: NotFound(issue|workflow_state|neighbor),
+#         Validation(STATE_TEAM_MISMATCH|STATE_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|POSITION_NEIGHBOR
+#                    |POSITION_OUT_OF_ORDER|RANKING_EXHAUSTED|ISSUE_TRASHED),
+#         InvalidTransition(ISSUE_ARCHIVED)
+# `target_state=None` reorders inside the current column and changes no state (§5.2).
 
 
 def reorder_issue(uow: UnitOfWork, cmd: ReorderIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|neighbor), Validation(POSITION_NEIGHBOR|POSITION_OUT_OF_ORDER)
+# raises: NotFound(issue|neighbor), Validation(POSITION_NEIGHBOR|POSITION_OUT_OF_ORDER),
+#         InvalidTransition(ISSUE_ARCHIVED)
 
 
 def rebalance_board(uow: UnitOfWork, cmd: RebalanceBoard, actor: Actor) -> RebalanceReport: ...
@@ -525,30 +554,33 @@ def archive_issue(uow: UnitOfWork, cmd: ArchiveIssue, actor: Actor) -> Issue: ..
 
 
 # raises: NotFound(issue), Validation(CLOSE_WITH_OPEN_CHILDREN|ISSUE_TRASHED)
+# Already archived => no-op: the same Issue is returned, nothing is written, no history row (§5.5).
 
 
 def trash_issue(uow: UnitOfWork, cmd: TrashIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue)
+# raises: NotFound(issue). Already trashed => no-op. An archived issue can be trashed (§5.5).
 
 
 def restore_issue(uow: UnitOfWork, cmd: RestoreIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue)
+# raises: NotFound(issue). Clears `archived_at` and/or `trashed` in one transaction, one row per column
+# cleared; neither set => no-op. It is the only write that accepts an archived issue (R20).
 
 
 def add_label(uow: UnitOfWork, cmd: AddLabel, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|label), Validation(LABEL_TEAM_MISMATCH|LABEL_RETIRED)
+# raises: NotFound(issue|label), Validation(LABEL_TEAM_MISMATCH|LABEL_RETIRED),
+#         InvalidTransition(ISSUE_ARCHIVED)
 
 
 def remove_label(uow: UnitOfWork, cmd: RemoveLabel, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|label|label_link)
+# raises: NotFound(issue|label|label_link), InvalidTransition(ISSUE_ARCHIVED)
 
 
 def relate_issues(uow: UnitOfWork, cmd: RelateIssues, actor: Actor) -> IssueRelation: ...
@@ -877,7 +909,7 @@ in the consumer).
 | `with_write_retry` | `app/retry.py` | `(fn: Callable[[], T], *, attempts: int = 3, base_delay: float = 0.05, retry_on: frozenset[str] = frozenset({'DB_BUSY'})) -> T` | D-018: the system's only retry; it re-executes the complete transaction |
 | `slugify` | `app/rules.py` | `(text: str) -> str` | NFKD→ASCII, `[a-z0-9]` joined by `-`, capped at 60 (R17) |
 | `branch_name` | `app/rules.py` | `(identifier: str, title: str) -> str` | R17: `f"{identifier.lower()}-{slugify(title)}"` |
-| `apply_milestones` | `app/rules.py` | `(*, current: str, target: str, issue: Issue, now: datetime) -> dict[str, datetime \| None]` | R7bis; returns only the milestone columns that change |
+| `apply_milestones` | `app/rules.py` | `(*, current: str \| None, target: str, issue: Issue, now: datetime) -> dict[str, datetime \| None]` | R7bis; `current=None` is an issue that does not exist yet, so every milestone of the target type is stamped; returns only the milestone columns that change |
 | `exhausted` | `app/ranking.py` | `(column: Sequence[float]) -> bool` | `True` if the largest gap between neighbors is `< 1e-6` |
 | `validate_attachment_url` | `app/validation.py` | `(url: str) -> str` | `http`/`https`/`file`; otherwise `Validation(rule='ATTACHMENT_URL_SCHEME')` or `ATTACHMENT_URL_INVALID` |
 
@@ -1010,10 +1042,10 @@ the write lock of the UoW (SPEC-030 §2.2), so that the decision and the write s
 | Use case | Writes (same tx) | Reads before writing |
 |---|---|---|
 | `create_issue` | `issue` (1 INSERT), `issue_label` (N), `issue_history` (`created`) | `team`, `workspace`, `workflow_state`, `label`×N, `project`, `project_milestone`, `cycle`, `issue` (parent), board/backlog positions |
-| `update_issue` | `issue` (1 UPDATE), `issue_history` (1 row per distinct field) | `issue`, `team`, `workflow_state`, `member`, `project`, `cycle`, `issue` (parent) + `ancestor_chain` |
-| `move_issue` | `issue` (`state_id` + milestones + `updated_at`), `issue_history` | `issue`, target `workflow_state`, `count_open_children`, positions of the target state |
+| `update_issue` | `issue` (at most 1 UPDATE, and none when no column changes), `issue_history` (1 row per column changed) | `issue`, `team`, `workflow_state` (current and target), `member`, `project`, `project_milestone`, `cycle`, `issue` (parent) + `ancestor_chain`, `count_open_children` (only when the target state is terminal), positions of the target column (only when `state` changes) |
+| `move_issue` | `issue` (`state_id` + milestones + `board_order` + `updated_at`), `issue_history` (1 row per column changed) | `issue`, current and target `workflow_state`, `count_open_children`, positions of the target state |
 | `reorder_issue` | `issue` (1 position UPDATE) or `issue`×N if there is a rebalance, `issue_history` | `positions` of the scope, neighbors |
-| `archive_issue` / `trash_issue` / `restore_issue` | `issue` (`archived_at`/`trashed`), `issue_history` | `issue`, `count_open_children` (only to archive a parent) |
+| `archive_issue` / `trash_issue` / `restore_issue` | `issue` (1 UPDATE of `archived_at` and/or `trashed`, none when the layer already has the requested value), `issue_history` (1 row per column changed) | `issue`, `count_open_children` (only in `archive_issue`, of the three) |
 | `add_label` / `remove_label` | `issue_label` (1 INSERT OR IGNORE / DELETE), `issue_history` | `issue`, `label` |
 | `relate_issues` | `issue_relation` (1 INSERT), `issue_history` (`relation`) | both `issue`s, existing relations of the pair |
 | `unrelate_issues` | `issue_relation` (1 DELETE), `issue_history` | both `issue`s, existing relation |
@@ -1072,26 +1104,63 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   needs two, it is redesigned or split into two commands.
 - **R2 — Read inside, not before.** Every read a decision depends on happens inside the
   transaction. A `get` before the `with` and a `write` after is a race condition.
-- **R3 — Mandatory history.** Every mutation of `issue` that changes a column records a row in
-  `issue_history` per column, with `old_value`/`new_value` serialized by the repo (SPEC-030 §2.4) and
-  `actor_id = actor.member_id`. Exception: `comment` does not generate history (the comment **is** the
-  record) and neither does `resolve_comment`.
+- **R3 — Mandatory history.** Every mutation of `issue` that changes a column records exactly **one** row in
+  `issue_history` per column changed, with `old_value`/`new_value` **already converted to text by this
+  layer** and `actor_id = actor.member_id`. `HistoryRepo.record` takes
+  `Sequence[tuple[str, str | None, str | None]]` (SPEC-030 §2.4) and stores what it receives: the
+  conversion is `_text` of `app/issues.py` (`_text_rows` maps it over the `changes` list), applied when the
+  `changes` list is built — `datetime` →
+  ISO-8601 with the offset the row stores, `float` → its decimal form (`1024.0`), `bool`/`int` → `"0"`/
+  `"1"` and the decimal, `str`/`None` → unchanged. §5.2, §5.4 and §5.5 all go through it, so no flow
+  hands the repo a `datetime` or a `float`. What this layer owes, in full:
+  - **The stored value, not a label.** A `state_id` row carries the two ULIDs; the display name is an edge
+    read model (SPEC-070 §2.3 renders `old_label`/`new_label`), because `app/` formats nothing (R14). Same
+    rule for `parent_id`, `assignee_id`, `project_id`, `milestone_id` and `cycle_id`.
+  - **An unchanged column produces no row** and is not written: `UNSET` never produces one, and `None`
+    against a non-NULL value is a change (R4). A command where nothing changes writes no row at all.
+  - **One clock per use case.** `now = uow.clock.now()` is called once and the whole batch shares that
+    `created_at`; the rows of one write are ordered by `id` and are indistinguishable by timestamp
+    (SPEC-030 §2.5 SQL-8).
+  - **Fixed order, same batch.** `update_issue` follows the field order of §2.1 — `title`, `description`,
+    `priority`, `state_id`, `assignee_id`, `project_id`, `milestone_id`, `cycle_id`, `parent_id`,
+    `estimate`, `due_date`, then `branch_name` when R17 regenerates it. `move_issue` emits `state_id`,
+    `board_order`, `started_at`, `completed_at`, `canceled_at`. `archive_issue`/`trash_issue`/
+    `restore_issue` emit `archived_at`, `trashed`. Two runs of the same command over the same state produce
+    the same rows in the same order (R16).
+  - **`updated_at` is never a `field`.** It is the version stamp of the row, written once per successful
+    write that changes a field of the issue (§5.2, §5.4 and the field-level writes); `archive_issue`
+    stamps `archived_at` and leaves `updated_at` alone, while `trash_issue` writes `trashed` together
+    with it (R12). It is not history.
+  - Exception: `comment` does not generate history (the comment **is** the record) and neither does
+    `resolve_comment`.
 - **R4 — `UNSET` vs `None`.** In `Update*`, `UNSET` means "do not touch" and `None` means "set
   NULL". An absent field and a field at `None` are different operations and the history reflects it.
 - **R5 — Default state.** Without `state`: if `team.triage_enabled` → the state of type `triage`;
   else the `is_default`; if there is none, the first `unstarted` state by `position`; if the team
   has no states, `Validation(rule='TEAM_WITHOUT_STATES')`.
-- **R6 — Closing a parent (composite invariant, lives here).** `move_issue` and `update_issue` toward a
-  terminal type, and `archive_issue` of an issue with children, execute: (1) `count_open_children(id)` in
-  the same transaction, (2) `rules.validate_close(target_type, open_children)`. If there are open children,
-  `Validation(rule='CLOSE_WITH_OPEN_CHILDREN')` and **nothing is written**. The judgment is pure (SPEC-020),
-  the count is a read (SPEC-030) and the composition belongs to this layer: `issues.set_state` of SPEC-030
-  validates nothing, it only persists the columns it receives.
+- **R6 — Closing a parent (composite invariant, lives here).** A state change and an archive both execute:
+  (1) `count_open_children(id)` in the same transaction, (2) the pure judgment of SPEC-020.
+  - `move_issue` and `update_issue` (when they change `state_id`) call
+    `rules.validate_transition(current=issue.state, target=target, open_children=n)`, which is the **only**
+    composite validation of a transition: it covers the team (I2), the archived target state and the close
+    with open children. `n` is `count_open_children(id)` when `target.type` is terminal and `0` otherwise —
+    the count is only paid when it decides something.
+  - `archive_issue` calls `rules.validate_close(WorkflowStateType.CANCELED, count_open_children(id))`
+    **unconditionally**. Archiving is a terminal outcome for the parent: it leaves every listing while its
+    children do not, so a single open child is `Validation(rule='CLOSE_WITH_OPEN_CHILDREN')`. The constant
+    `CANCELED` is passed because `validate_close` only asks "is this target terminal" and the archive has no
+    target state of its own; no second rule is written for it.
+  - In either case the error leaves **nothing written**. The judgment is pure (SPEC-020), the count is a read
+    (SPEC-030) and the composition belongs to this layer: `issues.set_state` of SPEC-030 validates nothing,
+    it only persists the columns it receives.
 - **R7 — Temporal milestones.** On entering `started`: `started_at = now` only if it was `NULL`.
   On entering `completed`: `completed_at = now`, `canceled_at = NULL`.
   On entering `canceled`: `canceled_at = now`, `completed_at = NULL`.
   On returning to an open type: `completed_at = NULL`, `canceled_at = NULL`, `started_at` is kept
   (it is a historical milestone, not the current state).
+  R7 is keyed on a **change of type**: when `current.type == target.type` there is no transition,
+  `rules.apply_milestones` returns `{}`, no milestone column is written and no milestone row reaches the
+  history. That is what makes a repeated move to the same state idempotent.
 - **R8 — Position.** `position="first"` ⇒ `between(None, first)`; `"last"` ⇒
   `between(last, None)`; `"before"` ⇒ `between(previous_to(before_id), position(before_id))`;
   `"after"` ⇒ `between(position(after_id), next_to(after_id))`. The anchor (`before_id`/`after_id`)
@@ -1100,6 +1169,10 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   greater than the previous neighbor's position and strictly less than the next one's; otherwise,
   `Validation(rule='POSITION_OUT_OF_ORDER')`. `rebalance=True` forces R9 before computing the position.
   The `between` calculation belongs to `domain.ranking`; this layer only reads the neighbors and decides.
+  `first` and `last` are **idempotent**: when the issue is already the first (resp. last) element of the
+  target column — no other element of that column has a lower (resp. higher) `board_order` — its position
+  is not rewritten and no `board_order` row is produced. `before` and `after` always write, because the
+  anchor is an explicit intent.
 - **R9 — Rebalance (the decision lives here).** Three triggers, a single mechanism:
   1. `between` returns a gap `< 1e-6` (the float no longer distinguishes the neighbors) ⇒ **automatic**
      rebalance, without error: the scope's positions are read, `ranking.rebalance` rewrites them
@@ -1118,8 +1191,18 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   `(issue blocks related)`. `blocked_by` is accepted as input and inverted before writing. The
   symmetric types (`related`, `similar`, `duplicate`) are persisted in the order they arrive and are
   checked in both directions (SPEC-020 REQ-F020-11).
-- **R12 — Archiving does not delete.** `archive_issue` sets `archived_at`; `trash_issue` sets `trashed=1`;
-  neither deletes rows. `restore_issue` clears both.
+- **R12 — Layered, reversible, and never a delete.** `archive_issue` sets `archived_at = now`;
+  `trash_issue` sets `trashed = 1`; `restore_issue` clears both. None of them deletes a row, and none of
+  them touches `state_id`, `board_order`, `sort_order`, the milestones, the labels, the comments, the
+  relations or the attachments. A layer that is already applied is a **no-op**: the same entity is
+  returned, nothing is written and no history row is produced. `restore_issue` writes one row per column it
+  actually cleared, `archived_at` first and `trashed` second, and does nothing when neither was set. The
+  layers do not imply each other: an archived issue can be trashed, and a trashed issue must be restored
+  before it is archived (`archive_issue` rejects `ISSUE_TRASHED`). `archive_issue` stamps `archived_at`
+  and leaves `updated_at` alone — the archive timestamp is the record of that layer — while `trash_issue`
+  writes `trashed` together with `updated_at` (SPEC-030 §2.4). `updated_at` therefore tracks the edits of
+  an issue's fields, not how deep it sits in the visibility stack.
+  No use case of this layer emits `DELETE FROM issue` (D-015).
 - **R13 — Actor.** `actor.member_id` is written to `issue_history.actor_id` and to `comment.author_id`
   when the command does not bring one. `actor` is never written to `issue`.
 - **R14 — No formatting.** No use case prints, formats or serializes. Forbidden: `print`,
@@ -1150,6 +1233,21 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   consumed as SPEC-030 declares them, including `visible` (not `is_visible`) and `is_open`; `app/` does not
   rename nor recompute those fields. `IssueRepo.positions` is invoked with `state_id` to read only the
   target column (drag & drop) and with `scope` for the backlog.
+- **R20 — An archived issue is read-only until it is restored.** `update_issue`, `assign_issue`,
+  `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `add_label` and `remove_label` read
+  `issue.archived_at` inside the transaction and raise `InvalidTransition(rule='ISSUE_ARCHIVED',
+  field='ref')` when it is not NULL — `field` names the parameter that carried the reference (`REF` in the
+  CLI, `{ref}` in the REST route, `data-identifier` in the board), the same value at every edge.
+  `reorder_issue` is included because a drag inside a column is a write of the issue like any other:
+  an archived row is not the source of a position either. Archiving is the layer that takes a row out
+  of every listing, so a row that accepts edits while
+  nobody can find it is a row whose history is written where no one reads it; the two operations that stay
+  available are the ones that change the layer itself: `restore_issue` (clears the flag) and `trash_issue`
+  (a deeper layer). `archive_issue` is **not** part of the rule — on an already-archived issue it is the
+  no-op of R12, not an error. `rebalance_board`, `comment_on_issue`, `relate_issues` and
+  `add_issues_to_cycle` are outside this rule in v1: they change other tables and the product has no
+  declared semantics for them under archive yet. This rule is the **single producer of `InvalidTransition`** in the
+  system (§6).
 
 ### 4.2 Functional requirements (REQ-F)
 
@@ -1158,8 +1256,8 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-01** | `create_issue` writes `issue` + `issue_label` + `issue_history` in a single transaction; if the history fails, the issue does not remain |
 | **REQ-F040-02** | `create_issue` resolves the default state according to R5 and uses it when `cmd.state is None` |
 | **REQ-F040-03** | `create_issue` validates team, state, labels, parent, project, milestone and cycle **before** inserting and writes nothing if any of them fails |
-| **REQ-F040-04** | `update_issue` writes one history row per field actually changed and respects `UNSET` vs `None` |
-| **REQ-F040-05** | `move_issue` applies R7 (milestones) and records `state_id` in the history with the previous state name and the new one |
+| **REQ-F040-04** | `update_issue` writes exactly one history row per column actually changed, in the fixed order of R3, all sharing the single `now` of the use case; it respects `UNSET` vs `None`; a command where no column changes writes no row, does not touch `updated_at` and returns the issue unchanged |
+| **REQ-F040-05** | `move_issue` applies R7 (milestones) and records `state_id` in the history as the old and the new ULID, plus `board_order` and each milestone column that changed; a move inside the same state records no `state_id` row and no milestone row |
 | **REQ-F040-06** | `move_issue` computes the position with `ranking.between` for `first`/`last`/`before`/`after` and validates the neighbor |
 | **REQ-F040-07** | `move_issue` toward a terminal state with open children raises `Validation(rule='CLOSE_WITH_OPEN_CHILDREN')` and does not modify the issue |
 | **REQ-F040-08** | `reorder_issue` uses `between`; on `RANKING_EXHAUSTED` it rebalances the scope and retries once |
@@ -1185,6 +1283,10 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-28** | `update_comment` changes `body` and `edited_at`, does not touch `resolved_at` nor `parent_id`, and does **not** write `issue_history` (R3); an empty body is `Validation(rule='BODY_EMPTY')`. `comment` has no soft delete in SPEC-010, so there is no "deleted comment" case to reject |
 | **REQ-F040-29** | `list_issues` returns `IssuePage` with `has_more` computed by `limit + 1` and an opaque `next_cursor`; with `limit=200` and 10,000 issues it executes no `COUNT(*)` nor `OFFSET` |
 | **REQ-F040-30** | `branch_name` is computed with R17 in `create_issue` and is regenerated only if the title changes and the previous value was derived; a manual `branch_name` survives any edit |
+| **REQ-F040-31** | `update_issue` resolves and validates every reference it writes — `state`, `assignee_id`, `project_id`, `milestone_id`, `cycle_id`, `parent` — inside the transaction, in the order of §5.4, and writes nothing if any of them fails; the errors are those of `create_issue` (`I2`, `I5`, `I7`, `I8`, `I4`) |
+| **REQ-F040-32** | `update_issue` with `state` set behaves as `move_issue` with `position="last"` for the state axis: same `validate_transition`, same R7 milestones, and the issue is appended to the target column so that no two issues of one column share a `board_order`; `state_id` and `board_order` are both recorded |
+| **REQ-F040-33** | `archive_issue` refuses a parent with open children with `Validation(rule='CLOSE_WITH_OPEN_CHILDREN')`, is a no-op when the issue is already archived, and `restore_issue` clears `archived_at` and/or `trashed` writing one row per column cleared |
+| **REQ-F040-34** | `update_issue`, `move_issue`, `reorder_issue` and the field-level writes reject an issue with `archived_at` not null with `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` (R20); `archive_issue`, `trash_issue` and `restore_issue` do not |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -1198,8 +1300,9 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 
 ## 5. Flow
 
-Three flows are normative because all three edges depend on their exact order: creation, movement
-with fractional reordering and keyset listing. The other use cases follow the pattern of §5.1
+Five flows are normative because the three edges depend on their exact order: creation (§5.1), movement
+with fractional reordering (§5.2), keyset listing (§5.3), the field diff of an edit (§5.4) and the layered
+archive axis (§5.5). The remaining use cases follow the same pattern
 (read → validate with `rules` → write → history → commit).
 
 ### 5.1 `create_issue` — step by step
@@ -1271,7 +1374,7 @@ Payload that each edge builds, translated into the single command:
 
 | Edge | Request | `MoveIssue` |
 |---|---|---|
-| CLI `issue move` | `--first` / `--last` / `--before ENG-2` / `--after ENG-2` | `position="first"\|"last"\|"before"\|"after"` + `before_id`/`after_id` |
+| CLI `issue move` | `--before ENG-2` / `--after ENG-2` / neither | `position="before"\|"after"\|"last"` + `before_id`/`after_id` (SPEC-050 §2.5.3) |
 | API `POST /issues/{ref}/move` | `{state, after?, before?, sort_order?}` (060 `IssueMove`) | `target_state=state`, `position="after"/"before"` according to the anchor, `sort_order` as is |
 | Web `POST …/move` | `{state_id, sort_order, rebalance?}` (070 R9/R10) | `position="last"` + `sort_order`, `rebalance=true` if the client's gap was `< 1e-4` |
 
@@ -1282,56 +1385,78 @@ numeric positions: the client does not send the whole column (070 R9) and the se
 ```
  1. with uow.write() as tx:
  2.     issue = tx.issues.require(cmd.issue)         # ULID or ENG-123; NotFound if missing
-        issue.trashed => Validation(rule='ISSUE_TRASHED')
- 3.     target = cmd.target_state  and (tx.teams.get_state_by_name(issue.team_id, cmd.target_state)
+        issue.trashed                  => Validation(rule='ISSUE_TRASHED')
+        issue.archived_at is not None  => InvalidTransition(rule='ISSUE_ARCHIVED')    # R20
+ 3.     current = tx.teams.get_state(issue.state_id)     # the source state, for R6 and R7
+ 4.     target = cmd.target_state  and (tx.teams.get_state_by_name(issue.team_id, cmd.target_state)
                                        or tx.teams.get_state(cmd.target_state))
         target is None and cmd.target_state is not None
                 => NotFound(resource='workflow_state', key=cmd.target_state)
-        target is None and cmd.target_state is None => target = current state (reorder only)
- 4.     rules.validate_state_team(issue.team_id, target)
- 5.     open_children = tx.issues.count_open_children(issue.id)      # SQL-5, only if target is terminal
- 6.     rules.validate_close(target.type, open_children)
-                -> Validation(rule='CLOSE_WITH_OPEN_CHILDREN')  # R6; nothing is written
- 7.     column = tx.issues.positions(team_id=issue.team_id, scope="board", state_id=target.id)
+        target is None and cmd.target_state is None => target = current (reorder only)
+ 5.     open_children = tx.issues.count_open_children(issue.id) if target.type.is_terminal else 0
+        rules.validate_transition(current, target, open_children)      # R6
+                -> Validation(STATE_TEAM_MISMATCH | STATE_ARCHIVED | CLOSE_WITH_OPEN_CHILDREN)
+                # nothing is written
+ 6.     column = tx.issues.positions(team_id=issue.team_id, scope="board", state_id=target.id)
         # positions sorted by board_order; the issue itself is excluded from the computation
-        if cmd.rebalance or (cmd.sort_order is None and ranking.exhausted(column)):
+        if cmd.rebalance or (cmd.sort_order is None and ranking.needs_rebalance(column)):
             column = _rebalance_column(tx, issue.team_id, target.id)      # R9, same transaction
- 8.     according to cmd.position:
-          first  -> between(None, column[0].board_order)
-          last   -> between(column[-1].board_order, None)
+ 7.     according to cmd.position (R8); `first`/`last` are idempotent only in the target column:
+          first  -> None if the issue already lives in the target column and is its first (R8)
+                    else between(None, column[0].board_order) if column else ranking.last([])
+          last   -> None if the issue already lives in the target column and is its last (R8)
+                    else between(column[-1].board_order, None) if column else ranking.last([])
           before -> neighbor = require(before_id); neighbor.state_id == target.id or POSITION_NEIGHBOR
                     between(previous_to(neighbor), neighbor.board_order)
           after  -> neighbor = require(after_id);  neighbor.state_id == target.id or POSITION_NEIGHBOR
                     between(neighbor.board_order, next_to(neighbor))
- 9.     if cmd.sort_order is not None:                     # web edge shortcut: it is validated (R8)
+        # `column` excludes the issue itself, so the column of a single issue is empty and `first`/`last`
+        # on it give ranking.last([]) == 1024.0 (§5.1 step 13 uses the same value). `None` has a single
+        # source: R8 idempotency, which applies only when the issue already lives in the target column
+        # (target.id == issue.state_id) and is already its first (resp. last) element — nothing is written.
+        # In a column where the issue does not live, `last` always appends.
+ 8.     if cmd.sort_order is not None:                     # web edge shortcut: it is validated (R8)
             prev, nxt = neighbors_of(column, cmd.sort_order)
             not (prev.board_order < cmd.sort_order < nxt.board_order)
                     => Validation(rule='POSITION_OUT_OF_ORDER')
             new_pos = cmd.sort_order
         else:
-            new_pos = between(...)                       # step 8
-        if new_pos - lo < 1e-6 or hi - new_pos < 1e-6:  # float gap exhausted
+            new_pos = between(...)                       # step 7; None means "it is already there"
+        if new_pos is not None and (new_pos - lo < 1e-6 or hi - new_pos < 1e-6):   # float gap exhausted
             column = _rebalance_column(tx, issue.team_id, target.id); recompute new_pos (once)
             if the gap is still < 1e-6 => HifaError(code='RANKING_DEGRADED')   # 6/500
-10.     now = uow.clock.now()
-        milestones = rules.apply_milestones(current=issue.state_type, target=target.type, issue=issue, now=now)
-        # 030 §2.4: `set_state` touches ONLY state_id + updated_at; the milestones go through `update(issue)`
-        moved = tx.issues.set_state(issue.id, target.id, now=now)
-        if milestones:
-            moved = tx.issues.update(replace(moved, **milestones))
-        tx.issues.set_positions(issue.id, board_order=new_pos, now=now)
-11.     changes = [("state_id", issue.state_id, target.id)] if changed
-                + [("board_order", issue.board_order, new_pos)] if changed
-                + [("started_at"|"completed_at"|"canceled_at", old, new)] for each milestone
-        tx.history.record(issue.id, changes, actor_id=actor.member_id, now=now)
-12. return moved      # COMMIT on exit
+ 9.     now = uow.clock.now()
+        milestones = rules.apply_milestones(current=current.type, target=target.type, issue=issue, now=now)
+        # R7: same type => {} => no milestone column and no milestone row
+        if target.id != issue.state_id:
+            moved = tx.issues.set_state(issue.id, target.id, now=now)   # 030 §2.4: state_id + updated_at
+            if milestones:
+                moved = tx.issues.update(replace(moved, **milestones))
+        else:
+            moved = issue                                  # reorder only: no transition, no set_state
+        if new_pos is not None:
+            tx.issues.set_positions(issue.id, board_order=new_pos, now=now)
+            moved = replace(moved, board_order=new_pos)   # set_positions returns None: the answer carries the new position
+10.     changes = _text_rows(                              # R3: values converted to text before record
+                ([("state_id", issue.state_id, target.id)] if target.id != issue.state_id else [])
+                + ([("board_order", issue.board_order, new_pos)]
+                   if new_pos is not None and new_pos != issue.board_order else [])
+                + [(column, getattr(issue, column), value) for column, value in milestones.items()
+                   if getattr(issue, column) != value])
+        if changes:                                        # R3: nothing changed => no row at all
+            tx.history.record(issue.id, changes, actor_id=actor.member_id, now=now)
+11. return moved      # COMMIT on exit; the row as written, `board_order` included
 ```
 
 Flow invariants:
 
-- Steps 2-11 are **a single** transaction. Two concurrent `move_issue` calls on the same issue are
+- Steps 2-10 are **a single** transaction. Two concurrent `move_issue` calls on the same issue are
   serialized by the UoW write lock: the second reads the already updated `state_id` and its history
   records the real transition, not an invented one.
+- A target state of another team is `Validation(STATE_TEAM_MISMATCH)` and an archived target state is
+  `Validation(STATE_ARCHIVED)`: both are decided at step 5, before any position is read, and neither writes
+  a column. They are `Validation` and not `InvalidTransition` because they break a composite FK of the schema
+  (SPEC-010 R4) and a pure rule of SPEC-020 §2.5, not a transition of a state machine.
 - `_rebalance_column` is a private function of `issues.py`: it reads the column, calls
   `ranking.rebalance(len)` and rewrites `board_order` with multiples of 1024 in the same transaction.
   It does not open its own transaction nor is it called from another module (`rebalance_board` is its public
@@ -1340,6 +1465,9 @@ Flow invariants:
   dropped it. It is only an error if after rebalancing there is still no gap (`RANKING_DEGRADED`, bug).
 - Milestones are applied **after** validating the close and **before** writing: a rejected `move`
   does not leave a half-written `completed_at`.
+- The returned `Issue` is the row **after** every write of step 9. `set_positions` returns `None`, so
+  the new `board_order` is carried on the value that is returned (`replace(moved, board_order=new_pos)`):
+  the answer a `--json` edge prints already has the new position and no edge re-reads it.
 
 ### 5.3 `list_issues` — keyset with opaque cursor (D-011)
 
@@ -1385,6 +1513,105 @@ Flow rules:
   nor rejects it. The search grammar (`field:value`, negation, ranking) never enters this path.
 - `list_board` reuses the same pipeline per column (`state_id`) and the same `has_more` per group.
 
+### 5.4 `update_issue` — field diff and history
+
+The order below is normative: it fixes which error wins when a command carries several invalid fields, and
+it fixes the order of the history rows (R3).
+
+```
+ 1. cmd already normalized by __post_init__; this layer adds no field of its own.
+ 2. with uow.write() as tx:
+ 3.     issue = tx.issues.require(cmd.issue)              # ULID or ENG-123; NotFound if missing
+        issue.trashed                  => Validation(rule='ISSUE_TRASHED')
+        issue.archived_at is not None  => InvalidTransition(rule='ISSUE_ARCHIVED')    # R20
+ 4.     # one resolution per field that is not UNSET, in this order (REQ-F040-31):
+        title        -> rules.validate_title(cmd.title)               # TITLE_EMPTY | TITLE_TOO_LONG
+        description  -> stored as given; None clears it (no strip, no format)
+        priority     -> rules.validate_priority(cmd.priority)         # PRIORITY_OUT_OF_RANGE
+        state        -> resolved as in §5.2 steps 3-5 (name or ULID of the issue's own team),
+                        rules.validate_transition(current, target, open_children)
+        assignee_id  -> tx.members.get(...); None => NotFound(member); is_active = 0 => MEMBER_INACTIVE
+        project_id   -> tx.projects.get(...); None => NotFound(project);
+                        other team and not cross-team => PROJECT_TEAM_MISMATCH
+        milestone_id -> tx.projects.get_milestone(...); None => NotFound(milestone);
+                        its project != the resulting project of the issue => MILESTONE_PROJECT_MISMATCH
+        cycle_id     -> tx.cycles.get(...); None => NotFound(cycle);
+                        other team => CYCLE_TEAM_MISMATCH; completed => CYCLE_COMPLETED
+        parent       -> the resolution of §5.1 step 9 (PARENT_SELF | PARENT_TEAM_MISMATCH | PARENT_CYCLE)
+        estimate     -> rules.validate_estimate(cmd.estimate, team.issue_estimation_type)
+        due_date     -> rules.validate_due_date(cmd.due_date)         # DUE_DATE_FORMAT
+ 5.     now = uow.clock.now()              # one clock, read before R7 derives any milestone
+        # the diff: build the candidate row, then keep only the columns that differ
+        candidate = replace(issue, **{field: value for each non-UNSET command field})
+        if state changed:  candidate.state_id = target.id
+                           candidate.board_order = <R8 "last" over the target column; empty column => ranking.last([])>
+                           candidate milestones per R7 (apply_milestones(..., now=now))
+        if title changed:  candidate.branch_name per R17 (only when the stored value was derived)
+        changes = _text_rows([(column, getattr(issue, column), getattr(candidate, column))
+                   for column in <the order of R3>
+                   if getattr(issue, column) != getattr(candidate, column)])
+ 6.     if not changes: return issue       # no UPDATE, no history row; the clock read is discarded
+ 7.     saved = tx.issues.update(replace(candidate, updated_at=now))       # 1 UPDATE (SQL-3)
+ 8.     tx.history.record(issue.id, changes, actor_id=actor.member_id, now=now)
+ 9. return saved                           # COMMIT on exit; any error above => nothing written
+```
+
+Details that are part of the contract:
+
+- **`state` on this path is a move.** `UpdateIssue` carries no position, so the issue is appended to the
+  target column with `position="last"` (R8, including its idempotency): a caller that wants a specific place
+  sends `MoveIssue`, not `UpdateIssue`. Both `state_id` and `board_order` are recorded when they change.
+- **Ordering of the references.** `project_id` is resolved before `milestone_id` because the milestone is
+  validated against the project the issue ends up with, not the one it had.
+- **`parent=None` unparents.** The new parent must belong to the issue's team and must not create a cycle
+  (I4); the `ancestor_chain` read is the same one `create_issue` uses. `sub_issue_sort_order` is **kept**
+  as it is in both directions: it is not recalculated on reparent, so an unchanged column produces no
+  history row (R3), and the value only changes through `create_issue` and `reorder_issue(scope="sub")`
+  (§2.1).
+- **`branch_name` is not a command field** (§2.1): it only changes through R17, and only when the stored
+  value was derived from the previous title.
+- **Labels are not here.** `IssueLabel` is written by `add_label`/`remove_label` (§2.2), one label per call.
+
+### 5.5 `archive_issue` / `trash_issue` / `restore_issue` — the layered axis
+
+```
+ 1. with uow.write() as tx:
+ 2.     issue = tx.issues.require(cmd.issue)              # NotFound if missing
+ 3.     archive:  issue.trashed                  => Validation(rule='ISSUE_TRASHED')
+                  issue.archived_at is not None  => return issue          # no-op: no clock read, nothing written
+                  rules.validate_close(CANCELED, tx.issues.count_open_children(issue.id))
+                          -> Validation(rule='CLOSE_WITH_OPEN_CHILDREN')  # R6
+                  now = uow.clock.now()                                   # one clock, after every guard
+                  tx.issues.archive(issue.id, at=now)                     # stamps archived_at, not updated_at (R12)
+                  changes = _text_rows([("archived_at", None, now)])
+        trash:    issue.trashed                    => return issue        # no-op: no clock read
+                  now = uow.clock.now()
+                  tx.issues.trash(issue.id, at=now)                       # an archived issue can be trashed
+                  changes = [("trashed", "0", "1")]
+        restore:  changes = ([("archived_at", issue.archived_at, None)] if issue.archived_at else [])
+                          + ([("trashed", "1", "0")] if issue.trashed else [])   # archived_at first
+                  if not changes: return issue                            # nothing to restore: no-op, no clock read
+                  now = uow.clock.now()
+                  tx.issues.unarchive(issue.id, at=now) if it was archived
+                  tx.issues.restore(issue.id, at=now)   if it was trashed
+ 4.     tx.history.record(issue.id, changes, actor_id=actor.member_id, now=now)
+ 5. return <the issue as read back inside the same transaction>   # COMMIT on exit
+```
+
+- **The clock is read once, after every guard and after the no-op branch has returned.** A call that
+  changes nothing reads no clock and writes nothing; a call that writes stamps history, `archived_at`
+  and/or `trashed` with the same `now`.
+- `archive_issue` and the archive half of `restore_issue` write `archived_at` and leave `updated_at`
+  where it was; `trash_issue` and the trash half of `restore_issue` move `updated_at` with the flag
+  (SPEC-030 §2.4). The asymmetry is deliberate: `archived_at` is the timestamp of that layer, so it is
+  the archive's own record, while `trashed` has no timestamp of its own.
+- The three use cases return the entity **after** the write, so an edge renders `archived_at`, `trashed` and
+  `updated_at` from the result and does not re-read.
+- `archive_issue` is the only one that reads children, and it pays for that read on every call, not only when
+  the issue has children: `count_open_children` is one indexed query (§3.1).
+- `restore_issue` is the only write that accepts an archived issue (R20). It is also the `--undo` of
+  `issue archive` at the edge (SPEC-050 §2.5.3): there is no second use case for undoing an archive.
+
 ## 6. Errors
 
 `app/` does not translate to exit codes nor to HTTP (A7): it raises domain errors with stable `code` and `rule`.
@@ -1399,9 +1626,15 @@ exist** in this layer (it is reserved for `hifa doctor`):
 | `InvalidTransition` | 5 | 409 | the state transition is not allowed |
 | `HifaError` (internal) | 6 | 500 | broken program invariant, corrupt database or unusable environment |
 
-`InvalidTransition` **has a single producer: this layer**. SPEC-020 exports it reserved —no domain
-function raises it— and it is `move_issue`/`update_issue` that build it when the team's state
-machine forbids the step. No other module raises it nor catches it as control flow.
+`InvalidTransition` **has a single producer: this layer**, and the condition is R20 — an issue with
+`archived_at` not null is not the source of a transition or of a field write it did not ask for. SPEC-020
+exports the class reserved (no domain function raises it) and no other module raises it nor catches it as
+control flow. A transition between two non-archived states of the same team is **not** forbidden: SPEC-020
+§2.5 `validate_transition` allows every one of them, so `move_issue` and `update_issue` cannot produce exit 5
+out of a state machine — the four conditions they do enforce are `Validation` (next table) and map to exit 2
+/ 422. `SPEC-050 §2.6.1`, `SPEC-060 §6.1` and `SPEC-070 §5.4` publish the same map (D-042), so the
+three edges answer `invalid_transition`/`5` for exactly one condition and `validation_error`/`2` for
+`CLOSE_WITH_OPEN_CHILDREN`, `STATE_ARCHIVED`, `STATE_TEAM_MISMATCH` and `ISSUE_TRASHED`.
 
 Codes owned by the application layer (those of SPEC-020 §6 remain valid and are not repeated):
 
@@ -1414,7 +1647,7 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `TEAM_KEY_INVALID` | `Validation` | key that does not match `identifier.KEY_PATTERN` | `create_team`, `update_team` | 2 | 422 |
 | `ISSUE_TRASHED` | `Validation` | operating on an issue with `trashed = 1` | `update_issue`, `move_issue`, `assign_issue`, `add_label` | 2 | 422 |
 | `CLOSE_WITH_OPEN_CHILDREN` | `Validation` | closing/canceling/archiving a parent with open sub-issues | `move_issue`, `update_issue`, `archive_issue` | 2 | 422 |
-| `INVALID_TRANSITION` | `InvalidTransition` | transition that the team's state machine does not allow | `move_issue`, `update_issue` | 5 | 409 |
+| `ISSUE_ARCHIVED` | `InvalidTransition` | writing an issue with `archived_at` not null (R20), `field='ref'` | `update_issue`, `assign_issue`, `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `add_label`, `remove_label` | **5** | 409 |
 | `POSITION_NEIGHBOR` | `Validation` | nonexistent anchor, from another team or from another state | `move_issue`, `reorder_issue` | 2 | 422 |
 | `POSITION_OUT_OF_ORDER` | `Validation` | edge `sort_order` does not fall strictly between its neighbors | `move_issue` | 2 | 422 |
 | `RANKING_EXHAUSTED` | `Validation` | no float gap left even after rebalancing once | `move_issue`, `reorder_issue` | 2 | 422 |
@@ -1433,11 +1666,12 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `STATE_TYPE_INVALID` | `Validation` | `state_type` outside the six types | `create_state`, `update_state` | 2 | 422 |
 | `STATE_NAME_EMPTY` | `Validation` | blank state name | `create_state` | 2 | 422 |
 | `STATE_TEAM_MISMATCH` | `Validation` | state from another team | `create_issue`, `move_issue`, `update_issue` | 2 | 422 |
+| `STATE_ARCHIVED` | `Validation` | target `workflow_state` with `archived_at` not null (SPEC-020 REQ-F020-19) | `move_issue`, `update_issue` | 2 | 422 |
 | `UNIQUE_MEMBER_EMAIL` | `Conflict` | email already registered | `create_member`, `update_member` | 4 | 409 |
 | `MEMBER_EMAIL_INVALID` / `MEMBER_NAME_EMPTY` | `Validation` | email without `@` or blank name | `create_member`, `update_member` | 2 | 422 |
 | `MEMBER_INACTIVE` | `Validation` | assigning to a member with `is_active = 0` | `assign_issue`, `create_issue` | 2 | 422 |
 | `MEMBER_ALREADY_INACTIVE` | `Conflict` | deactivating twice | `deactivate_member` | 4 | 409 |
-| `PRIORITY_RANGE` / `DUE_DATE_FORMAT` / `ESTIMATE_*` | `Validation` | range and format (SPEC-020) | `set_priority`, `set_due_date`, `create_issue`, `update_issue` | 2 | 422 |
+| `PRIORITY_OUT_OF_RANGE` / `DUE_DATE_FORMAT` / `ESTIMATE_*` | `Validation` | range and format (SPEC-020 §2.4) | `set_priority`, `set_due_date`, `create_issue`, `update_issue` | 2 | 422 |
 | `COMMENT_PARENT_MISMATCH` | `Validation` | `parent_id` from another issue | `comment_on_issue` | 2 | 422 |
 | `BODY_EMPTY` | `Validation` | empty comment or only spaces | `comment_on_issue`, `update_comment` | 2 | 422 |
 | `ATTACHMENT_URL_INVALID` / `ATTACHMENT_URL_SCHEME` | `Validation` | empty URL or scheme outside `http/https/file` | `add_attachment` | 2 | 422 |
@@ -1468,14 +1702,14 @@ Use case → expected errors matrix (contract for the tests of §7):
 | Use case | `NotFound` | `Validation` | `Conflict` | `InvalidTransition` |
 |---|---|---|---|---|
 | `create_issue` | team, parent, label, project, milestone, cycle, member | `TEAM_ARCHIVED`, `STATE_TEAM_MISMATCH`, `LABEL_TEAM_MISMATCH`, `PROJECT_TEAM_MISMATCH`, `MILESTONE_PROJECT_MISMATCH`, `CYCLE_COMPLETED`, `PARENT_CYCLE`, `MEMBER_INACTIVE`, `ESTIMATE_*` | `UNIQUE_IDENTIFIER`, `DUPLICATE_NUMBER` | — |
-| `update_issue` | issue, state, project, milestone, cycle, parent, member | those of `create_issue` + `CLOSE_WITH_OPEN_CHILDREN`, `ISSUE_TRASHED` | — | `INVALID_TRANSITION` |
-| `assign_issue` / `set_priority` / `set_due_date` | issue, member | `MEMBER_INACTIVE`, `ISSUE_TRASHED`, `PRIORITY_RANGE`, `DUE_DATE_FORMAT` | — | — |
-| `move_issue` | issue, workflow_state, neighbor | `STATE_TEAM_MISMATCH`, `CLOSE_WITH_OPEN_CHILDREN`, `POSITION_NEIGHBOR`, `POSITION_OUT_OF_ORDER`, `RANKING_EXHAUSTED`, `ISSUE_TRASHED` | — | `INVALID_TRANSITION` |
-| `reorder_issue` | issue, neighbor | `POSITION_NEIGHBOR`, `POSITION_OUT_OF_ORDER`, `RANKING_EXHAUSTED` | — | — |
+| `update_issue` | issue, state, project, milestone, cycle, parent, member | those of `create_issue` + `CLOSE_WITH_OPEN_CHILDREN`, `ISSUE_TRASHED`, `STATE_ARCHIVED` | — | `ISSUE_ARCHIVED` |
+| `assign_issue` / `set_priority` / `set_due_date` | issue, member | `MEMBER_INACTIVE`, `ISSUE_TRASHED`, `PRIORITY_OUT_OF_RANGE`, `DUE_DATE_FORMAT` | — | `ISSUE_ARCHIVED` |
+| `move_issue` | issue, workflow_state, neighbor | `STATE_TEAM_MISMATCH`, `STATE_ARCHIVED`, `CLOSE_WITH_OPEN_CHILDREN`, `POSITION_NEIGHBOR`, `POSITION_OUT_OF_ORDER`, `RANKING_EXHAUSTED`, `ISSUE_TRASHED` | — | `ISSUE_ARCHIVED` |
+| `reorder_issue` | issue, neighbor | `POSITION_NEIGHBOR`, `POSITION_OUT_OF_ORDER`, `RANKING_EXHAUSTED` | — | `ISSUE_ARCHIVED` |
 | `rebalance_board` | team, workflow_state | — | — | — |
 | `archive_issue` | issue | `CLOSE_WITH_OPEN_CHILDREN`, `ISSUE_TRASHED` | — | — |
 | `trash_issue` / `restore_issue` | issue | — | — | — |
-| `add_label` / `remove_label` | issue, label, label_link | `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND` | `LABEL_RETIRED` | — |
+| `add_label` / `remove_label` | issue, label, label_link | `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND` | `LABEL_RETIRED` | `ISSUE_ARCHIVED` |
 | `relate_issues` | issue (×2) | `RELATION_SELF` | `RELATION_DUPLICATE` | — |
 | `unrelate_issues` | issue, relation | — | — | — |
 | `comment_on_issue` | issue, comment (parent) | `BODY_EMPTY`, `COMMENT_PARENT_MISMATCH` | — | — |
@@ -1546,9 +1780,11 @@ Feature: Application use cases
     Given an issue ENG-1 in "Backlog" without started_at
     When move_issue is run toward "In Progress" of type started
     Then started_at is not NULL and completed_at is NULL
-    And issue_history records state_id from "Backlog" to "In Progress"
+    And issue_history has one row with field "state_id", old_value the ULID of "Backlog" and
+      new_value the ULID of "In Progress"
     When move_issue is run toward "Done" of type completed
     Then completed_at is not NULL and canceled_at is NULL
+    And issue_history has one row with field "completed_at", old_value NULL
 
   @REQ-F040-06
   Scenario: moving with position before respects the neighbors
@@ -1656,7 +1892,7 @@ Feature: Application use cases
     Then the row still exists with archived_at not NULL and trashed 1
     When restore_issue is run
     Then archived_at is NULL and trashed is 0
-    And issue_history has 3 new rows
+    And issue_history has 4 new rows, in order: "archived_at", "trashed", "archived_at", "trashed"
 
   @REQ-F040-21
   Scenario: the actor reaches the history and the comment
@@ -1766,12 +2002,50 @@ Feature: Application use cases
     And no row is inserted in label
 
   @REQ-F040-28
-  Scenario: update_comment does not reopen the hifa nor write history
+  Scenario: update_comment does not reopen the issue nor write history
     Given a resolved comment on ENG-1 with body "ok" and non-null resolved_at
     When update_comment is run with body "ok, fixed"
     Then comment.body is "ok, fixed" and comment.edited_at is not null
     And comment.resolved_at and comment.parent_id did not change
     And no row was added to issue_history for that issue
+
+  @REQ-F040-31
+  Scenario: an invalid reference in an edit writes nothing
+    Given an issue ENG-1 with title "Old" and no assignee
+    And an inactive member "mo"
+    When update_issue is run with title "New" and assignee_id "mo"
+    Then Validation is raised with rule "MEMBER_INACTIVE"
+    And the title of ENG-1 is still "Old"
+    And no row was added to issue_history for that issue
+    And updated_at of ENG-1 did not change
+
+  @REQ-F040-32
+  Scenario: an edit that changes the state appends the issue to the target column
+    Given the issue ENG-1 in "Todo" and the issues ENG-2 at 1024.0 and ENG-3 at 2048.0 in "In Progress"
+    When update_issue is run on ENG-1 with state "In Progress"
+    Then the state_id of ENG-1 is the ULID of "In Progress"
+    And the board_order of ENG-1 is greater than 2048.0
+    And issue_history has one row per changed column: "state_id", "board_order" and "started_at"
+
+  @REQ-F040-33
+  Scenario: an archive is idempotent and a restore clears each layer once
+    Given an archived issue ENG-1 with archived_at not NULL and trashed 0
+    When archive_issue is run again
+    Then no column of ENG-1 changed
+    And no row was added to issue_history for that issue
+    When restore_issue is run
+    Then archived_at is NULL and trashed is 0
+    And issue_history has 1 new row with field "archived_at" and new_value NULL
+
+  @REQ-F040-34
+  Scenario: an archived issue rejects an edit until it is restored
+    Given an archived issue ENG-1 with title "Old"
+    When update_issue is run with title "New"
+    Then InvalidTransition is raised with rule "ISSUE_ARCHIVED"
+    And the edge maps it to exit 5 and HTTP 409
+    And the title of ENG-1 is still "Old"
+    When restore_issue is run and then update_issue with title "New"
+    Then the title of ENG-1 is "New"
 ```
 
 ## 8. Regeneration checklist
@@ -1859,6 +2133,50 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 13 (2026-11-13): **one table decides which milestone a state type stamps.**
+  §3.2 declares `apply_milestones` for an issue that already exists and for one that does not,
+  so the creation path and the move path read the same table instead of carrying a copy each.
+- spec_revision 12 (2026-11-13): **every condition a write enforces is named by the function that
+  enforces it.** `update_issue` publishes `TEAM_ARCHIVED` among its own conditions instead of
+  inheriting it implicitly, so the list of refusals of the edit path is complete on the page
+  the implementer reads.
+- spec_revision 11 (2026-11-13): **the column check names the predicate the domain declares.**
+  §5.2 step 6 calls `ranking.needs_rebalance`, so a move that would close the fractional gap
+  rebalances the column in the same transaction instead of depending on a name the ranking
+  module does not provide.
+- spec_revision 10 (2026-11-13): **the position and `updated_at` rules have one reading each.** (1) §5.2
+  step 7 states the only source of `None` — R8 idempotency, when the issue already is the first or the last
+  element of the column it lives in — and leaves `ranking.last([])` for the empty column of a real move;
+  step 10 records the `board_order` row only when the new position differs from the stored one, so a `move`
+  to the current state appends nothing. (2) §2.1 lists in `UpdateIssue` the columns a `state` edit writes
+  (`board_order` and the milestones) and stops calling `sort_order`/`sub_issue_sort_order` unwritable: they
+  belong to `create_issue`, `reorder_issue` and `rebalance_board`. (3) §2.1 and R3 say what the archive axis
+  does: `archive_issue` stamps `archived_at` and leaves `updated_at` alone, `trash_issue` writes `trashed`
+  together with it. (4) §6 counts four `Validation` conditions behind a refused transition.
+- spec_revision 9 (2026-11-13): **the write contract is closed on the points that still admitted two
+  readings; `version` 3 because the behaviour of the write verbs and of their errors changes.** (1) R20
+  gains `reorder_issue` — a drag inside a column is a write of the issue — and names the field it
+  reports, `field='ref'`, the same identifier at every edge; the five use cases that raise it declare
+  `InvalidTransition(ISSUE_ARCHIVED)` in `# raises:` and in the §6 matrix, which is the one place that
+  rule is visible to a test. (2) R12 stops claiming that the layers are symmetric: an archived issue
+  can be trashed, a trashed issue is restored before it is archived. (3) History values reach
+  `HistoryRepo.record` as text, which is the type its signature takes: `_text`/`_text_rows` convert
+  them when `changes` is built, so no flow hands the repo a `datetime` or a `float`. (4) §5.2 step 7
+  seeds an empty target column with `ranking.last([])` and bounds the R8 idempotency to the column the
+  issue already lives in — otherwise a move into a shorter column is a silent no-op that can repeat a
+  `board_order`; the returned `Issue` carries the new position. (5) §5.4 reads the clock before R7
+  derives a milestone, keeps `sub_issue_sort_order` on reparent, and §3.1 lists the two reads an update
+  makes when it moves; §2.1 lists `ReorderIssue` and `RebalanceBoard` among the commands that write a
+  position column. (6) `archive` and `restore` state what they do to `updated_at` (§5.5, R12) and §5.5
+  reads the clock once, after the no-op branch returns. (7) The priority rule is
+  `PRIORITY_OUT_OF_RANGE` everywhere — the name SPEC-020 §2.4 exports — and the error map §6 publishes
+  is the one D-042 records for the three edges.
+- spec_revision 8 (2026-11-13): **the three writes an issue was missing are declared.** §5.2
+  fixes how the target state of a move is resolved and where the issue lands in the target
+  column; §5.4 fixes the resolution order of an update, which error wins when a command carries
+  several invalid fields, and the diff that decides which columns reach the history — a command
+  that changes nothing writes nothing; §5.5 fixes the layered axis of archiving, trashing and
+  restoring. The signatures of §2.2 are unchanged: this revision completes them.
 - spec_revision 7 (2026-11-11): **`update_team` and `archive_team` are declared, not implemented
   (D-031).** §2.2 gains a status paragraph and an inline `# status:` comment on `archive_team`; the
   signature, its `# raises:` line, §3.1 and the §6 error rows are unchanged, because they are the

@@ -4,7 +4,7 @@ title: Domain core
 component: domain
 status: review
 version: 1
-spec_revision: 3
+spec_revision: 5
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/020-domain-core.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-13
 ---
 
 # SPEC-020 — Domain core
@@ -579,7 +579,7 @@ def validate_transition(current: WorkflowState, target: WorkflowState, open_chil
     target.archived_at not None -> Validation(rule='STATE_ARCHIVED', field='state_id').
     target.type terminal and open_children > 0 -> Validation(rule='CLOSE_WITH_OPEN_CHILDREN').
     Any transition between non-archived types is allowed; there is no rigid state machine.
-    Never raises InvalidTransition (§6: reserved class, with no producer in the domain)."""
+    Never raises InvalidTransition: the single producer is the use-case layer."""
 
 
 def validate_relation(
@@ -696,12 +696,18 @@ class InvalidTransition(HifaError):
         self,
         message: str | None = None,
         *,
+        rule: str,
+        field: str | None = None,
         current: str,
         target: str,
         allowed: tuple[str, ...] = (),
         details: Mapping[str, Any] | None = None,
     ) -> None: ...
 
+    @property
+    def rule(self) -> str: ...
+    @property
+    def field(self) -> str | None: ...
     @property
     def current(self) -> str: ...
     @property
@@ -880,7 +886,7 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `NotFound` | `NOT_FOUND` | nonexistent id/identifier | exit 3 | 404 |
 | `Conflict` | `CONFLICT` | uniqueness (`identifier`, `(team_id, number)`, duplicate label) | exit 4 | 409 |
 | `Conflict` | `RELATION_DUPLICATE` / `TEAM_ALREADY_ARCHIVED` | logical duplicate | exit 4 | 409 |
-| `InvalidTransition` | `INVALID_TRANSITION` | **reserved**: today no rule of 020/040 raises it (R5 is expressed with `Validation(CLOSE_WITH_OPEN_CHILDREN)`); it exists so that an edge with its own restrictions maps to exit 5 of D-014 | exit 5 | 409 |
+| `InvalidTransition` | `INVALID_TRANSITION` | not raised by any function of this layer: the single producer is the use-case layer, which raises it for a write on an issue with `archived_at` not null (SPEC-040 §6, R20; D-042); the class exists so that condition maps to exit 5 of D-014 | exit 5 | 409 |
 | `HifaError` (base) | `HIFA_ERROR` | bug: it should never escape; the edge treats it as 500 | exit 6 | 500 |
 
 `exit 1` does **not** appear in this table: it is reserved for `hifa doctor` (warn) by D-001/D-014. Every mapping
@@ -1183,6 +1189,14 @@ Executable from top to bottom; every step has a verification command.
 
 ## Notes
 
+- spec_revision 5 (2026-11-13): **the transition class carries the rule that decided it.**
+  §2.6 declares `rule` and `field` on `InvalidTransition`, the two attributes the edges map to
+  an exit code and a field name, so a write refused because the issue is archived names the
+  condition and the reference it acted on.
+- spec_revision 4 (2026-11-13): **`InvalidTransition` has a producer.** §6 stops calling the class
+  reserved: no function of this layer raises it, and the single producer is the use-case layer, which
+  raises it for a write on an issue with `archived_at` not null (SPEC-040 §6, R20; D-042). The class,
+  its `code` and the exit 5 of D-014 stay as declared in §2.6.
 - spec_revision 3 (2026-11-11): translated to English (repo-wide language convention).
 
 `spec_revision 2` — gaps of Spec Review 02 applied to this spec (the rest are applied in 030/040):

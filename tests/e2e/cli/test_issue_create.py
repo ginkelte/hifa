@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from conftest import CLI_ENV, plain
 from hifa.cli.main import app
 from hifa.config import CONFIG_FILENAME
 
@@ -73,13 +74,13 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 @pytest.fixture
 def initialized(sandbox: SimpleNamespace) -> SimpleNamespace:
-    result = runner.invoke(app, ["init", "--team-key", "ENG"])
+    result = runner.invoke(app, ["init", "--team-key", "ENG"], env=CLI_ENV)
     assert result.exit_code == 0, result.stdout + result.stderr
     return sandbox
 
 
 def run(*args: str) -> Any:
-    return runner.invoke(app, list(args))
+    return runner.invoke(app, list(args), env=CLI_ENV)
 
 
 def test_create_prints_table_row(initialized: SimpleNamespace) -> None:
@@ -114,6 +115,64 @@ def test_create_json_includes_labels_and_due(initialized: SimpleNamespace) -> No
     payload = json.loads(result.stdout)
     assert [label["name"] for label in payload["labels"]] == ["Bug", "Docs"]
     assert payload["due_date"] == "2026-11-20"
+
+
+def test_create_with_estimate_carries_it_in_the_envelope(initialized: SimpleNamespace) -> None:
+    result = run("issue", "create", "With estimate", "-e", "3", "--json")
+    assert result.exit_code == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert list(payload) == ISSUE_KEYS
+    assert payload["estimate"] == 3.0
+
+
+def test_create_long_estimate_flag_is_the_same_field(initialized: SimpleNamespace) -> None:
+    result = run("issue", "create", "Long flag", "--estimate", "5", "--json")
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["estimate"] == 5.0
+
+
+def test_create_without_estimate_leaves_it_null(initialized: SimpleNamespace) -> None:
+    result = run("issue", "create", "No estimate", "--json")
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["estimate"] is None
+
+
+def test_create_with_an_estimate_outside_the_scale_exits_2(
+    initialized: SimpleNamespace,
+) -> None:
+    result = run("issue", "create", "Bad", "-e", "99", "--json")
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "validation_error"
+    assert error["field"] == "estimate"
+    assert error["details"]["rule"] == "ESTIMATE_NOT_IN_SCALE"
+    written = run("issue", "create", "After the rejection", "--json")
+    assert written.exit_code == 0, written.stdout + written.stderr
+    assert json.loads(written.stdout)["identifier"] == "ENG-1"
+
+
+def test_create_with_a_non_numeric_estimate_exits_2(initialized: SimpleNamespace) -> None:
+    result = run("issue", "create", "Not a number", "-e", "three")
+    assert result.exit_code == 2
+    assert "estimate" in result.stderr.lower()
+
+
+def run_help(*args: str) -> str:
+    """`--help` output for `args`, without ANSI escapes and with the layout flattened.
+
+    Rich reflows the option panel to the width `CLI_ENV` pins and styles the option names it
+    prints, so the raw text carries escapes between the words (`\\x1b[1m--estimate\\x1b[0m`).
+    Stripping them before collapsing the whitespace makes the match about the option — long
+    name, short flag, metavariable — rather than about the styling or the columns.
+    """
+    result = runner.invoke(app, [*args, "--help"], env=CLI_ENV)
+    assert result.exit_code == 0, result.stdout + result.stderr
+    return plain(result.stdout)
+
+
+def test_create_help_lists_the_estimate_option(initialized: SimpleNamespace) -> None:
+    assert "--estimate -e <float>" in run_help("issue", "create")
 
 
 def test_create_quiet_prints_identifier(initialized: SimpleNamespace) -> None:
