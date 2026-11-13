@@ -25,19 +25,23 @@
   function closePanel() {
     var panel = document.querySelector(PANEL);
     if (panel) panel.innerHTML = "";
+    // Whatever a foreign write left pending applies the moment the panel closes.
     flushRevision();
   }
 
-  // --- the revision of the page -----------------------------------------------------------
-  // The page knows the revision it was rendered at and every response tells it the revision it
-  // was rendered at too. The probe is one request per visible tab per interval and answers one
-  // number: only a number that differs reloads the collection, so a tab that nobody is writing
-  // to makes no request beyond the probe and swaps nothing.
+  // --- the revision of the page ---------------------------------------------------------
+  // Only an answer that replaced the collection moves the number; a panel or a row did not
+  // update the board, so believing their number would leave the board old with a quiet poller.
   var revision = {
     known: document.body.dataset.revision || "",
     pending: null,
-    busy: false
+    inFlight: false,
+    watchdog: null
   };
+
+  // htmx has no request timeout: a reload still in flight after this is abandoned and asked again.
+  var RELOAD_MS = 10000;
+  var reloads = 0;
 
   function isProbe(elt) {
     return !!elt && elt.id === "revision-probe";
@@ -49,83 +53,90 @@
     return "";
   }
 
+  // The two nodes the poller swaps, and the only two whose answer the page may believe it is
+  // current about.
+  function isCollectionTarget(node) {
+    if (!node) return false;
+    return node.id === "board" || node.id === "issues-tbody";
+  }
+
   function quickAddHoldsText() {
     var input = document.querySelector("#quick-add .quick-add-input");
     return input !== null && input.value.trim() !== "";
   }
 
-  // A swap deletes whatever is inside the element it replaces, so it waits for the interaction
-  // instead of ending it: an open panel, a half-typed quick add, a card or column under the
-  // pointer, or the panel's own unsaved text and focus.
+  // A swap deletes what the element holds, so it waits: an open panel, unsaved text, a drag.
   function blocked() {
     return panelIsOpen() || quickAddHoldsText() || document.body.dataset.dragging === "true";
   }
 
-  function panelIsDirtyOrFocused() {
-    var panel = document.querySelector(PANEL);
-    if (!panel || !panel.children.length) return false;
-    if (panel.contains(document.activeElement)) return true;
-    var fields = panel.querySelectorAll("input, textarea");
-    for (var index = 0; index < fields.length; index += 1) {
-      if (String(fields[index].value || "").trim() !== "") return true;
-    }
-    return false;
-  }
-
-  function panelUrl() {
-    var panel = document.querySelector(PANEL);
-    if (!panel || !panel.children.length) return "";
-    var link = panel.querySelector(".identifier");
-    if (!link) return "";
-    var identifier = String(link.textContent || "").trim();
-    return identifier ? "/_/issues/" + encodeURIComponent(identifier) + "/panel" : "";
-  }
-
+  // The revision the collection now shows, so a pending value is spent by adopting it.
   function adopt(number) {
     if (number === null || number === undefined || number === "") return;
     revision.known = String(number);
-    if (revision.pending === revision.known) revision.pending = null;
+    revision.pending = null;
   }
 
   function flushRevision() {
-    if (revision.pending === null || revision.busy) return;
-    var number = revision.pending;
-    if (blocked()) {
-      // The panel is the one element allowed to re-render while it is open, and only while it
-      // holds nothing the user typed and no element inside it has the focus. The pending value is
-      // spent before the request: one observed revision is one re-render, not one per tick.
-      var panel = panelUrl();
-      if (!panel || panelIsDirtyOrFocused()) return;
-      revision.pending = null;
-      swapInto(PANEL, panel, "innerHTML");
-      return;
-    }
+    if (revision.pending === null) return;
     var target = refreshTarget();
     var fragment = document.body.dataset.refresh || "";
     if (!target || !fragment) {
-      revision.pending = null;
-      adopt(number);
+      adopt(revision.pending);
       return;
     }
-    revision.pending = null;
-    swapInto(target, fragment, "outerHTML");
+    // The pending value is deliberately not spent here: it survives the deferral and only goes
+    // away when the collection really reloaded (or when the answer adopted its number), so a swap
+    // that never lands cannot pass for one that did.
+    if (blocked()) return;
+    if (revision.inFlight) return;
+    swapInto(target, withLiveFilters(fragment));
   }
 
-  // The reload is an htmx request and never a plain fetch: the fragment arrives with the id of the
-  // element it targets and with the `hx-get`, `hx-target` and `hx-push-url` of its cards and rows,
-  // and only htmx binds those attributes. `outerHTML` because of the id — the fragment replaces the
-  // node instead of filling it, which would leave a #board inside a #board, every card under it
-  // inert. Its own `HX-Revision` is adopted by the afterRequest hook below.
-  function swapInto(target, url, style) {
-    revision.busy = true;
-    window.htmx.ajax("GET", url, { target: target, swap: style }).then(settle, settle);
+  // The reload asks the question the page is showing, not the one its URL was built from: the
+  // filter bar holds the values the reader typed and the page's query predates them.
+  function withLiveFilters(url) {
+    var bar = document.querySelector("form.filter-bar");
+    if (!bar) return url;
+    var cut = url.indexOf("?");
+    var params = new URLSearchParams(cut < 0 ? "" : url.slice(cut + 1));
+    new FormData(bar).forEach(function (value, key) {
+      var text = String(value).trim();
+      if (text === "") params.delete(key);
+      else params.set(key, text);
+    });
+    return (cut < 0 ? url : url.slice(0, cut)) + "?" + params.toString();
   }
 
-  // The request is back: whatever was observed while it was in flight applies now, once. A fragment
-  // that failed to swap adopts nothing and the next tick tries again with a fresh number.
-  function settle() {
-    revision.busy = false;
-    flushRevision();
+  // An htmx request, never a plain fetch: the fragment carries hx-* on its cards and only htmx
+  // binds them. `outerHTML` because the fragment carries the id of the node it replaces.
+  function swapInto(target, url) {
+    reloads += 1;
+    var token = reloads;
+    revision.inFlight = true;
+    window.clearTimeout(revision.watchdog);
+    revision.watchdog = window.setTimeout(function () {
+      if (token !== reloads || !revision.inFlight) return;
+      // Give up on the request that never answered and ask again: one hung reload must not
+      // silence the page for the rest of the session.
+      revision.inFlight = false;
+      revision.watchdog = null;
+      flushRevision();
+    }, RELOAD_MS);
+    var done = function () {
+      settle(token);
+    };
+    window.htmx.ajax("GET", url, { target: target, swap: "outerHTML" }).then(done, done);
+  }
+
+  // The request is back. An answer that replaced the collection already adopted its number and
+  // spent the pending one with it; one that failed adopts nothing, so the pending value stays and
+  // the next tick asks again — once per interval, not in a loop on the same URL.
+  function settle(token) {
+    if (token !== reloads) return; // an abandoned request answering late is not the current one
+    revision.inFlight = false;
+    window.clearTimeout(revision.watchdog);
+    revision.watchdog = null;
   }
 
   function onProbe(xhr) {
@@ -152,8 +163,7 @@
     if (document.hidden) event.preventDefault();
   });
 
-  // Every answer of the layer reports the revision it was rendered at; adopting it is what stops
-  // the next tick from re-rendering content the user's own action just produced.
+  // Adopt only an answer that replaced the collection; the others did not update the board.
   document.body.addEventListener("htmx:afterRequest", function (event) {
     var xhr = event.detail.xhr;
     if (!xhr) return;
@@ -161,6 +171,8 @@
       onProbe(xhr);
       return;
     }
+    if (xhr.status < 200 || xhr.status > 299) return;
+    if (!isCollectionTarget(event.detail.target)) return;
     adopt(xhr.getResponseHeader("HX-Revision"));
     flushRevision();
   });
@@ -247,10 +259,7 @@
     }
   });
 
-  // A finger that moved is a scroll, not a tap. A touch gesture over a row or a card leaves a
-  // click behind when the browser decides the movement was small enough, and that click opens the
-  // panel in the middle of a scroll. The distance is measured here and the click is swallowed in
-  // the capture phase, before the element's own trigger sees it.
+  // A finger that moved is a scroll: the click the browser leaves behind is swallowed first.
   var tap = { x: 0, y: 0, moved: false };
   var TAP_SLOP = 10;
   document.addEventListener("touchstart", function (event) {
@@ -328,6 +337,7 @@
   function persistColumn(board, item, origin) {
     var stateId = item.getAttribute("data-state-id");
     if (!stateId) {
+      document.body.dataset.dragging = "false";
       flushRevision();
       return;
     }
@@ -344,8 +354,12 @@
         revertColumn(board, item, origin);
         toast("could not move the column", true);
       })
-      // The drop has returned, so the revision the drag was holding back applies now.
-      .then(flushRevision);
+      .then(function () {
+        // The drop's own write has returned, so the revision the drag was holding back applies
+        // now — and not one moment earlier: the board swap is what this flag was blocking.
+        document.body.dataset.dragging = "false";
+        flushRevision();
+      });
   }
 
   function initBoardSortable() {
@@ -373,15 +387,14 @@
       onStart: function (event) {
         // A swap during a drag would move the node out from under the pointer.
         document.body.dataset.dragging = "true";
-        origin = {
-          index: event.oldIndex,
-          previous: event.item.previousElementSibling,
-          next: event.item.nextElementSibling
-        };
+        // The neighbour, not the index: by `onEnd` the index past the removed node is wrong.
+        origin = { previous: event.item.previousElementSibling };
       },
       onEnd: function (event) {
-        document.body.dataset.dragging = "false";
+        // A drop that changed nothing ends the interaction here; a real one keeps the flag until
+        // its own POST returns, so the deferred board swap cannot fire in the middle of it.
         if (event.oldIndex === event.newIndex) {
+          document.body.dataset.dragging = "false";
           flushRevision();
           return;
         }

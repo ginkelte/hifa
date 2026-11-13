@@ -279,6 +279,27 @@ def test_the_fragment_that_reloads_the_collection_carries_its_own_target(
     assert 'hx-target="#board" hx-swap="outerHTML"' in page.text, "the filter bar replaces too"
 
 
+def test_the_collection_fragment_carries_rows_and_not_the_page_s_form(
+    served: SimpleNamespace,
+) -> None:
+    """The quick add belongs to the page: shipping it with the rows replaces the form a person is
+    typing into with an empty shell on every automatic reload, and the controls end up
+    foster-parented inside the table."""
+    rows = served.client.get("/_/issues", params={"team": "ENG", "view": "list"}, headers=HTMX)
+    assert rows.status_code == 200
+    assert 'id="quick-add"' not in rows.text, "the fragment carries rows, not the page's form"
+    assert "<form" not in rows.text
+    assert "hx-swap-oob" not in rows.text, "nothing out of band travels with the rows"
+
+    page = served.client.get("/ENG/list")
+    assert page.text.count('id="quick-add"') == 1, "the page keeps its one form"
+    assert "hx-swap-oob" not in page.text
+
+    templates = (JS.parents[2] / "templates").rglob("*.html")
+    for template in templates:
+        assert "form_oob" not in template.read_text(encoding="utf-8"), template.name
+
+
 # --- the header on the rest of the layer ------------------------------------------------
 
 
@@ -340,11 +361,11 @@ def test_the_collection_reload_is_an_htmx_swap_of_the_whole_node() -> None:
     """A plain `fetch` + `innerHTML` leaves the fragment's attributes bound to nothing."""
     swap = _block("function swapInto(")
     assert "htmx.ajax(" in swap
-    assert "settle" in swap, "the busy flag is released and the pending value re-applied"
+    assert '"outerHTML"' in swap, "the fragment carries #board and #issues-tbody itself"
+    assert "settle" in swap, "the in-flight flag is released by the answer"
 
     flush = _block("function flushRevision(")
-    collection = flush[flush.index("swapInto(target, fragment") :]
-    assert '"outerHTML"' in collection, "the fragment carries #board and #issues-tbody itself"
+    assert "swapInto(target," in flush, "the poller reloads the collection it found"
 
 
 def test_no_fragment_arrives_through_a_plain_fetch() -> None:
@@ -358,29 +379,126 @@ def test_no_fragment_arrives_through_a_plain_fetch() -> None:
         assert 'method: "POST"' in source[call.start() : call.start() + 220]
 
 
-def test_the_panel_re_render_spends_the_revision_before_it_asks() -> None:
-    """One re-render per observed revision: the next tick cannot see the same difference."""
+def test_only_the_answer_that_replaced_the_collection_adopts_its_revision(
+    served: SimpleNamespace,
+) -> None:
+    """A panel answers with the number the *server* observed — foreign writes included — and did
+    not update the board.
+
+    Adopting that number spends the difference between the page and the database without
+    updating the page: the board stays stale and the poll sees nothing left to do. The guard is
+    the swap target, and only the two nodes that hold a collection pass it.
+    """
+    hook = _block('addEventListener("htmx:afterRequest"')
+    assert "isCollectionTarget(event.detail.target)" in hook
+    assert "adopt(" in hook
+    assert hook.index("isCollectionTarget") < hook.index("adopt("), "the guard runs first"
+    assert hook.count("adopt(") == 1, "one adoption, gated, not one per answer"
+
+    guard = _block("function isCollectionTarget(")
+    assert '"board"' in guard and '"issues-tbody"' in guard
+
+    panel = served.client.get("/_/issues/ENG-1/panel", headers=HTMX)
+    assert panel.status_code == 200
+    # The server keeps reporting on every answer; what changed is what the page believes.
+    assert panel.headers["HX-Revision"], panel.headers
+
+
+def test_the_pending_revision_survives_an_open_panel() -> None:
+    """An open panel is a blocking state like the others: nothing re-renders it, and the pending
+    value is not spent on the deferral — it waits for the panel to close."""
     flush = _block("function flushRevision(")
-    swap = flush.index("swapInto(PANEL")
-    branch = flush[:swap]
-    assert "revision.pending = null;" in branch[branch.index("panelUrl(") :]
-    # ...and the answer is adopted by the afterRequest hook, so `known` moves with the markup.
-    assert 'adopt(xhr.getResponseHeader("HX-Revision"))' in JS.read_text(encoding="utf-8")
+    assert "blocked()" in flush
+    assert "swapInto(PANEL" not in flush, "the panel is not re-rendered under the reader"
+    assert "revision.pending = null" not in flush, "the deferral does not spend the number"
+
+    source = JS.read_text(encoding="utf-8")
+    assert "panelUrl" not in source, "the panel's URL is built by the click, not by the poller"
+    assert "panelIsDirtyOrFocused" not in source, "it walked inputs the panel does not have"
+
+    close = _block("function closePanel(")
+    assert "flushRevision()" in close, "the pending value applies when the panel closes"
 
 
-def test_the_drag_flag_is_written_in_on_start_and_cleared_in_on_end() -> None:
-    """The board swap reads `data-dragging`; before this it was read and never written."""
+def test_the_pending_value_is_spent_by_the_answer_that_adopted_it() -> None:
+    """Spent by the reload, not by the request: a swap that never lands cannot look like one
+    that did, and a swap that lands cannot leave the same difference pending for the next tick."""
+    adopt = _block("function adopt(")
+    assert "revision.known = String(number)" in adopt
+    assert "revision.pending = null;" in adopt
+    assert not re.search(r"if \([^)]*revision\.pending[^)]*\) revision\.pending = null", adopt), (
+        "a landed reload supersedes whatever was pending; it does not have to match it"
+    )
+
+    hook = _block('addEventListener("htmx:afterRequest"')
+    assert 'adopt(xhr.getResponseHeader("HX-Revision"))' in hook
+
+
+def test_a_reload_that_never_answers_does_not_silence_the_page() -> None:
+    """htmx's own request timeout is 0 (none at all), so the bound is the client's: a reload still
+    in flight after it is abandoned and asked again instead of blocking every later tick."""
+    source = JS.read_text(encoding="utf-8")
+    assert re.search(r"var RELOAD_MS = \d+;", source), "the wait has a bound"
+
+    swap = _block("function swapInto(")
+    assert "setTimeout(" in swap
+    watchdog = swap[swap.index("setTimeout(") :]
+    assert re.search(r"revision\.inFlight = false", watchdog), "the bound releases the flag"
+    assert "flushRevision()" in watchdog, "and asks again"
+
+    settle = _block("function settle(")
+    assert re.search(r"if \(token !== reloads\) return;", settle), (
+        "a late answer is not the current one"
+    )
+    assert "revision.inFlight = false" in settle
+
+
+def test_the_reload_carries_the_values_typed_in_the_filter_bar() -> None:
+    """The page's query predates what the reader typed: a reload without the form's values puts
+    an unfiltered collection under a filtered input."""
+    live = _block("function withLiveFilters(")
+    assert 'querySelector("form.filter-bar")' in live
+    assert "new FormData(bar)" in live
+    assert "params.set(key, text)" in live
+    assert "params.delete(key)" in live, "an emptied filter leaves the URL"
+
+    flush = _block("function flushRevision(")
+    assert "withLiveFilters(fragment)" in flush, "every reload goes through the live values"
+
+
+def test_the_fragment_honours_the_filter_the_reload_sends(served: SimpleNamespace) -> None:
+    """The URL the client builds is one the fragment answers with those rows and no others."""
+    rows = served.client.get(
+        "/_/issues", params={"team": "ENG", "view": "list", "q": "avatar"}, headers=HTMX
+    )
+    assert rows.status_code == 200
+    assert "ENG-2" in rows.text
+    assert "ENG-1" not in rows.text
+
+
+def test_the_drag_flag_is_written_in_on_start_and_cleared_when_the_drop_returns() -> None:
+    """The board swap reads `data-dragging`; before this it was read and never written.
+
+    And it may not be cleared before the drop's own POST returns: the swap the drop defers would
+    then fire in the middle of the write it is waiting for.
+    """
     start = _block("onStart: function")
     end = _block("onEnd: function")
     assert re.search(r'dataset\.dragging\s*=\s*"true"', start)
     assert not re.search(r'dataset\.dragging\s*=\s*"true"', end)
-    assert re.search(r'dataset\.dragging\s*=\s*"false"', end)
+    # A drop that moved nothing ends the interaction itself; a real one hands the flag to the
+    # write it starts, and only that write clears it.
+    assert end.index('dataset.dragging = "false"') < end.index("persistColumn(")
+
+    persist = _block("function persistColumn(")
+    released = persist.rindex('dataset.dragging = "false"')
+    assert released < persist.index("flushRevision", released)
 
 
 def test_the_drop_applies_the_revision_it_deferred() -> None:
-    """The drop is what the deferred swap waits for, so its return flushes the pending number."""
+    """The drop is what the deferred swap waits for, so its return releases the flag and flushes."""
     persist = _block("function persistColumn(")
     assert "flushRevision" in persist
     fetch_at = persist.index("window")
-    flush_at = persist.index(".then(flushRevision)")
-    assert fetch_at < flush_at, "the flush has to be on the way back from the write"
+    released = persist.rindex('dataset.dragging = "false"')
+    assert fetch_at < released, "the flag outlives the request, and not the other way around"

@@ -1,6 +1,6 @@
 {% if vm.can_write %}
 <form id="quick-add" class="quick-add" method="post" action="/{{ vm.team.key }}/issue"
-      hx-post="/_/issues?team={{ vm.team.key }}" hx-target="#issues-tbody" hx-swap="afterbegin"{% if form_oob %} hx-swap-oob="true"{% endif %}>
+      hx-post="/_/issues?team={{ vm.team.key }}" hx-target="#issues-tbody" hx-swap="afterbegin">
   <input type="text" name="title" class="quick-add-input" value="" placeholder="New issue…"
          aria-label="New issue title" autocomplete="off" required>
   <button type="submit" class="btn">Create</button>

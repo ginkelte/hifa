@@ -262,7 +262,6 @@ def _form_error(request: Request, *, team: str, status_code: int, message: str) 
         {
             "page": _page(request, title="Quick add", nav="list"),
             "vm": {"team": {"key": team}, "can_write": True},
-            "form_oob": False,
             "form_error": message,
             "form_errors": None,
         },
@@ -289,7 +288,6 @@ def _list_form_error(
         {
             "page": page,
             "vm": vm,
-            "form_oob": False,
             "form_error": None,
             "form_errors": errors,
         },
@@ -473,7 +471,7 @@ def list_page(request: Request, team: str) -> HTMLResponse:
     return _render(
         request,
         "list.html",
-        {"page": page, "vm": vm, "form_oob": False, "form_error": None, "form_errors": None},
+        {"page": page, "vm": vm, "form_error": None, "form_errors": None},
     )
 
 
@@ -546,7 +544,6 @@ def issues_fragment(request: Request, view: str = "list", team: str = "") -> HTM
         {
             "page": _page(request, title="List", nav="list", team=entity),
             "vm": vm,
-            "form_oob": True,
             "form_error": None,
             "form_errors": None,
         },
