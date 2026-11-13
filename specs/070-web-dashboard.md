@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 3
-spec_revision: 16
+spec_revision: 17
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -1074,28 +1074,42 @@ refresh waits for the interaction instead of ending it:
 | a detail panel is open | `#panel` has an element child (the `<aside>` of §2.1.3) | the board/list swap, which would delete the panel |
 | the quick add holds unsaved text | `#quick-add .quick-add-input` is non-empty | every swap: the input lives inside the fragment being replaced |
 | a drag is in flight (card or column) | `document.body.dataset.dragging === "true"`, set in the Sortable `onStart` of §2.6.4/§2.6.5 and cleared in `onEnd` | the board swap, which would move the node under the pointer |
-| the panel holds unsaved text, or focus is inside it | the composer of `#panel` is non-empty, or `#panel` contains `document.activeElement` | the panel's own re-render (see below) |
+
+**The reload is what the page is showing, not what its URL says.** A filter typed into the filter bar
+lives in the form, not in the page's query: the poller appends the form's current values to
+`page["refresh_url"]` before the request, because a reload without them answers a different question
+and puts a filtered board under an input that still says so. A reload that never answers does not
+freeze the poll either: the wait is bounded, and a tick that found the previous request still in
+flight gives up on it and asks again, so one hung request cannot silence the page for the rest of the
+session.
+
+**The collection fragment carries rows, not the page's form.** The quick-add `<form>` belongs to the
+page: a list fragment that shipped it as an out-of-band swap would replace the form the user is
+typing into with a fresh one on every automatic reload, which is a reset nobody asked for. The form
+is reset by htmx after its own successful submit, which is the only moment it needs to be.
 
 One pending value, not a queue: the poller keeps the last revision it has seen and applies it when
 the blocking interaction ends — the panel closes, the input is cleared or submitted, the drop's
 request returns — **immediately**, without waiting for the next tick. Two revisions observed while
 blocked produce one reload, because the number is opaque and only the last one read is meaningful.
 
-**The panel.** The panel is the one element allowed to re-render while it is open, because it is the
-user's own interaction rather than the thing a swap would destroy: a changed revision re-renders it
-in place from `/_/issues/{identifier}/panel` (§2.1.4) whenever it holds no unsaved text and no
-element inside it has focus, and it queues that re-render when it does. The number is global and
-cannot say *which* issue changed, so the condition is the panel's own state and not the issue's
-identity: a re-render of an unchanged issue is one read of one issue — the route a row click already
-uses — and the same markup. No swap of this section scrolls the page (`scrollIntoView`, `focus()`
-and `location.hash` are not called on its behalf), and the panel's scroll container keeps its offset
-across its own re-render.
+**The panel is not refreshed under the reader.** An open panel is a blocking state like the
+others: the poller never re-renders it, and a re-render of the panel is not a reason to spend the
+pending revision (D-050). Two reasons, both of them about what the number can and cannot say: the
+revision is global and carries no identity, so *"re-render the panel only if its issue changed"* is
+not a condition that can be evaluated; and replacing the markup of the panel a person is reading is
+a worse interruption than waiting for them to close it. What the panel shows when it is reopened
+is the answer of `/_/issues/{identifier}/panel` (§2.1.4), which is as fresh as the click that asked
+for it. When the panel closes, the pending revision applies like after any other interaction.
 
-**After the user's own write.** Every write of §2.1.2/§2.1.3 answers with `HX-Revision`, and every
-fragment GET does too: the page adopts the number of the render it has just been given, so a quick
-add or a filter change does not make the poll re-render the same content a second later. The
-residual is stated in D-049: a foreign commit that lands between the page render and the user's own
-write is masked by the adopted number, and appears on the next commit or on a reload.
+**After the user's own write.** Every write of §2.1.2/§2.1.3 answers with `HX-Revision`, and so does
+every fragment: an answer that **replaced the collection** adopts its number, so a quick add, a drop
+or a filter change does not make the poll re-render the same content a second later. An answer that
+rendered something else — a panel, a row, the palette, the counters — **does not** adopt: its number
+is the one the server observed, foreign commits included, and adopting it would spend the difference
+between the page and the database without updating the page, which leaves a stale board behind a mute
+poller. The residual is stated in D-049: a foreign commit that lands between the render and the
+user's own write is masked by the adopted number, and appears on the next commit or on a reload.
 
 **Without JavaScript** the page is exactly the page: the `hx-*` attributes of the poller do nothing,
 `data-revision` is an unused attribute, and a reload shows the new data. Auto-refresh is an

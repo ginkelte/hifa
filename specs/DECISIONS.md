@@ -1758,3 +1758,33 @@ own state instead (clean, unfocused) and pays one read of one issue, which is wh
 write from another connection, the page marker and the header, read-only), the four scenarios §7 marks manual
 (no swap without a change, swap with one, the open panel, the drag in flight — no Playwright on this host), and
 §2.6.8 of SPEC-070, which is where the client contract lives.
+
+## D-050 — The refresh never touches what the reader is looking at, and only a collection answer adopts
+
+The change signal brought three questions that the first contract answered by extending the client,
+and every extension turned into a defect that only a browser could see. The answers, together:
+
+- **The panel is blocking, not refreshing.** Its re-render was allowed while it was open and clean, on
+  the theory that a panel is the user's own interaction rather than something a swap destroys. It is
+  the wrong trade twice over: the revision is one global number and says nothing about *which* issue
+  changed, so "re-render only if its issue changed" cannot be evaluated; and replacing the markup of a
+  panel someone is reading costs more than waiting for them to close it. A panel is refreshed by the
+  click that opens it, which is already the freshest answer the product has.
+- **Only an answer that replaced the collection adopts its revision.** Adopting from every fragment
+  looks harmless and is not: the panel, a row, the palette and the counters all answer with the number
+  the *server* observed, foreign writes included, and none of them updated the board. The page then
+  believes it is current while showing an older board, and the poll goes quiet — the failure is
+  invisible, with no toast and no mark, and only the next foreign write corrects it.
+- **The reload carries the live filters.** `page["refresh_url"]` comes from the page's query, which is
+  not what the user is looking at once they type in the filter bar. A reload without those values
+  answers a different question and puts an unfiltered board under a filtered input.
+- **The wait is bounded.** One request that never answers must not silence the page for the rest of the
+  session: a tick that finds the previous request still in flight gives up on it and asks again.
+- **The collection fragment carries rows, not the page's form.** The quick-add form was shipped as an
+  out-of-band swap with the rows. It replaced the form on every automatic reload, which is a reset
+  nobody asked for, and the controls ended up foster-parented inside the table. The form is reset by
+  htmx after its own submit, which is the only time it needs to be.
+
+The common rule, and the reason these live together: **the refresh is a background task and may never
+be the reason something stops working.** Every one of these defects had the same shape — a page that
+looked correct, a suite that was green, and a feature that stopped answering.
