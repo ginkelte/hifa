@@ -1,3 +1,10 @@
+## [0.1.9](https://github.com/ginkelte/hifa/compare/v0.1.8...v0.1.9) (2026-11-13)
+
+
+### Bug Fixes
+
+* **init:** write the project config only inside a git work tree ([#7](https://github.com/ginkelte/hifa/issues/7)) ([c0f05bb](https://github.com/ginkelte/hifa/commit/c0f05bb9c38a3b3b794350903788cca472fd7deb))
+
 ## [0.1.8](https://github.com/ginkelte/hifa/compare/v0.1.7...v0.1.8) (2026-11-13)
 
 
