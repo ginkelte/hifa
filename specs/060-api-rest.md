@@ -4,7 +4,7 @@ title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
 version: 2
-spec_revision: 6
+spec_revision: 8
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -786,24 +786,30 @@ class SearchPage(BaseModel):
 |---|---|
 | `limit` | int `1..200`, default `50`. `0`, negative or `> 200` ⇒ 422, `field: "limit"` |
 | `order` | `{field}[.asc\|.desc]`; `field` ∈ `manual | created | updated | priority | due` (D-011), no suffix = `.asc`. Default `manual.asc`. Invalid (field outside the vocabulary or unknown direction) ⇒ 422, `field: "order"` |
-| `cursor` | opaque: `base64url(sort_key + "\|" + issue_id)` without padding (D-011, identical to SPEC-030 `encode_cursor`). The client neither interprets nor builds it |
+| `cursor` | opaque: `base64url("<order>:<asc\|desc>\|<ULID>")` without padding, the direction in lowercase (D-011, SPEC-030 §2.6.2 `encode_cursor`). The client neither interprets nor builds it |
 
 Rules:
 
 - **Total and stable order.** Every query sorts by `(key, id)`; `id` (ULID) is the final
   tiebreaker. `NULL` goes **always last**, in `asc` and in `desc`, comparing
   `(key IS NULL)` first.
-- **Keyset, not offset.** The server translates the cursor into the equivalent tuple comparison
-  (`(key, id) > (k, id)` in `asc`; `(key, id) < (k, id)` in `desc`, with the `NULL` rule).
-  `OFFSET` is forbidden in any paginated query.
+- **Keyset, not offset.** The server translates the cursor into the predicate SPEC-030 §2.6.1
+  declares, in the form that corresponds to the anchor: with a value, the three branches (every row
+  without a value, a later value, or the same value with a later `id`); without a value,
+  `key IS NULL` passed by `id` alone. A comparison against a `NULL` anchor matches no row, so the
+  tuple comparison `(key, id) > (k, id)` is not the clause here. `OFFSET` is forbidden in any paginated
+  query.
 - `has_more` is computed by requesting `limit + 1` rows and trimming; `next_cursor` is emitted only if
   `has_more`.
-- A cursor that does not parse (no `|`, empty `sort_key` or malformed ULID) or whose `sort_key` is not the one of
-  `order` (SPEC-030 `SORT_KEYS`) ⇒ 422 with `code: "validation_error"`, `field: "cursor"`. It is never
-  silently ignored.
-- The cursor **does not** encode the direction (D-011 fixes `sort_key|id`): switching between `.asc` and `.desc`
-  with a cursor from the previous page is not detected and produces an incoherent page. It is
-  the client's responsibility to keep `order` stable while paginating.
+- A cursor that does not parse (no `|`, empty `sort_key`, malformed ULID — anything but 26 characters) or
+  whose `sort_key` is not the canonical `<order>:<asc|desc>` of the requested `order` and direction
+  (SPEC-030 §2.6.2) ⇒ 422 with `code: "validation_error"`, `field: "cursor"`. It is never silently
+  ignored.
+- The cursor **does** encode the direction, inside its `sort_key`: `order=due.desc` is served by a token
+  whose `sort_key` is `due:desc` (lowercase, SPEC-030 §2.6.2). A cursor from the previous page presented
+  with the other direction ⇒ 422 `validation_error`, `field: "cursor"` — the `INVALID_CURSOR` that
+  SPEC-040 §5.3 rejects — instead of an incoherent page. The client keeps `order` stable while
+  paginating because a changed order is an error, not a silent restart at the first page.
 - The cursor is not a security token: it is not signed. A tampered cursor can only produce a
   422 or a shifted page.
 - With `q` present and no explicit `order`, the order is FTS5 relevance (`score` DESC) and
@@ -983,7 +989,7 @@ Nothing is ever written to `v_*` or to `issue_fts`.
 | **R1** | **No handler is `async def`** (C2). An introspection test walks `app.routes` and fails if any endpoint is a coroutine. Plus one connection per request with `check_same_thread=False` (§2.3): sharing a connection between requests is a bug, not an optimization. → **REQ-F060-01** |
 | **R2** | **Closed surface.** The routes registered under `/api/v1` are exactly those of §2.5 (method + path), with no extras. The scope is `/api/v1` because `create_app(mount_web=True)` mounts the dashboard of SPEC-070 in the same process (§2.1): web routes are not a contract of this spec. A test filters `route.path.startswith("/api/v1")` and compares `{(route.path, method)}` against the table; it fails on any difference. → **REQ-F060-02** |
 | **R3** | **A single envelope for lists.** Every collection response has the 4 keys `items, next_cursor, has_more, total_estimate`. Bounded collections return `next_cursor: null` and `has_more: false`, never a bare array. **Single exception: `/search`**, which uses the envelope of SPEC-090 §2 (`hits, total, has_more, backend, took_ms`) per D-016; it is not a keyset-paginable list. → **REQ-F060-03** |
-| **R4** | **Pure keyset.** `OFFSET` is forbidden. The order is total (`key, id`) and `NULL` goes last in both directions. `limit+1` decides `has_more`. → **REQ-F060-04** |
+| **R4** | **Pure keyset.** `OFFSET` is forbidden. The order is total (`key, id`) and `NULL` goes last in both directions, because the absence flag ascends in both (D-044, SPEC-030 §2.6.1). `limit+1` decides `has_more`. → **REQ-F060-04** |
 | **R5** | **PATCH is genuinely partial.** Three states are distinguished per field: absent (untouched), `null` (cleared if nullable), value (written). It is implemented with `model_fields_set`; `model_dump(exclude_unset=True)` is the only admitted way to build the `changes`. `null` in `title` or `priority` ⇒ 422. → **REQ-F060-05** |
 | **R6** | **REF is resolved at the app-layer edge, not in the router.** The router passes the string; `identifier` case-insensitive first, ULID after; no match ⇒ `NotFound`. `LIKE` is never used and nothing is guessed by prefix. → **REQ-F060-06** |
 | **R7** | **No remote assets.** `docs_url=None`, `redoc_url=None`, no `StaticFiles` under `/api`, no CDN in any response. `GET /docs` ⇒ 404. → **REQ-N060-03** |
@@ -1355,6 +1361,20 @@ Feature: hifa REST API
 
 ## 11. Notes
 
+- spec_revision 8 (2026-11-13): **the cursor carries its direction, and the token is the one SPEC-030
+  §2.6.2 defines.** §2.3 said the cursor "does not encode the direction" and that a `.asc`/`.desc` switch
+  was undetectable, while SPEC-030 §2.6.2 and SPEC-040 §5.3 both reject a token from the other direction.
+  The parameter row and the rule now publish `base64url("<order>:<asc|desc>|<ULID>")` with the direction
+  in lowercase, so switching direction with a stale cursor is 422 `INVALID_CURSOR`, and the causes of
+  that error list a malformed ULID, as SPEC-030 §2.6.2 does. No parameter, status code or schema
+  changed, so `version` stays at 2.
+- spec_revision 7 (2026-11-13): **the keyset predicate at the `NULL` edge is the one SPEC-030 §2.6.1
+  declares (D-044).** §2.3 already required `NULL` last in `asc` and in `desc`; it then described the
+  cursor as the tuple comparison `(key, id) > (k, id)` plus a rule for `NULL`, which returns no row
+  when the anchor has no value and ends the listing silently at the first undated issue. The bullet now
+  names the two forms — the valued anchor with its three branches and the `NULL` anchor passed by `id`
+  alone — and says explicitly that the tuple comparison is not the clause. R4 carries the same reading.
+  No parameter, status code or schema changed, so `version` stays at 2.
 - spec_revision 6 (2026-11-13): **the error map is the one SPEC-040 §6 publishes (D-042), so `version` 2.**
   `invalid_transition` describes its only producer — a write on an issue whose `archived_at` is not null
   (R20) — and carries `field: ref`, the name of the parameter on every surface. A refused state machine,

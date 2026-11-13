@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 2
-spec_revision: 5
+spec_revision: 8
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -16,7 +16,7 @@ implements:
 acceptance: specs/acceptance/030-sqlite-adapter.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-13
 ---
 
 # SPEC-030 — SQLite adapter
@@ -484,55 +484,73 @@ JOIN workflow_state s ON s.id = i.state_id
 JOIN team t          ON t.id = i.team_id
 LEFT JOIN member m   ON m.id = i.assignee_id
 WHERE i.team_id = :team_id
-  AND (:include_archived = 1 OR i.archived_at IS NULL)
-  AND (:include_trashed  = 1 OR i.trashed = 0)
-  AND (:state_id      IS NULL OR i.state_id = :state_id)
-  AND (:state_type    IS NULL OR s.type = :state_type)
+  AND (:include_archived = 1 OR :archived_only = 1 OR :trashed_only = 1
+       OR i.archived_at IS NULL)   -- trash is the deeper layer: trashed_only opens this axis
+  AND (:archived_only    = 0 OR i.archived_at IS NOT NULL)
+  AND (:include_trashed  = 1 OR :trashed_only  = 1 OR i.trashed = 0)
+  AND (:trashed_only     = 0 OR i.trashed = 1)
+  AND (:is_open       IS NULL OR i.is_open = :is_open)
+  AND (:state_count   = 0    OR i.state_id IN (/* :state_0, :state_1, ... */))
+  AND (:stype_count   = 0    OR s.type     IN (/* :stype_0, ... */))
   AND (:assignee_id   IS NULL OR i.assignee_id = :assignee_id)
   AND (:unassigned    = 0    OR i.assignee_id IS NULL)
   AND (:project_id    IS NULL OR i.project_id = :project_id)
   AND (:cycle_id      IS NULL OR i.cycle_id = :cycle_id)
+  AND (:no_cycle      = 0    OR i.cycle_id IS NULL)
   AND (:parent_id     IS NULL OR i.parent_id = :parent_id)
-  AND (:priority      IS NULL OR i.priority = :priority)
+  AND (:prio_count    = 0    OR i.priority   IN (/* :prio_0, ... */))
   AND (:due_before    IS NULL OR i.due_date <= :due_before)
   AND (:label_count   = 0 OR (
         SELECT COUNT(*) FROM issue_label il2
         WHERE il2.issue_id = i.id AND il2.label_id IN (/* :label_0, :label_1, ... */)
       ) = :label_count)
-  AND (:cursor_key IS NULL OR
-       (<sort_key>, i.id) > (:cursor_key, :cursor_id))   -- keyset, see §2.6
-ORDER BY <sort_key>, i.id
+  AND (<the cursor clause: form A or form B of §2.6.1, chosen by whether the anchor has a value>)
+ORDER BY (<sort_key> IS NULL) ASC, <sort_key> <dir>, i.id <dir>
 LIMIT :limit_plus_one OFFSET :offset;
 ```
 
-**Order and cursor (D-011).** `<sort_key>` is chosen from a fixed table by `filters.order`; the final
-tie-breaker is **always** `i.id`. There is no `ORDER BY` assembled with user input:
+**The trash is the deeper layer, and `trashed_only` opens the archive axis.** An issue archived and
+then trashed carries `archived_at IS NOT NULL` *and* `trashed = 1` (D-043, SPEC-010 D4: the layers are
+independent). A listing that kept `archived_at IS NULL` in that case would hide the row that `--trashed`
+promises from every view. The archive predicate of SQL-4 therefore accepts `:trashed_only = 1` as an
+alternative: with `trashed_only` set the archive axis adds **no** predicate and `trashed = 1` is the
+only filter on the layers. The exception lives in the predicate, not in a second field, so every caller
+that sets `trashed_only` reaches the whole trash.
 
-| `order` | `<sort_key>` | Notes |
-|---|---|---|
-| `manual` (default) | `i.sort_order` | backlog order |
-| `created` | `i.created_at` | |
-| `updated` | `i.updated_at` | |
-| `priority` | `CASE i.priority WHEN 0 THEN 5 ELSE i.priority END` | "No priority" at the end |
-| `due` | `COALESCE(i.due_date, '9999-12-31')` | undated at the end; the `YYYY-MM-DD` text sorts correctly |
+**Order and cursor (D-011).** `<sort_key>` is chosen from the fixed `SORT_KEYS` table by
+`filters.order` and its direction by `filters.reverse`; the final tie-breaker is **always** `i.id` and
+it carries the same direction (§2.6.1). There is no `ORDER BY` assembled with user input — neither the
+expression nor the direction is ever concatenated from a value the caller sent.
 
-The row comparison `(<sort_key>, i.id) > (:cursor_key, :cursor_id)` is the keyset condition: it reads
-`limit + 1` rows (`:limit_plus_one`), and the adapter trims to `limit` and reports
-`has_more = len(rows) > limit`. `COUNT(*)` is **never** executed to paginate. `offset` is only used
-when the caller is the web (cap 500, §2.6).
+`(<sort_key> IS NULL) ASC` is the first term and the only one `dir` does not reach: it keeps the rows
+without a value **last in both directions** (D-044). The cursor clause is **not** a row comparison:
+`(<sort_key>, i.id) > (:cursor_key, :cursor_id)` with a `NULL` anchor matches nothing, because SQLite
+evaluates any comparison against `NULL` as `NULL` and `WHERE NULL` matches no row. `list_view`
+therefore appends one of the two forms §2.6.1 declares — the valued anchor with its three branches, or
+the `NULL` anchor restricted to `<sort_key> IS NULL AND i.id <dir> :cursor_id` — after binding
+`:cursor_key` to the value the anchor lookup returned. The operator and the `ORDER BY` direction are
+decided by the same `dir` variable, so they cannot disagree. It reads `limit + 1` rows
+(`:limit_plus_one`); the adapter trims to `limit`, reports `has_more = len(rows) > limit` and sets
+`next_cursor = encode_cursor(f"{order}:{'desc' if filters.reverse else 'asc'}", items[-1].id)` when
+`has_more`, `None` otherwise — the token carries the **lowercase** direction of §2.6.2, not the SQL
+keyword. `COUNT(*)` is **never** executed to paginate. `offset` is only used when the caller is the web
+(cap 500, §2.6).
 
 Mandatory notes:
 
-- The list of `:label_0..:label_N` is expanded in Python (`",".join(f":label_{i}" for i in range(n))`),
-  **never** with value interpolation (REQ-S002). All parameters are named and are passed in
-  a single `dict`: `?` and `:named` are not mixed in the same statement (sqlite3 forbids it).
+- The list of `:state_0..:state_N`, `:stype_0..`, `:prio_0..` and `:label_0..:label_N` is expanded in
+  Python (`", ".join(f":label_{i}" for i in range(n))`), **never** with value interpolation (REQ-S002).
+  All parameters are named and are passed in a single `dict`: `?` and `:named` are not mixed in the
+  same statement (sqlite3 forbids it).
 - `COALESCE(..., '[]')` is necessary: up to SQLite 3.43 `json_group_array` over zero rows returns
   `NULL`, not `[]`. The parsing (`json.loads`) happens in the adapter, not in the template.
 - `ORDER BY` includes `i.id` as a tie-breaker: without it, two issues with the same `sort_order` can
   swap position between pages and break pagination.
-- The label filter is **AND** (all requested labels), not OR.
+- **Combination semantics are the ones of §2.6**: `state_ids`/`state_types`/`priorities` are **OR**
+  inside their family, `label_ids` is **AND** (all requested labels), and every family is **AND** with
+  the rest. The three OR families arrive as sets, so a repeated value is one `IN` element, not two.
 - `limit` is received already validated by `ListFilters` (1-200, default 50, D-011); the adapter adds 1
-  for `has_more` and accepts no other value.
+  for `has_more` and accepts no other value. The caller passes the user's `limit`, never `limit + 1`.
 - `offset` defaults to 0 and is used **only** by SPEC-070 (web scroll, cap 500). The CLI and the API paginate with
   `cursor` and pass `offset=0`.
 
@@ -641,32 +659,275 @@ class ListFilters:
     include_trashed: bool = False
     order: Literal["manual", "created", "updated", "priority", "due"] = "manual"
     limit: int = 50
-    cursor: str | None = None  # base64url(sort_key + "|" + id), opaque
+    cursor: str | None = None  # base64url(f"{order}:{asc|desc}|{ULID}"), opaque (§2.6.2)
     offset: int = 0  # WEB ONLY (SPEC-070), cap 500
+    # --- additive since spec_revision 6, all with a default (D-026) ---
+    state_ids: tuple[str, ...] = ()  # OR: any of these states (union with `state_id`)
+    state_types: tuple[str, ...] = ()  # OR: any of these state types (union with `state_type`)
+    priorities: tuple[int, ...] = ()  # OR: any of these priorities (union with `priority`)
+    is_open: bool | None = None  # True: open only; False: closed only; None: no filter
+    no_cycle: bool = False  # cycle_id IS NULL
+    archived_only: bool = False  # archived_at IS NOT NULL, never together with include_archived
+    trashed_only: bool = False  # trashed = 1, never together with include_trashed
+    reverse: bool = False  # flips `order` and the id tie-breaker, never the placement of the absent rows (D-044)
 
     def __post_init__(self) -> None:
-        """1 <= limit <= 200 (D-011); 0 <= offset <= 500; order from the Literal.
-        Out of range -> Validation(rule='INVALID_LIMIT' | 'INVALID_OFFSET' | 'INVALID_ORDER')."""
+        """1 <= limit <= 200 (D-011); 0 <= offset <= 500; order from the Literal; every value of
+        `priorities` in 0-4. Out of range -> Validation(rule='LIMIT_RANGE' | 'INVALID_OFFSET' |
+        'ORDER_INVALID' | 'PRIORITY_OUT_OF_RANGE'), the codes SPEC-040 §6 publishes. `archived_only`
+        supersedes `include_archived` and `trashed_only` supersedes `include_trashed` (precedence,
+        not an error); `cycle_id` together with `no_cycle` is refused by the edge that builds the
+        object (`invalid_option`), because it is a contradiction between two flags and not a range."""
 
 
+#: The SQL expression of each `order`, evaluated over `v_issue`. **Absence is `NULL`, never a
+#: sentinel** (D-044): a sentinel is a value, so a descending direction would move it to the top,
+#: while `NULL` cannot enter the key comparison and the placement of the absent rows is carried by
+#: the `(<sort_key> IS NULL) ASC` term of the ORDER BY (§2.6.1).
 SORT_KEYS: dict[str, str] = {
     "manual": "i.sort_order",
     "created": "i.created_at",
     "updated": "i.updated_at",
-    "priority": "CASE i.priority WHEN 0 THEN 5 ELSE i.priority END",
-    "due": "COALESCE(i.due_date, '9999-12-31')",
+    "priority": "CASE i.priority WHEN 0 THEN NULL ELSE i.priority END",
+    "due": "i.due_date",
 }
+```
 
+**Every field of `ListFilters` has exactly one predicate, and the object is the whole filter.** No
+edge — CLI, API or web — defines its own filter type or passes a filter as a kwarg (D-011, D-027).
 
+| Field(s) | Predicate | Combination |
+|---|---|---|
+| `team_id` | `i.team_id = :team_id` | always present: the listing is per team |
+| `state_id` + `state_ids` | `i.state_id IN (...)` | **OR**: the effective set is `set(state_ids) ∪ {state_id}`; empty set = no filter |
+| `state_type` + `state_types` | `s.type IN (...)` | **OR**, same union |
+| `priority` + `priorities` | `i.priority IN (...)` | **OR**, same union; `0` is `No priority`, a value in the column and not `NULL` in the filter — the ordering key of §2.6.1 is what maps it to `NULL` so that it stays last (D-044) |
+| `assignee_id` | `i.assignee_id = :assignee_id` | **AND** with the rest; `unassigned=1` together with it selects nothing (no edge builds that pair) |
+| `unassigned` | `i.assignee_id IS NULL` | |
+| `label_ids` | one `issue_label` row per label, and **all** of them | **AND** (`= :label_count`), not OR — D-011 and SPEC-050 §2.5.3.1 |
+| `project_id` | `i.project_id = :project_id` | |
+| `cycle_id` / `no_cycle` | `=` / `IS NULL` | `no_cycle` is the only way to say "without a cycle": `cycle_id=None` means *no filter* |
+| `parent_id` | `i.parent_id = :parent_id` | **direct children only**: the predicate does not recurse |
+| `due_before` | `i.due_date <= :due_before` | |
+| `q` | `i.title LIKE '%term%' ESCAPE '\'` | title filter, not search (D-025) |
+| `include_archived` / `archived_only` | archived axis | `archived_only=1` ⇒ `archived_at IS NOT NULL`; elif `include_archived=1` **or `trashed_only=1`** ⇒ no predicate; else `archived_at IS NULL` |
+| `include_trashed` / `trashed_only` | trashed axis | `trashed_only=1` ⇒ `trashed = 1`; elif `include_trashed=1` ⇒ no predicate; else `trashed = 0` |
+| `is_open` | `i.is_open = :is_open` | `None` = no predicate; `True` = open only; `False` = closed only |
+| `order` / `reverse` | `ORDER BY ...` | see the direction table below |
+| `limit` / `cursor` / `offset` | paging | `cursor` is opaque and never combined with a non-zero `offset` |
+
+Two rules complete the table and neither of them is optional:
+
+1. **Across families the combination is AND.** "Families" are the rows above: state, state type,
+   priority, assignee, label, project, cycle, parent, due, `q` and visibility. An issue satisfies the
+   filter when it satisfies every family that is set. `ListFilters` never ORs two families.
+2. **Repeated values inside one family are de-duplicated before the query.** `--label bug --label bug`
+   is one label and the `= :label_count` comparison counts it once; the same for the three OR
+   families. The adapter receives sets and expands them as `:state_0..:state_N` (named parameters,
+   REQ-S002), never with value interpolation.
+
+**The archive axis has one exception, and it is the trash.** `trashed_only=1` makes the archive
+predicate vacuous (the row above): the trash is the deeper layer (D-043), so its listing spans both
+`archived_at IS NULL` and `archived_at IS NOT NULL` and an archived-then-trashed issue is reachable from
+it. No edge sets a second field to get there, and the CLI only offers the single-layer form: `--archived`
+together with `--trashed` is exit 2 `invalid_option` (SPEC-050 §2.5.3.1). An object built with both
+flags would AND the two predicates into the archived slice of the trash, which is the reading of its own
+fields, not a third contract.
+
+**The values are ids.** `ListFilters` carries `state_id`, not `"In Progress"`; `label_ids`, not
+`"bug"`. Resolving a name, a key or a ULID is a read the caller performs first
+(`resolve_filters` below, and SPEC-050 §2.5.3.1 for the CLI):
+
+- when the resolution of a *filter* value finds nothing, the **web** drops the filter and renders the
+  unfiltered view (D-027) — a stale bookmark is not an error;
+- the **CLI** does not drop it: an unknown `--state`, `--label`, `--project`, `--cycle`,
+  `--assignee` or `--parent` is `NotFound`, exit 3 (SPEC-050 §2.5.3.1). The difference lives in the
+  edge because it is a product decision about a stale link, not a property of the query.
+
+### 2.6.1 Order and direction
+
+`SORT_KEYS` maps each `order` to the SQL expression of its key. **The values of all five sort ASC**
+and `reverse` is the only way to invert them — the placement of the rows without a value is not a
+direction (D-044). The clause is built as
+
+```
+ORDER BY (<sort_key> IS NULL) ASC, <sort_key> {dir}, i.id {dir}
+     with dir = "DESC" if filters.reverse else "ASC"
+```
+
+`dir` is the SQL keyword and it is the **only** place the direction is uppercase: the cursor token of
+§2.6.2 carries the same direction as `desc`/`asc`, because there it is a value and not a clause.
+
+The order is **total** — `i.id` closes every tie — and it has two parts with different rules:
+
+1. **`(<sort_key> IS NULL) ASC` is the absence flag**: `0` for a row with a value, `1` for a row
+   without one. It always ascends, so the valued rows come first and the absent rows **last in `ASC`
+   and in `DESC` alike** (D-044). Inverting a direction inverts the values; it does not change the
+   treatment of the absence.
+2. **`<sort_key> {dir}, i.id {dir}` is the values**: `dir` inverts the key and the tie-breaker
+   together, never the flag of point 1. A tie-breaker that does not move with the key loses or repeats
+   rows between pages.
+
+The key expressions express absence as **`NULL`**, never as a sentinel (D-044): a sentinel is a value,
+so `DESC` would send it to the top, while `NULL` cannot enter the key comparison at all. `sort_order`,
+`created_at` and `updated_at` are `NOT NULL` columns (SPEC-010), so their flag is `0` for every row and
+their clause degenerates to the plain `ORDER BY <sort_key> {dir}, i.id {dir}`; `priority` and `due` are
+the two orders with an absent case.
+
+| `order` | `<sort_key>` | ASC (default) puts first | …and last | `reverse` |
+|---|---|---|---|---|
+| `manual` | `i.sort_order` | the top of the backlog (lowest `sort_order`) | the bottom | bottom-up |
+| `created` | `i.created_at` | the oldest issue | the newest | newest first |
+| `updated` | `i.updated_at` | the least recently touched | the most recent | most recent first |
+| `priority` | `CASE i.priority WHEN 0 THEN NULL ELSE i.priority END` | `Urgent` (1), then 2, 3, 4 | `No priority` (0) | 4, 3, 2, 1, then `No priority` last |
+| `due` | `i.due_date` | the earliest `due_date` | the undated | the latest `due_date` first, the undated last |
+
+Within the absent rows the order is `i.id {dir}`: the second part stays total and stable even for rows
+that share the absence, so a page boundary inside that section is still decided by one unique column.
+
+**The keyset predicate at the `NULL` edge.** The cursor names its ordering, not its position (§2.6.2),
+so `list_view` resolves the anchor's key with one primary-key lookup and the result **may be `NULL`**:
+
+```sql
+SELECT <SORT_KEYS[order]> FROM v_issue WHERE id = :last_id AND team_id = :team_id;
+-- no row -> Validation(rule='INVALID_CURSOR')
+```
+
+`(<sort_key> > :cursor_key)` with `:cursor_key = NULL` evaluates to `NULL`, and `WHERE NULL` matches no
+row: the listing would end silently at the first row without a value. The clause of the next page is
+therefore **one of two forms**, chosen by whether that lookup returned a value. Both are appended to
+the filters of §2.6, both use the same `<sort_key>` expression as their `ORDER BY` (character for
+character, not the cursor's `sort_key` id and not the row's value), and both are paired with the
+`ORDER BY` above.
+
+**Form A — the anchor has a value** (`cursor_key IS NOT NULL`). With `dir = ASC`:
+
+```sql
+-- form A, dir = ASC: append this clause to the filters of §2.6, then the ORDER BY below.
+AND (  (<sort_key> IS NULL)                              -- 1. every absent row follows a valued one
+    OR (<sort_key> > :cursor_key)                        -- 2. valued and after, by key
+    OR (<sort_key> = :cursor_key AND i.id > :cursor_id)  -- 3. tied key, after by id
+  )
+ORDER BY (<sort_key> IS NULL) ASC, <sort_key> ASC, i.id ASC
+LIMIT :limit_plus_one;
+```
+
+With `dir = DESC`, only the two comparison operators of branches 2 and 3 flip — `>` becomes `<` on the
+key **and** on `id`, and branch 1 does not change:
+
+```sql
+-- form A, dir = DESC
+AND (  (<sort_key> IS NULL)
+    OR (<sort_key> < :cursor_key)
+    OR (<sort_key> = :cursor_key AND i.id < :cursor_id)
+  )
+ORDER BY (<sort_key> IS NULL) ASC, <sort_key> DESC, i.id DESC
+LIMIT :limit_plus_one;
+```
+
+**Form B — the anchor has no value** (`cursor_key IS NULL`). Only the rows that are **also without a
+value** and follow the anchor by `id` qualify; the valued rows are before it, and `key` is `NULL` on
+both sides so it is not compared at all:
+
+```sql
+-- form B, dir = ASC: append this clause to the filters of §2.6, then the ORDER BY below.
+AND (<sort_key> IS NULL AND i.id > :cursor_id)
+ORDER BY (<sort_key> IS NULL) ASC, <sort_key> ASC, i.id ASC
+LIMIT :limit_plus_one;
+```
+
+```sql
+-- form B, dir = DESC: the same clause with the other operator (never both at once).
+AND (<sort_key> IS NULL AND i.id < :cursor_id)
+ORDER BY (<sort_key> IS NULL) ASC, <sort_key> DESC, i.id DESC
+LIMIT :limit_plus_one;
+```
+
+`:cursor_key` is bound to the value the anchor lookup returned — the `YYYY-MM-DD` text for `due`
+(SPEC-010, D-009: fixed width, so its lexicographic order is the calendar order), the `1`-`4` integer
+for `priority`. `:cursor_id` is the 26-character ULID of the anchor. Form B is never reached for
+`manual`, `created` or `updated`, whose keys are `NOT NULL`.
+
+**Why the predicate is the exact complement of the order.** Step by step:
+
+1. The `ORDER BY` gives every row one tuple `(n, k, id)` with `n = (<sort_key> IS NULL) ∈ {0, 1}`,
+   compared as `n ASC`, then `k {dir}`, then `id {dir}`. `i.id` is the primary key, so the tuples are
+   distinct and the order is **total**: each row has exactly one position, and "before", "at" and
+   "after the anchor" partition the result set with no overlap.
+2. "After the anchor" is therefore exactly: `n > cursor_n`, or `n = cursor_n` and `k` after
+   `cursor_k` in `dir`, or `n = cursor_n`, `k = cursor_k` and `id` after `cursor_id` in `dir`.
+3. **Form A** (`cursor_n = 0`): branch 1 is `n > 0` — every absent row, since `n` has no value above
+   `1`; branch 2 is `n = 0` and `k` after; branch 3 is `n = 0`, `k` equal and `id` after. The three
+   are disjoint (they differ in `n`, or in the comparison of `k`, or in the comparison of `id`) and
+   together they are the whole right-hand side of step 2.
+4. **Form B** (`cursor_n = 1`, `cursor_k = NULL`): `n > 1` matches nothing, so only `n = 1` survives —
+   the rows that are also without a value — and inside them the anchor is passed by `id {dir}` alone.
+   Branch 2 of form A has no counterpart here because `k` is `NULL` on both sides, which is why `k`
+   does not appear in the predicate.
+5. Hence each page is the set of rows **strictly after** the anchor, and nothing else: no row of the
+   previous pages can match (all of them are at or before the anchor), and no row of the later pages
+   can be missing (every row after the anchor matches one branch). Rows are neither repeated nor
+   skipped, including at the boundary between the valued and the absent section — the one place where
+   the two parts of the order meet, and where a predicate that compared `k` against `NULL` would
+   return nothing and end the listing early.
+
+Worked check, `order=due`, `A < B < C < D` as ULIDs:
+
+| `id` | `due_date` |
+|---|---|
+| `A` | `2026-11-05` |
+| `B` | `2026-11-10` |
+| `C` | `NULL` |
+| `D` | `NULL` |
+
+- `--sort due --limit 2`: page 1 is `A, B`; its cursor anchors on `B` (valued). Page 2 takes form A
+  and branch 1 matches `C` and `D` → `C, D`.
+- `--sort due --limit 1`: page 2 is `C`; its cursor anchors on an absent row, so page 3 takes form B
+  → `NULL AND i.id > 'C'` → `D`.
+- `--sort due --reverse --limit 2`: the order is `B, A, D, C` — the values descend and the absent rows
+  stay last, ordered by `i.id DESC` among themselves. Page 1 is `B, A`, page 2 (form A, branch 1)
+  is `D, C`.
+
+### 2.6.2 Cursor codec
+
+**The canonical token is `<order>:<asc|desc>|<ULID>`, with the direction in lowercase** — `manual:asc`,
+`due:desc` — and it is written once, here: `list_view` encodes with the same expression that
+`list_issues` validates against (SPEC-040 §5.3 step 4), so a token this layer emits is a token the
+application layer accepts. Uppercase belongs to the SQL keyword of §2.6.1 and to nothing else.
+
+```python
 def encode_cursor(sort_key: str, issue_id: str) -> str:
-    """base64url(f'{sort_key}|{issue_id}') without padding."""
+    """base64url(f'{sort_key}|{issue_id}') in the URL-safe alphabet, **without** padding."""
 
 
 def decode_cursor(cursor: str) -> tuple[str, str]:
-    """Inverse of encode_cursor. Undecodable cursor, without '|' or with an empty sort_key ->
-    Validation(rule='INVALID_CURSOR')."""
+    """Inverse of encode_cursor. `sort_key` is the canonical ordering id `f'{order}:{dir}'` with
+    `dir` in lowercase (`manual:asc`, `priority:asc`, `created:asc`, … `due:desc`), not the SQL
+    expression and not the row's value; `issue_id` is the 26-character ULID of the last row of
+    the page. Undecodable base64url, a missing or extra '|', an empty component, padding, an
+    `issue_id` that is not a 26-character ULID, or a `sort_key` outside `<order>:<asc|desc>`
+    with `order` in SORT_KEYS -> Validation(rule='INVALID_CURSOR')."""
+```
 
+The codec is the only place that builds or reads a cursor; `app/` transports the string and the edges
+never look inside it (D-011, SPEC-040 §2.2). Consequences that the adapter owes the caller:
 
+- **The cursor names its ordering, not its position.** Because `sort_key` is `order:direction`, a
+  cursor presented under another `--sort` **or another direction** is detectable and is
+  `INVALID_CURSOR`; with the row's value in that slot the check would be impossible for
+  `manual`↔`priority`, whose values are both numbers.
+- **The anchor value is read by primary key.** The payload has no room for the sort value (D-011 fixes
+  two components), so `list_view` resolves it once per page:
+  `SELECT <SORT_KEYS[order]> FROM v_issue WHERE id = :last_id AND team_id = :team_id`. No row ⇒
+  `Validation(rule='INVALID_CURSOR')` (the cursor does not point into this team). One indexed lookup,
+  no scan and no `OFFSET`.
+- **`limit` is not in the payload.** The page size may change between pages; only the anchor travels.
+- **The cursor is positional, not a snapshot.** An anchor that no longer satisfies the filters is not
+  an error: the keyset seeks from its value and the page continues. A row inserted before the anchor,
+  or a row that left the result set, is skipped — that is the guarantee of a keyset, and the reason
+  the tie-breaker is `i.id`.
+
+```python
 @dataclass(frozen=True, slots=True)
 class IssueListItem:
     id: str
@@ -769,7 +1030,10 @@ def board_view(
 
 
 def list_view(conn: sqlite3.Connection, filters: ListFilters) -> IssuePage:
-    """One query (SQL-4). It asks for limit + 1 rows, trims to limit and reports has_more."""
+    """One query (SQL-4) plus, when `filters.cursor` is set, one primary-key lookup of the anchor's
+    sort value (§2.6.2). It asks for `limit + 1` rows, trims to `limit`, reports
+    `has_more = len(rows) > limit` and sets `next_cursor` (the last kept row's id, D-011) or `None`.
+    A cursor whose anchor does not exist in `filters.team_id` -> Validation(rule='INVALID_CURSOR')."""
 
 
 def issue_detail(
@@ -840,6 +1104,14 @@ here because the edges already consume them, they always carry a default, and th
 end of the dataclass: a reader that does not know them keeps working, and a regeneration that omits
 them leaves the templates with a neutral colour (`#6B6F76`) instead of failing. None of them changes
 the behaviour of `list_view`, `board_view` or `issue_detail`.
+
+The eight fields added in `spec_revision` 6 (`state_ids`, `state_types`, `priorities`, `is_open`,
+`no_cycle`, `archived_only`, `trashed_only`, `reverse`) follow the same rule and exist because the
+**listing surface needs them**: without them a caller cannot express "any of these three states",
+"open only", "without a cycle", "only the archived" or "descending", and the edge would have to invent
+a second filter object — which D-011 forbids. Every one of them defaults to the behaviour the object
+already had, so `ListFilters(team_id=...)` keeps meaning "visible open and closed issues, manual
+order".
 
 The **board does not paginate by cursor**: `limit_per_group` caps each column, `total` carries the
 real count and `truncated=True` means "this column has more". That is why `BoardGroup` never exposes a
@@ -975,7 +1247,7 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
 | **REQ-F030-07** | `next_number` returns the team's `MAX(number)+1` and 10 concurrent creations produce 10 distinct numbers |
 | **REQ-F030-08** | `insert`/`update` use `RETURNING *` and return the final row (with DDL defaults applied) |
 | **REQ-F030-09** | `list_view` obtains the labels with `json_group_array` in a single query; the number of statements does not depend on the number of issues |
-| **REQ-F030-10** | `ListFilters` combines all its fields with AND, respects `limit` (default 50, max 200, D-011) and `offset`, and sorts stably by priority, `sort_order` and `id` |
+| **REQ-F030-10** | `ListFilters` combines its families with AND, resolves the repeated values of the `state`/`state_type`/`priority` families as **OR** and `label_ids` as **AND** (§2.6), respects `limit` (default 50, max 200, D-011) and `offset`, orders by the `SORT_KEYS` expression of `order` with `i.id` as the tie-breaker in the same direction, and returns `next_cursor`/`has_more` without a `COUNT(*)` |
 | **REQ-F030-11** | `board_view` groups by `state`, `assignee`, `priority` or `project`, orders the groups by `state.position`/`priority.rank`/name, and respects `limit_per_group` reporting `total` |
 | **REQ-F030-12** | `issue_detail` executes exactly 7 queries, regardless of how many children, labels or comments the issue has |
 | **REQ-F030-13** | `agenda` returns the issues with `due_date` in `[start, start+days-1]` sorted by date and priority, and includes overdue open ones if `include_overdue=True` |
@@ -1434,6 +1706,54 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 8 (2026-11-13): **the trash opens the archive axis, and the cursor token carries a
+  lowercase direction.** (1) `trashed_only` no longer inherits the `archived_at IS NULL` predicate of
+  SQL-4: the archive term accepts `:trashed_only = 1` as an alternative, so an issue archived and then
+  trashed — `archived_at IS NOT NULL` and `trashed = 1`, the two independent layers of D-043 — is part
+  of the trash listing instead of being excluded by the axis it left. The exception is stated once, in
+  the predicate, and the archived-axis row of §2.6 carries the same reading; no field was added.
+  (2) `next_cursor` is encoded with the lowercase direction (§2.6.2), which is the form `list_issues`
+  validates against (SPEC-040 §5.3 step 4): the encoder no longer emits `due:DESC` while the validator
+  accepts only `due:desc`, which made every cursor this layer produced unusable at the application
+  layer. §2.6.1 keeps `dir` as the uppercase SQL keyword and says that the token is the only place the
+  direction travels as `desc`/`asc`. (3) The `ListFilters` post-init rule names the error codes
+  SPEC-040 §6 publishes (`LIMIT_RANGE`, `ORDER_INVALID`) instead of its own `INVALID_LIMIT` /
+  `INVALID_ORDER`, and the codec lists a malformed ULID among the causes of `INVALID_CURSOR`, as
+  SPEC-060 §2.3 does. No signature changed, so `version` stays at 2.
+- spec_revision 7 (2026-11-13): **the position of the absent rows is not a direction (D-044).** (1) The
+  `ORDER BY` gains a first term, `(<sort_key> IS NULL) ASC`, that `dir` never reaches: the rows with a
+  value come first and the rows without one last in `ASC` **and** in `DESC`, so `--reverse` inverts the
+  sequence of values and not the treatment of the absence. (2) `SORT_KEYS` stops encoding absence as a
+  sentinel — `due` is `i.due_date` and `priority` is `CASE i.priority WHEN 0 THEN NULL ELSE i.priority
+  END` — because a sentinel is a value that a descending direction moves, while `NULL` cannot enter the
+  key comparison; `priority` 0 (`No priority`) is the absence of a priority on this same footing. (3)
+  §2.6.1 declares the keyset predicate **per case**: form A for an anchor with a value (every absent
+  row, or a later value, or the same value with a later `id`) and form B for an anchor without one
+  (`<sort_key> IS NULL AND i.id <dir> :cursor_id`), each next to its `ORDER BY`, with the argument for
+  why the predicate is the exact complement of the total order and a worked page sequence. SQL-4 stops
+  publishing a row comparison `(<sort_key>, i.id) > (:cursor_key, :cursor_id)`, which returns no rows
+  against a `NULL` anchor and ended the listing silently at the first undated issue. No signature
+  changed, so `version` stays at 2.
+- spec_revision 6 (2026-11-13): **the listing is expressible from a single object, and its order and
+  cursor are fixed.** (1) §2.6 completes `ListFilters` with the eight fields the declared
+  `issue list` flags need — `state_ids`, `state_types`, `priorities`, `is_open`, `no_cycle`,
+  `archived_only`, `trashed_only`, `reverse` — all additive and defaulted, so the shape of the
+  dataclass changes without a `version` bump (D-026). (2) The two combination rules that until now
+  were only readable in SQL-4 are stated as contract: **OR** inside the state, state-type and priority
+  families (the singular field is the one-element form of the same set), **AND** for `label_ids` and
+  across every family. (3) §2.6.1 fixes the direction of the five orders: **ASC**, with `reverse`
+  inverting the key and the `i.id` tie-breaker together — the keyset operator follows the same
+  variable, so a page boundary can neither lose nor repeat a row. (4) §2.6.2 fixes what the cursor
+  carries: the canonical `order:direction` id plus the last row's ULID, which is what makes a cursor
+  from another order **or another direction** detectable as `INVALID_CURSOR`; D-011's payload has no
+  third slot, so the anchor's sort value is resolved with one primary-key lookup and a cursor whose
+  anchor is absent from the team is rejected instead of silently restarting. (5) `list_view` owns
+  `next_cursor`: it is the layer that holds the last kept row. REQ-F030-10 carries the result.
+  **Open conflict, not settled here:** inverting the pair also inverts where the sentinels land, so
+  under `reverse` the undated rows and `No priority` come first, while SPEC-040 R18 states that `NULL`
+  goes to the end in both directions. The readings agree on every other case and no acceptance
+  scenario asserts the reversed one; it needs a `DECISIONS.md` entry, not a second definition here.
+  (Resolved in `spec_revision` 7 by D-044: R18 wins and the sentinel keys are gone.)
 - spec_revision 5 (2026-11-11): **`IssueDetail.members` declared (§2.6, D-026, D-029).** The
   dataclass gains `members: Mapping[str, str] = field(default_factory=dict)`: `member.id` →
   `display_name` for the authors of the comments and the history entries that `include` loaded,
