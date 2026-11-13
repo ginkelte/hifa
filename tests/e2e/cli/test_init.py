@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from conftest import CLI_ENV
 from hifa.cli.main import app
 from hifa.config import CONFIG_FILENAME
 
@@ -61,7 +62,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 
 def run(*args: str) -> Any:
-    return runner.invoke(app, list(args))
+    return runner.invoke(app, list(args), env=CLI_ENV)
 
 
 def query(db: Path, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:

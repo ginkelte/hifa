@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Cli
+from conftest import CLI_ENV, Cli
 
 pytestmark = pytest.mark.slow
 
@@ -34,10 +34,12 @@ CATALOG_REFUSAL = "hifa: operation canceled"
 def _run_in_a_terminal(cli: Cli, *args: str, answer: bytes | None = b"n\n") -> tuple[int, str, str]:
     """Run the CLI with a terminal on `stdin`; return `(exit_code, stdout, stderr)`.
 
-    `answer=None` closes the terminal before the question is read, so the child sees EOF.
+    `answer=None` closes the terminal before the question is read, so the child sees EOF. The
+    child gets `CLI_ENV` on top of this process, so its rendering does not depend on the shell
+    that started the suite; `PYTHONPATH` still points at this checkout's `src/`.
     """
     master, slave = pty.openpty()
-    env = {**os.environ, "PYTHONPATH": str(SRC), "NO_COLOR": "1"}
+    env = {**os.environ, **CLI_ENV, "PYTHONPATH": str(SRC)}
     try:
         proc = subprocess.Popen(
             [sys.executable, "-c", BOOTSTRAP, *args],

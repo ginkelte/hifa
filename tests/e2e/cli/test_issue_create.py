@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from conftest import CLI_ENV, plain
 from hifa.cli.main import app
 from hifa.config import CONFIG_FILENAME
 
@@ -73,13 +74,13 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 @pytest.fixture
 def initialized(sandbox: SimpleNamespace) -> SimpleNamespace:
-    result = runner.invoke(app, ["init", "--team-key", "ENG"])
+    result = runner.invoke(app, ["init", "--team-key", "ENG"], env=CLI_ENV)
     assert result.exit_code == 0, result.stdout + result.stderr
     return sandbox
 
 
 def run(*args: str) -> Any:
-    return runner.invoke(app, list(args))
+    return runner.invoke(app, list(args), env=CLI_ENV)
 
 
 def test_create_prints_table_row(initialized: SimpleNamespace) -> None:
@@ -157,24 +158,17 @@ def test_create_with_a_non_numeric_estimate_exits_2(initialized: SimpleNamespace
     assert "estimate" in result.stderr.lower()
 
 
-#: Width the help screens are rendered at. Wide enough that Rich never elides an option name or
-#: splits its type (`--estim…`, `<flo` / `at>`), so the assertions read the content of the help
-#: instead of the width of the terminal that happened to run the suite.
-HELP_COLUMNS = "200"
-
-
 def run_help(*args: str) -> str:
-    """`--help` output for `args`, flattened so the assertion is width- and layout-independent.
+    """`--help` output for `args`, without ANSI escapes and with the layout flattened.
 
-    Rich reflows the option panel to the terminal width: below ~60 columns a type wraps onto the
-    next line, and below ~40 the option name itself is truncated. Pinning `COLUMNS` keeps the
-    content complete and collapsing every run of whitespace (newlines included) makes the match
-    about the option — long name, short flag, metavariable — rather than about where the columns
-    landed.
+    Rich reflows the option panel to the width `CLI_ENV` pins and styles the option names it
+    prints, so the raw text carries escapes between the words (`\\x1b[1m--estimate\\x1b[0m`).
+    Stripping them before collapsing the whitespace makes the match about the option — long
+    name, short flag, metavariable — rather than about the styling or the columns.
     """
-    result = runner.invoke(app, [*args, "--help"], env={"COLUMNS": HELP_COLUMNS})
+    result = runner.invoke(app, [*args, "--help"], env=CLI_ENV)
     assert result.exit_code == 0, result.stdout + result.stderr
-    return " ".join(result.stdout.split())
+    return plain(result.stdout)
 
 
 def test_create_help_lists_the_estimate_option(initialized: SimpleNamespace) -> None:

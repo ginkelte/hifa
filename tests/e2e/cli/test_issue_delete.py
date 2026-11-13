@@ -9,7 +9,7 @@ unknown issue.
 
 from __future__ import annotations
 
-from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout
+from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout, plain
 
 CATALOG_REFUSAL = "hifa: operation canceled"
 
@@ -65,7 +65,7 @@ def test_delete_without_yes_in_a_non_interactive_session_is_refused(cli: Cli) ->
     result = cli.run("issue", "delete", "ENG-1")
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert result.stderr.strip() == CATALOG_REFUSAL
+    assert plain(result.stderr) == CATALOG_REFUSAL
     assert cli.issue("ENG-1")["trashed"] == 0
     assert cli.history("ENG-1") == []
 
@@ -84,7 +84,7 @@ def test_delete_with_no_input_never_prompts(cli: Cli) -> None:
     result = cli.run("issue", "delete", "ENG-1", "--no-input")
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert result.stderr.strip() == CATALOG_REFUSAL
+    assert plain(result.stderr) == CATALOG_REFUSAL
     assert "Send" not in result.stderr
     assert cli.issue("ENG-1")["trashed"] == 0
 
@@ -110,5 +110,5 @@ def test_delete_rejects_the_physical_deletion_flag(cli: Cli) -> None:
     result = cli.run("issue", "delete", "ENG-1", "--hard", "--yes", "--json")
     assert result.exit_code == 2
     assert error_json(result)["code"] == "invalid_option"
-    assert "--hard" in result.stderr
+    assert "--hard" in plain(result.stderr)
     assert cli.issue("ENG-1")["trashed"] == 0

@@ -9,7 +9,7 @@ and the physical-deletion flag; 3 for an unknown issue.
 
 from __future__ import annotations
 
-from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout
+from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout, plain
 
 
 def test_archive_sets_archived_at_and_keeps_the_state(cli: Cli) -> None:
@@ -75,7 +75,7 @@ def test_archive_refusal_prints_the_catalog_sentence(cli: Cli) -> None:
     cli.create("Needs yes")
     result = cli.run("issue", "archive", "ENG-1")
     assert result.exit_code == 2
-    assert result.stderr.strip() == "hifa: operation canceled"
+    assert plain(result.stderr) == "hifa: operation canceled"
     assert result.stdout == ""
     assert cli.issue("ENG-1")["archived_at"] is None
 
@@ -113,7 +113,7 @@ def test_archive_rejects_the_physical_deletion_flag(cli: Cli) -> None:
     result = cli.run("issue", "archive", "ENG-1", "--hard", "--json")
     assert result.exit_code == 2
     assert error_json(result)["code"] == "invalid_option"
-    assert "--hard" in result.stderr
+    assert "--hard" in plain(result.stderr)
     assert cli.issue("ENG-1")["archived_at"] is None
 
 

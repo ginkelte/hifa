@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout
+from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout, plain
 
 
 def test_edit_writes_one_history_row_per_changed_column(cli: Cli) -> None:
@@ -73,7 +73,7 @@ def test_edit_without_flags_prints_the_catalog_sentence(cli: Cli) -> None:
     cli.create("Old")
     result = cli.run("issue", "edit", "ENG-1")
     assert result.exit_code == 2
-    assert result.stderr.strip() == "hifa: nothing to change"
+    assert plain(result.stderr) == "hifa: nothing to change"
     assert result.stdout == ""
 
 
@@ -211,7 +211,7 @@ def test_edit_with_an_unknown_flag_aborts_without_writing(cli: Cli) -> None:
     before_updated = cli.updated_at("ENG-1")
     result = cli.run("issue", "edit", "ENG-1", "--sprint", "5")
     assert result.exit_code == 2
-    assert "--sprint" in result.stderr
+    assert "--sprint" in plain(result.stderr)
     assert cli.updated_at("ENG-1") == before_updated
 
 

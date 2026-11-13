@@ -8,7 +8,7 @@ unknown issue or state name, 5 for an archived issue.
 
 from __future__ import annotations
 
-from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout
+from conftest import CANONICAL_KEYS, ISSUE_HEADER, Cli, error_json, json_stdout, plain
 
 
 def test_move_changes_the_state_and_records_it(cli: Cli) -> None:
@@ -126,4 +126,4 @@ def test_move_requires_the_state_flag(cli: Cli) -> None:
     cli.create("No state")
     result = cli.run("issue", "move", "ENG-1")
     assert result.exit_code == 2
-    assert "--state" in result.stderr
+    assert "--state" in plain(result.stderr)
