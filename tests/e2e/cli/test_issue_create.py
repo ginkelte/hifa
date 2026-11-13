@@ -7,7 +7,6 @@ canonical `--json` object (key order included) and exit codes 0/2/3/4.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -158,10 +157,28 @@ def test_create_with_a_non_numeric_estimate_exits_2(initialized: SimpleNamespace
     assert "estimate" in result.stderr.lower()
 
 
-def test_create_help_lists_the_estimate_option(initialized: SimpleNamespace) -> None:
-    result = run("issue", "create", "--help")
+#: Width the help screens are rendered at. Wide enough that Rich never elides an option name or
+#: splits its type (`--estim…`, `<flo` / `at>`), so the assertions read the content of the help
+#: instead of the width of the terminal that happened to run the suite.
+HELP_COLUMNS = "200"
+
+
+def run_help(*args: str) -> str:
+    """`--help` output for `args`, flattened so the assertion is width- and layout-independent.
+
+    Rich reflows the option panel to the terminal width: below ~60 columns a type wraps onto the
+    next line, and below ~40 the option name itself is truncated. Pinning `COLUMNS` keeps the
+    content complete and collapsing every run of whitespace (newlines included) makes the match
+    about the option — long name, short flag, metavariable — rather than about where the columns
+    landed.
+    """
+    result = runner.invoke(app, [*args, "--help"], env={"COLUMNS": HELP_COLUMNS})
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert re.search(r"--estimate\s+-e\s+<float>", result.stdout), result.stdout
+    return " ".join(result.stdout.split())
+
+
+def test_create_help_lists_the_estimate_option(initialized: SimpleNamespace) -> None:
+    assert "--estimate -e <float>" in run_help("issue", "create")
 
 
 def test_create_quiet_prints_identifier(initialized: SimpleNamespace) -> None:
