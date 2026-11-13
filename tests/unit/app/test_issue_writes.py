@@ -199,6 +199,15 @@ class _Issues:
     def count_open_children(self, issue_id: str) -> int:
         return self.children.get(issue_id, 0)
 
+    def subtree_height(self, issue_id: str) -> int:
+        """Levels below this issue: a leaf is 0, its parent is 1."""
+        below = sum(1 for row in self.rows.values() if row.parent_id == issue_id)
+        deepest = 0
+        for row in self.rows.values():
+            if row.parent_id == issue_id:
+                deepest = max(deepest, 1 + self.subtree_height(row.id))
+        return deepest if below else 0
+
     def ancestor_chain(self, issue_id: str, *, max_depth: int = 32) -> dict[str, str | None]:
         chain: dict[str, str | None] = {}
         cursor: str | None = issue_id

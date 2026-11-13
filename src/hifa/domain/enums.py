@@ -7,6 +7,9 @@ serialize to their exact value; `Priority` is an `IntEnum` and serializes to `in
 from __future__ import annotations
 
 import enum
+from typing import Literal
+
+from hifa.domain.errors import Validation
 
 
 class Priority(enum.IntEnum):
@@ -104,9 +107,63 @@ class RelationType(enum.StrEnum):
         return self is not RelationType.BLOCKS
 
     @property
+    def is_hard(self) -> bool:
+        """True only for blocks: the one type that gates the work of the far end."""
+        return self is RelationType.BLOCKS
+
+    @property
     def inverse_name(self) -> str:
         """`blocks` -> 'blocked_by'; the rest return their own value (not stored)."""
         return "blocked_by" if self is RelationType.BLOCKS else self.value
+
+    def name_as_seen(self, direction: Literal["out", "in"]) -> str:
+        """Name of the type read from one end of its row.
+
+        'out' is the row's own `issue_id` -> the type's value; 'in' is its
+        `related_issue_id` -> the inverse name, so a `blocks` row reads as `blocked_by`
+        for the blocked issue and the symmetric types read the same from both ends.
+        """
+        if direction == "out":
+            return self.value
+        if direction == "in":
+            return self.inverse_name
+        raise ValueError(f"unknown relation direction: {direction!r}")
+
+    def canonical_pair(self, source_id: str, target_id: str) -> tuple[str, str]:
+        """The `(issue_id, related_issue_id)` order this type is stored in.
+
+        `blocks` keeps the direction the caller gave: the source is the blocker, and that
+        order is the meaning of the row. The symmetric types collapse both spellings of
+        one edge into a single pair sorted by identifier, so the `UNIQUE` of the schema
+        sees one key per edge.
+        """
+        if not self.is_symmetric:
+            return source_id, target_id
+        if target_id < source_id:
+            return target_id, source_id
+        return source_id, target_id
+
+    @classmethod
+    def parse(cls, raw: str) -> tuple[RelationType, bool]:
+        """Input vocabulary -> `(type, swap)`.
+
+        The four stored tokens are returned unchanged. `blocked_by` is the input alias of
+        the inverse direction: `(BLOCKS, True)` tells the caller to swap the pair before
+        storing it, because `A blocked_by B` is the row `B blocks A`. Any other name is
+        `Validation(rule='COMMAND_FIELD')`.
+        """
+        if raw == cls.BLOCKS.inverse_name:
+            return cls.BLOCKS, True
+        try:
+            return cls(raw), False
+        except ValueError:
+            raise Validation(
+                "unknown relation type",
+                rule="COMMAND_FIELD",
+                field="type",
+                value=raw,
+                code="COMMAND_FIELD",
+            ) from None
 
 
 class LabelGroupType(enum.StrEnum):

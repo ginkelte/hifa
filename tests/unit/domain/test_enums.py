@@ -7,6 +7,7 @@ import enum
 import pytest
 
 from hifa.domain import enums
+from hifa.domain.errors import Validation
 
 
 def test_priority_is_intenum_with_values_0_to_4() -> None:
@@ -88,6 +89,76 @@ def test_relation_symmetry_and_inverse(
 ) -> None:
     assert relation.is_symmetric is symmetric
     assert relation.inverse_name == inverse
+
+
+#: The four facts every writer and every read of an edge depends on, one row per type.
+RELATION_FACTS = (
+    (enums.RelationType.BLOCKS, False, True, "blocks", "blocked_by"),
+    (enums.RelationType.DUPLICATE, True, False, "duplicate", "duplicate"),
+    (enums.RelationType.RELATED, True, False, "related", "related"),
+    (enums.RelationType.SIMILAR, True, False, "similar", "similar"),
+)
+
+
+@pytest.mark.parametrize(("relation", "symmetric", "hard", "seen_out", "seen_in"), RELATION_FACTS)
+def test_relation_hardness(
+    relation: enums.RelationType, symmetric: bool, hard: bool, seen_out: str, seen_in: str
+) -> None:
+    assert relation.is_hard is hard
+
+
+@pytest.mark.parametrize(("relation", "symmetric", "hard", "seen_out", "seen_in"), RELATION_FACTS)
+def test_relation_name_as_seen_from_both_ends(
+    relation: enums.RelationType, symmetric: bool, hard: bool, seen_out: str, seen_in: str
+) -> None:
+    assert relation.name_as_seen("out") == seen_out
+    assert relation.name_as_seen("in") == seen_in
+
+
+@pytest.mark.parametrize(
+    ("relation", "source", "target", "stored"),
+    [
+        (enums.RelationType.BLOCKS, "01B", "01A", ("01B", "01A")),
+        (enums.RelationType.BLOCKS, "01A", "01B", ("01A", "01B")),
+        (enums.RelationType.RELATED, "01B", "01A", ("01A", "01B")),
+        (enums.RelationType.RELATED, "01A", "01B", ("01A", "01B")),
+        (enums.RelationType.SIMILAR, "01Z", "01A", ("01A", "01Z")),
+        (enums.RelationType.DUPLICATE, "01B", "01A", ("01A", "01B")),
+    ],
+)
+def test_relation_canonical_pair(
+    relation: enums.RelationType, source: str, target: str, stored: tuple[str, str]
+) -> None:
+    assert relation.canonical_pair(source, target) == stored
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [enums.RelationType.DUPLICATE, enums.RelationType.RELATED, enums.RelationType.SIMILAR],
+)
+def test_relation_canonical_pair_is_the_same_from_either_end(relation: enums.RelationType) -> None:
+    """The whole point of the canonical order: both spellings land on one storable pair."""
+    assert relation.canonical_pair("01B", "01A") == relation.canonical_pair("01A", "01B")
+
+
+@pytest.mark.parametrize(("raw", "parsed"), [(r.value, r) for r in enums.RelationType])
+def test_relation_parse_accepts_the_stored_tokens_without_swapping(
+    raw: str, parsed: enums.RelationType
+) -> None:
+    assert enums.RelationType.parse(raw) == (parsed, False)
+
+
+def test_relation_parse_accepts_blocked_by_as_the_inverted_alias() -> None:
+    assert enums.RelationType.parse("blocked_by") == (enums.RelationType.BLOCKS, True)
+
+
+@pytest.mark.parametrize("raw", ["blocked-by", "BLOCKS", "Blocked_by", "blocked", "inverse", ""])
+def test_relation_parse_rejects_any_other_name(raw: str) -> None:
+    with pytest.raises(Validation) as excinfo:
+        enums.RelationType.parse(raw)
+    assert excinfo.value.rule == "COMMAND_FIELD"
+    assert excinfo.value.field == "type"
+    assert excinfo.value.code == "COMMAND_FIELD"
 
 
 def test_label_group_type_values() -> None:

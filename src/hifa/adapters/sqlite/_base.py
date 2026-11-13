@@ -156,6 +156,13 @@ class BaseRepo:
         row = self._one(sql, params)
         return None if row is None else row[0]
 
+    def _run(self, sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> int:
+        """Statements that return no row: give back `rowcount` through the same translator."""
+        try:
+            return self._conn.execute(sql, params).rowcount
+        except sqlite3.Error as exc:
+            raise translate_sqlite_error(exc) from exc
+
 
 __all__ = [
     "READ_ONLY_CODE",

@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 2
-spec_revision: 8
+spec_revision: 9
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -324,6 +324,7 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 | `list_children` | `(issue_id: str, *, include_closed: bool = True) -> list[Issue]` | order `sub_issue_sort_order, number` |
 | `count_open_children` | `(issue_id: str) -> int` | §2.5 SQL-5 |
 | `ancestor_chain` | `(issue_id: str, *, max_depth: int = 32) -> dict[str, str \| None]` | `{issue_id: parent_id}` from the issue upward; stops at `max_depth` |
+| `subtree_height` | `(issue_id: str) -> int` | levels **below** the issue: a leaf is `0`, its parent `1`. One recursive statement; it is what the depth bound of a reparent is measured against (SPEC-020 R7) |
 | `count_open` | `(team_id: str) -> int` | `v_issue` with `is_open AND visible` |
 | `archive` / `unarchive` | `(issue_id: str, at: datetime) -> None` | `archived_at = at` / `NULL` |
 | `trash` / `restore` | `(issue_id: str, at: datetime) -> None` | `trashed = 1` / `0` + `updated_at` |
@@ -332,7 +333,7 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 | `add_label` | `(issue_id: str, label_id: str) -> None` | `INSERT OR IGNORE`; duplicate PK is **not** an error |
 | `remove_label` | `(issue_id: str, label_id: str) -> bool` | `True` if it deleted |
 | `relations` | `(issue_id: str) -> list[IssueRelation]` | both directions (the issue as source or target) |
-| `add_relation` | `(relation: IssueRelation) -> IssueRelation` | `UNIQUE(...)` → `Conflict(rule='RELATION_DUPLICATE')` |
+| `add_relation` | `(relation: IssueRelation) -> IssueRelation` | applies the canonical pair of the type before the `INSERT` (SPEC-020 D-045), so the `UNIQUE(...)` sees one key per edge; a duplicate → `Conflict(rule='RELATION_DUPLICATE')`; returns the stored row |
 | `remove_relation` | `(relation_id: str) -> bool` | |
 
 **`LabelRepo`**
@@ -1705,6 +1706,8 @@ Feature: SQLite adapter
   shows a `SCAN`, the solution is a new index in a migration, not a change in the adapter.
 
 ## Notes
+
+- spec_revision 9 (2026-11-13): **the repository publishes what the depth bound is measured against.** `subtree_height` is declared next to `ancestor_chain`, and `add_relation` is declared to apply the canonical pair before the `INSERT`: the order is a property of the writer, and the constraint only stands behind it.
 
 - spec_revision 8 (2026-11-13): **the trash opens the archive axis, and the cursor token carries a
   lowercase direction.** (1) `trashed_only` no longer inherits the `archived_at IS NULL` predicate of

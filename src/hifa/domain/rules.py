@@ -18,6 +18,7 @@ from hifa.domain.errors import Conflict, Validation
 MAX_TITLE = 255
 MAX_BODY = 50_000
 MAX_DESCRIPTION = 100_000
+MAX_SUBISSUE_DEPTH = 5  # a root issue is level 1; the deepest descendant is level 5
 
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -184,8 +185,16 @@ def validate_parent(
     child_team_id: str,
     parent: Issue | None,
     ancestors: Mapping[str, str | None],
+    subtree_height: int = 0,
 ) -> None:
-    """Missing parent = ok; rejects self-parent, parent from another team and hierarchy cycles."""
+    """Missing parent = ok; rejects self-parent, parent from another team and hierarchy cycles.
+
+    `ancestors` maps the parent's upward chain (`{issue_id: parent_id}`, the parent included),
+    so its length is the level the parent already occupies. `subtree_height` is the longest
+    downward path below the child: 0 for a leaf and for an issue that does not exist yet.
+    The tree is bounded as a whole, so a reparent is checked against its deepest descendant
+    and not only against the moved issue.
+    """
     if parent is None:
         return
     if parent.id == child_id:
@@ -213,6 +222,17 @@ def validate_parent(
             )
         seen.add(cursor)
         cursor = ancestors.get(cursor)
+    depth = len(ancestors) + 1 + subtree_height
+    if depth > MAX_SUBISSUE_DEPTH:
+        raise _reject(
+            "sub-issue tree would exceed the maximum depth",
+            "PARENT_DEPTH_EXCEEDED",
+            "parent_id",
+            parent.id,
+            depth=depth,
+            max_depth=MAX_SUBISSUE_DEPTH,
+            subtree_height=subtree_height,
+        )
 
 
 def validate_close(target: WorkflowStateType, open_children: int) -> None:
@@ -278,6 +298,19 @@ def validate_relation(
         )
 
 
+def validate_relation_scope(source: Issue, target: Issue) -> None:
+    """An edge lives inside one workspace; it may join two teams of that workspace."""
+    if source.workspace_id != target.workspace_id:
+        raise _reject(
+            "relation crosses workspaces",
+            "RELATION_WORKSPACE_MISMATCH",
+            "related_issue_id",
+            target.id,
+            source_workspace_id=source.workspace_id,
+            target_workspace_id=target.workspace_id,
+        )
+
+
 def validate_label_scope(issue_team_id: str, label: Label) -> None:
     """Rejects retired labels (`LABEL_RETIRED`) and cross-team labels (`LABEL_TEAM_MISMATCH`)."""
     if label.retired_at is not None:
@@ -323,6 +356,7 @@ def validate_archive_team(team: Team, open_issues: int) -> None:
 __all__ = [
     "MAX_BODY",
     "MAX_DESCRIPTION",
+    "MAX_SUBISSUE_DEPTH",
     "MAX_TITLE",
     "validate_archive_team",
     "validate_close",
@@ -334,6 +368,7 @@ __all__ = [
     "validate_parent",
     "validate_priority",
     "validate_relation",
+    "validate_relation_scope",
     "validate_state_team",
     "validate_title",
     "validate_transition",
