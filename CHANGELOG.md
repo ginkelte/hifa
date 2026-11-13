@@ -1,3 +1,10 @@
+# [0.2.0](https://github.com/ginkelte/hifa/compare/v0.1.9...v0.2.0) (2026-11-13)
+
+
+### Features
+
+* **cli:** edit, move, archive, delete and restore an issue ([#14](https://github.com/ginkelte/hifa/issues/14)) ([a0316aa](https://github.com/ginkelte/hifa/commit/a0316aadb78fe514ba4d913189c4a0b3bb3b0be5))
+
 ## [0.1.9](https://github.com/ginkelte/hifa/compare/v0.1.8...v0.1.9) (2026-11-13)
 
 
