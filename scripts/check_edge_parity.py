@@ -144,8 +144,8 @@ class Capability:
 # already done, or this checker's own ticket (HIFA-37), is not honest: it would keep the debt
 # line green while nothing is planned to remove it.
 # * HIFA-49 ships `hifa issue show REF --with history` — it closes `issue.show`.
-# * HIFA-2  (T-07) ships `issue list --sort manual`: the list verb and, through it, the board
-#           model (T-08 note), so it closes `issue.list` and `issue.board`.
+# * HIFA-2  (T-07) ships `issue list --sort manual`, which closes `issue.list`; the board model
+#           it shares the order with is `issue.board` (T-08).
 # * HIFA-7  (T-11) brings full-text search and replaces the `/search` stub: `search.issues`.
 # * HIFA-42 is the dashboard form for a team and a workflow state from the UI: it closes
 #           `team.create` and `state.create`.
@@ -172,7 +172,7 @@ CAPABILITIES: tuple[Capability, ...] = (
         # The no-JS form post and the htmx quick-add are the same capability.
         web=(("POST", "/{team}/issue"), ("POST", "/_/issues")),
     ),
-    Capability(name="issue.list", cli=None, web=("GET", "/{team}/list"), debt="HIFA-2"),
+    Capability(name="issue.list", cli="issue list", web=("GET", "/{team}/list")),
     # The five writes below are CLI-only until the dashboard stage 2 lands their web edge.
     Capability(name="issue.edit", cli="issue edit", web=None, debt="HIFA-3"),
     Capability(name="issue.move", cli="issue move", web=None, debt="HIFA-3"),

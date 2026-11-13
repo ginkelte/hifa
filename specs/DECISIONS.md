@@ -1366,3 +1366,47 @@ and that the archive axis does not need: a parent and a child are independent ro
 **Why not the alternative.** Cascading the trash would make one write touch rows the caller never
 addressed, and restoring the parent would then have to guess which children to bring back — a subtree
 semantics the archive axis deliberately does not have (D-015 keeps every layer reversible per row).
+
+## D-044 — Inverting the direction inverts the values, not the treatment of absence
+
+**Date:** 2026-11-13 · **Wins:** SPEC-040 R18 · **Touches:** SPEC-030 §2.5, §2.6, §2.6.1; SPEC-040
+R18, §5.3; SPEC-050 §2.5.3.1, R8; SPEC-060 §2.3, R4
+
+SPEC-040 R18 requires that a `NULL` goes to the end **in both directions**. SPEC-030 §2.6.1 built the
+clause from a single `dir` variable that inverted the key **and** the `issue.id` tie-breaker, which
+under `reverse` sends the rows without a value to the top: the `due` key was
+`COALESCE(i.due_date, '9999-12-31')` and the `priority` key mapped `No priority` (0) to the sentinel
+`5`, and both sentinels are values that a descending direction moves.
+
+**Resolution: R18 wins, and the position of the absent rows is not a direction.** The total order has
+two parts, and only the second one moves:
+
+```
+ORDER BY (<sort_key> IS NULL) ASC, <sort_key> {dir}, i.id {dir}
+     with dir = "DESC" if filters.reverse else "ASC"
+```
+
+- **The absence flag always ascends.** `(<sort_key> IS NULL)` is `0` for a row with a value and `1` for
+  a row without one, so the valued rows come first and the absent rows last in `ASC` and in `DESC`
+  alike. `dir` reaches the key and the tie-breaker only; it never reaches this term.
+- **The key expressions express absence as `NULL`, not as a sentinel.** `priority` is
+  `CASE i.priority WHEN 0 THEN NULL ELSE i.priority END` and `due` is `i.due_date`. A sentinel is a
+  value and therefore moves with the direction; `NULL` cannot enter the key comparison at all, which
+  is what keeps the absent rows outside the part of the order that reverses.
+- **The tie-breaker moves with the key.** Inside the absent rows the order is still `i.id {dir}`, so
+  the second part stays total and stable for rows that share the absence.
+- **Two orders have an absence: `priority` and `due`.** `manual`, `created` and `updated` are
+  `NOT NULL` columns (SPEC-010), their flag is `0` for every row and their clause degenerates to the
+  plain keyset.
+- **The keyset predicate is declared per case, not as a row comparison.** A comparison against a
+  `NULL` anchor evaluates to `NULL` and matches no row, so SPEC-030 §2.6.1 states the predicate of the
+  next page twice — the valued anchor with three disjoint branches, and the `NULL` anchor restricted to
+  the rows that are also without a value and follow by `id`.
+
+**Why.** A reader who reverses an order asks for the contrary sequence of **values**, not for the rows
+without a value to jump to the top: "latest first" means "the newest due dates first", and an issue
+with no due date has no place in that sequence. The listing also has to stay a total, stable order,
+which is the property the keyset stands on: if the absent rows changed ends with the direction, the
+boundary between the valued and the absent section would move under a predicate that seeks from an
+anchor on the other side of it, and the page that crosses that boundary would repeat or skip a row.
+An ascending flag makes one predicate per case exact instead of approximate.

@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
 import sqlite3
-from collections.abc import Mapping
+import string
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
@@ -27,18 +29,24 @@ from hifa.domain.errors import Validation
 
 OrderKey = Literal["manual", "created", "updated", "priority", "due"]
 
-#: `<sort_key>` allowlist per `order`. Never built from user input.
+#: `<sort_key>` expression per `order`, evaluated over `v_issue`. Never built from user
+#: input. Absence is `NULL`, never a sentinel: a sentinel is a value and a descending
+#: direction would move it to the top, while `NULL` cannot enter the key comparison.
 SORT_KEYS: dict[str, str] = {
     "manual": "i.sort_order",
     "created": "i.created_at",
     "updated": "i.updated_at",
-    "priority": "CASE i.priority WHEN 0 THEN 5 ELSE i.priority END",
-    "due": "COALESCE(i.due_date, '9999-12-31')",
+    "priority": "CASE i.priority WHEN 0 THEN NULL ELSE i.priority END",
+    "due": "i.due_date",
 }
+
+#: Values `issue.priority` may hold: `0` is `No priority` and it is a value in the column.
+PRIORITY_VALUES: frozenset[int] = frozenset({0, 1, 2, 3, 4})
 
 MAX_LIMIT = 200
 MAX_OFFSET = 500
 DEFAULT_LIMIT = 50
+
 
 #: The only collections `issue_detail` loads; any other name is `INCLUDE_INVALID`.
 DETAIL_INCLUDE: frozenset[str] = frozenset({"comments", "attachments", "history"})
@@ -60,7 +68,14 @@ class LabelRef:
 
 @dataclass(frozen=True, slots=True)
 class ListFilters:
-    """Listing filters; all of them combine with AND."""
+    """The whole listing filter: every field is one predicate, families combine with AND.
+
+    Repeated values inside a family (state, state type, priority, label) are a union; the
+    adapter de-duplicates them before building the query. `archived_only` supersedes
+    `include_archived` and `trashed_only` supersedes `include_trashed` by precedence, and
+    the trash is the deeper layer: `trashed_only` makes the archive predicate vacuous so an
+    issue archived and then trashed stays reachable.
+    """
 
     team_id: str
     state_id: str | None = None
@@ -77,9 +92,17 @@ class ListFilters:
     include_trashed: bool = False
     order: OrderKey = "manual"
     limit: int = DEFAULT_LIMIT
-    cursor: str | None = None  # base64url(sort_key + "|" + id), opaque
+    cursor: str | None = None  # base64url("<order>:<asc|desc>|<ULID>"), opaque
     offset: int = 0  # WEB only, capped at 500
     q: str | None = None  # title substring; LIKE, case-insensitive for ASCII
+    state_ids: tuple[str, ...] = ()  # OR: any of these states (union with `state_id`)
+    state_types: tuple[str, ...] = ()  # OR: any of these state types (union with `state_type`)
+    priorities: tuple[int, ...] = ()  # OR: any of these priorities (union with `priority`)
+    is_open: bool | None = None  # True: open only; False: closed only; None: no filter
+    no_cycle: bool = False  # cycle_id IS NULL
+    archived_only: bool = False  # archived_at IS NOT NULL
+    trashed_only: bool = False  # trashed = 1, and the archive axis adds no predicate
+    reverse: bool = False  # flips the key and the id tie-breaker, never the absent rows
 
     def __post_init__(self) -> None:
         if not 1 <= self.limit <= MAX_LIMIT:
@@ -92,6 +115,23 @@ class ListFilters:
             )
         if self.order not in SORT_KEYS:
             raise Validation("unknown order", rule="ORDER_INVALID", field="order", value=self.order)
+        for value in self.priorities:
+            if value not in PRIORITY_VALUES:
+                raise Validation(
+                    "priority out of range",
+                    rule="PRIORITY_OUT_OF_RANGE",
+                    field="priorities",
+                    value=value,
+                )
+
+
+def sort_token(order: str, reverse: bool = False) -> str:
+    """Canonical name of an ordering: `order:dir`, the direction **in lowercase**.
+
+    It is the `sort_key` component of the cursor, not the SQL keyword: uppercase belongs
+    to the `ORDER BY` clause and to nothing else.
+    """
+    return f"{order}:{'desc' if reverse else 'asc'}"
 
 
 def encode_cursor(sort_key: str, issue_id: str) -> str:
@@ -100,18 +140,42 @@ def encode_cursor(sort_key: str, issue_id: str) -> str:
     return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 
+_ORDERING = re.compile(r"^(?P<order>[a-z]+):(?P<direction>asc|desc)$")
+_BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
+_ID_CHARS = frozenset(string.ascii_uppercase + string.digits)
+
+
+def _invalid_cursor(message: str = "invalid cursor") -> Validation:
+    return Validation(message, rule="INVALID_CURSOR", field="cursor")
+
+
 def decode_cursor(cursor: str) -> tuple[str, str]:
-    """Inverse of `encode_cursor`; invalid cursor → `Validation(rule='INVALID_CURSOR')`."""
+    """Inverse of `encode_cursor`: `("order:dir", ULID)`; invalid → `INVALID_CURSOR`.
+
+    The token is the only place a page carries its ordering, so the `sort_key` component is
+    the canonical ordering name and never the row's value: a cursor presented under another
+    order or the other direction is detectable.
+    """
+    text = cursor or ""
+    if "=" in text or not _BASE64URL.match(text):
+        raise _invalid_cursor("cursor is not unpadded base64url")
     try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        raw = base64.urlsafe_b64decode(padded.encode()).decode()
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)).decode()
     except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
-        raise Validation("invalid cursor", rule="INVALID_CURSOR", field="cursor") from exc
-    if "|" not in raw:
-        raise Validation("invalid cursor", rule="INVALID_CURSOR", field="cursor")
-    sort_key, issue_id = raw.rsplit("|", 1)
+        raise _invalid_cursor("cursor is not base64url") from exc
+    if base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=") != text:
+        raise _invalid_cursor("cursor is not canonical base64url")
+    parts = raw.split("|")
+    if len(parts) != 2:
+        raise _invalid_cursor("cursor needs exactly one separator")
+    sort_key, issue_id = parts
     if not sort_key or not issue_id:
-        raise Validation("invalid cursor", rule="INVALID_CURSOR", field="cursor")
+        raise _invalid_cursor("cursor has an empty component")
+    match = _ORDERING.match(sort_key)
+    if match is None or match.group("order") not in SORT_KEYS:
+        raise _invalid_cursor("cursor names an unknown ordering")
+    if len(issue_id) != 26 or any(char not in _ID_CHARS for char in issue_id):
+        raise _invalid_cursor("cursor does not carry a 26-character id")
     return sort_key, issue_id
 
 
@@ -174,27 +238,26 @@ FROM v_issue i
 JOIN workflow_state s ON s.id = i.state_id
 JOIN team t          ON t.id = i.team_id
 LEFT JOIN member m   ON m.id = i.assignee_id
-WHERE i.team_id = :team_id
-  AND (:include_archived = 1 OR i.archived_at IS NULL)
-  AND (:include_trashed  = 1 OR i.trashed = 0)
-  AND (:state_id      IS NULL OR i.state_id = :state_id)
-  AND (:state_type    IS NULL OR s.type = :state_type)
-  AND (:assignee_id   IS NULL OR i.assignee_id = :assignee_id)
-  AND (:unassigned    = 0    OR i.assignee_id IS NULL)
-  AND (:project_id    IS NULL OR i.project_id = :project_id)
-  AND (:cycle_id      IS NULL OR i.cycle_id = :cycle_id)
-  AND (:parent_id     IS NULL OR i.parent_id = :parent_id)
-  AND (:priority      IS NULL OR i.priority = :priority)
-  AND (:due_before    IS NULL OR i.due_date <= :due_before)
-  AND (:label_count   = 0 OR (
-        SELECT COUNT(DISTINCT il2.label_id) FROM issue_label il2
-        WHERE il2.issue_id = i.id AND il2.label_id IN ({label_placeholders})
-      ) = :label_count)
-  AND (:q IS NULL OR i.title LIKE :q ESCAPE '\\')
-{keyset}
-ORDER BY {sort_key}, i.id
+WHERE {where}
+ORDER BY {order_by}
 LIMIT :limit_plus_one OFFSET :offset
 """
+
+
+def _dedupe(values: Iterable[Any]) -> tuple[Any, ...]:
+    """Insertion-ordered unique values with `None` dropped: one family, one union."""
+    unique: dict[Any, None] = {}
+    for value in values:
+        if value is not None:
+            unique.setdefault(value, None)
+    return tuple(unique)
+
+
+def _bind(prefix: str, values: tuple[Any, ...]) -> tuple[str, dict[str, Any]]:
+    """`:prefix_0, :prefix_1, ...` and its named parameters (never value interpolation)."""
+    names = [f":{prefix}_{index}" for index in range(len(values))]
+    params = {f"{prefix}_{index}": value for index, value in enumerate(values)}
+    return ", ".join(names), params
 
 
 def _like(text: str | None) -> str | None:
@@ -263,59 +326,154 @@ def _item(row: sqlite3.Row) -> IssueListItem:
     )
 
 
-def _cursor_value(order: str, key: str) -> Any:
-    """Return the cursor value typed like the ordered column."""
-    if order in ("manual", "priority"):
-        try:
-            return float(key)
-        except ValueError as exc:
-            raise Validation("invalid cursor", rule="INVALID_CURSOR", field="cursor") from exc
-    return key
+def _visibility_clauses(filters: ListFilters) -> list[str]:
+    """The archive and trash axes, in the order the layers stack.
+
+    `archived_only` narrows to the archive slice; `include_archived` opens it; `trashed_only`
+    opens it too, because the trash is the deeper layer and an issue archived and then trashed
+    has to stay reachable from the trash listing.
+    """
+    clauses: list[str] = []
+    if filters.archived_only:
+        clauses.append("i.archived_at IS NOT NULL")
+    elif not (filters.include_archived or filters.trashed_only):
+        clauses.append("i.archived_at IS NULL")
+    if filters.trashed_only:
+        clauses.append("i.trashed = 1")
+    elif not filters.include_trashed:
+        clauses.append("i.trashed = 0")
+    return clauses
+
+
+def _filter_clauses(filters: ListFilters, params: dict[str, Any]) -> list[str]:
+    """Every filter family as its own clause; the caller joins them with AND."""
+    clauses = _visibility_clauses(filters)
+
+    if filters.is_open is not None:
+        clauses.append("i.is_open = :is_open")
+        params["is_open"] = int(filters.is_open)
+
+    state_ids = _dedupe((filters.state_id, *filters.state_ids))
+    if state_ids:
+        placeholders, bound = _bind("state", state_ids)
+        clauses.append(f"i.state_id IN ({placeholders})")
+        params.update(bound)
+
+    state_types = _dedupe((filters.state_type, *filters.state_types))
+    if state_types:
+        placeholders, bound = _bind("stype", state_types)
+        clauses.append(f"s.type IN ({placeholders})")
+        params.update(bound)
+
+    priorities = _dedupe((filters.priority, *filters.priorities))
+    if priorities:
+        placeholders, bound = _bind("prio", priorities)
+        clauses.append(f"i.priority IN ({placeholders})")
+        params.update(bound)
+
+    if filters.assignee_id is not None:
+        clauses.append("i.assignee_id = :assignee_id")
+        params["assignee_id"] = filters.assignee_id
+    if filters.unassigned:
+        clauses.append("i.assignee_id IS NULL")
+    if filters.project_id is not None:
+        clauses.append("i.project_id = :project_id")
+        params["project_id"] = filters.project_id
+    if filters.cycle_id is not None:
+        clauses.append("i.cycle_id = :cycle_id")
+        params["cycle_id"] = filters.cycle_id
+    if filters.no_cycle:
+        clauses.append("i.cycle_id IS NULL")
+    if filters.parent_id is not None:
+        clauses.append("i.parent_id = :parent_id")
+        params["parent_id"] = filters.parent_id
+    if filters.due_before is not None:
+        clauses.append("i.due_date <= :due_before")
+        params["due_before"] = filters.due_before.isoformat()
+
+    term = _like(filters.q)
+    if term is not None:
+        clauses.append(f"i.title LIKE :q ESCAPE '{LIKE_ESCAPE}'")
+        params["q"] = term
+
+    label_ids = _dedupe(filters.label_ids)
+    if label_ids:
+        placeholders, bound = _bind("label", label_ids)
+        clauses.append(
+            "(SELECT COUNT(DISTINCT il2.label_id) FROM issue_label il2"
+            f" WHERE il2.issue_id = i.id AND il2.label_id IN ({placeholders})) = :label_count"
+        )
+        params.update(bound)
+        params["label_count"] = len(label_ids)
+
+    return clauses
+
+
+def _keyset_clause(
+    conn: sqlite3.Connection,
+    filters: ListFilters,
+    sort_key: str,
+    operator: str,
+    params: dict[str, Any],
+) -> str | None:
+    """The predicate of the next page: form A for a valued anchor, form B for an absent one.
+
+    The cursor names its ordering, so a token from another order or the other direction is
+    rejected before any lookup. The anchor's key is read by primary key, because the token
+    has no room for the value, and an anchor outside the team is rejected instead of
+    restarting the listing.
+    """
+    if not filters.cursor:
+        return None
+    token, cursor_id = decode_cursor(filters.cursor)
+    if token != sort_token(filters.order, filters.reverse):
+        raise _invalid_cursor("cursor names another ordering")
+
+    row = conn.execute(
+        f"SELECT {sort_key} AS anchor FROM v_issue i"
+        " WHERE i.id = :cursor_id AND i.team_id = :team_id",
+        {"cursor_id": cursor_id, "team_id": filters.team_id},
+    ).fetchone()
+    if row is None:
+        raise _invalid_cursor("cursor anchor is not in this team")
+
+    params["cursor_id"] = cursor_id
+    anchor = row["anchor"]
+    if anchor is None:
+        return f"({sort_key} IS NULL AND i.id {operator} :cursor_id)"
+    params["cursor_key"] = anchor
+    return (
+        f"(({sort_key} IS NULL) OR ({sort_key} {operator} :cursor_key)"
+        f" OR ({sort_key} = :cursor_key AND i.id {operator} :cursor_id))"
+    )
 
 
 def list_view(conn: sqlite3.Connection, filters: ListFilters) -> IssuePage:
-    """One query (SQL-4): asks for `limit + 1`, trims to `limit` and reports `has_more`."""
+    """One query (SQL-4): asks for `limit + 1`, trims to `limit` and reports `has_more`.
+
+    The order is total and has two parts: `(<sort_key> IS NULL) ASC` keeps the rows without
+    a value last in both directions, and `<sort_key> {dir}, i.id {dir}` is the part the
+    direction inverts. `COUNT(*)` is never executed to paginate.
+    """
     sort_key = SORT_KEYS[filters.order]
+    direction = "DESC" if filters.reverse else "ASC"
+    operator = "<" if filters.reverse else ">"
     params: dict[str, Any] = {
         "team_id": filters.team_id,
-        "include_archived": int(filters.include_archived),
-        "include_trashed": int(filters.include_trashed),
-        "state_id": filters.state_id,
-        "state_type": filters.state_type,
-        "assignee_id": filters.assignee_id,
-        "unassigned": int(filters.unassigned),
-        "project_id": filters.project_id,
-        "cycle_id": filters.cycle_id,
-        "parent_id": filters.parent_id,
-        "priority": filters.priority,
-        "due_before": None if filters.due_before is None else filters.due_before.isoformat(),
-        "label_count": len(filters.label_ids),
-        "q": _like(filters.q),
         "limit_plus_one": filters.limit + 1,
         "offset": filters.offset,
     }
 
-    placeholders: list[str] = []
-    for index, label_id in enumerate(filters.label_ids):
-        name = f"label_{index}"
-        placeholders.append(f":{name}")
-        params[name] = label_id
-    label_sql = ", ".join(placeholders) if placeholders else "NULL"
+    clauses = ["i.team_id = :team_id", *_filter_clauses(filters, params)]
+    keyset = _keyset_clause(conn, filters, sort_key, operator, params)
+    if keyset is not None:
+        clauses.append(keyset)
 
-    keyset_sql = ""
-    cursor: tuple[str, str] | None = None
-    if filters.cursor:
-        cursor_key, cursor_id = decode_cursor(filters.cursor)
-        params["cursor_key"] = _cursor_value(filters.order, cursor_key)
-        params["cursor_id"] = cursor_id
-        keyset_sql = (
-            f"  AND ({sort_key} > :cursor_key"
-            f" OR ({sort_key} = :cursor_key AND i.id > :cursor_id))\n"
-        )
-        cursor = (cursor_key, cursor_id)
-    del cursor
-
-    sql = _SQL.format(sort_key=sort_key, label_placeholders=label_sql, keyset=keyset_sql)
+    sql = _SQL.format(
+        sort_key=sort_key,
+        where="\n  AND ".join(clauses),
+        order_by=f"({sort_key} IS NULL) ASC, {sort_key} {direction}, i.id {direction}",
+    )
     rows = conn.execute(sql, params).fetchall()
 
     has_more = len(rows) > filters.limit
@@ -324,8 +482,9 @@ def list_view(conn: sqlite3.Connection, filters: ListFilters) -> IssuePage:
 
     next_cursor: str | None = None
     if has_more and page_rows:
-        last = page_rows[-1]
-        next_cursor = encode_cursor(str(last["sort_value"]), last["id"])
+        next_cursor = encode_cursor(
+            sort_token(filters.order, filters.reverse), str(page_rows[-1]["id"])
+        )
 
     return IssuePage(items=items, next_cursor=next_cursor, has_more=has_more)
 

@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 13
+spec_revision: 17
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -1003,7 +1003,7 @@ it is fixed there, not here.
 | `update_comment` | `update_comment(uow, UpdateComment(comment_id=..., body=...), actor)` | aligned |
 | `add_labels` / `remove_labels` (plural) | `add_label` / `remove_label`, one call per label; the edge iterates (GAP-05) | rename in the edge |
 | `delete_issue` / `--hard` | does not exist: `trash_issue` (soft) and `archive_issue` (D-015) | remove from the edge |
-| `list_issues(uow, *, filters, sort, cursor) -> Page[Issue]` | `list_issues(db, ListFilters(limit, cursor, order, include_archived)) -> IssuePage` | aligned (D-011) |
+| `list_issues(uow, *, filters, sort, cursor) -> Page[Issue]` | **one form only:** `list_issues(db, filters: ListFilters) -> IssuePage`, with `limit`, `cursor`, `order` and `reverse` carried by `ListFilters` (D-011); the read path opens its own read-only connection, so it takes no unit of work | the edge adapts; the port does not grow a second shape |
 | `search_issues(q, ...)` | `search_issues(db, SearchQuery)`; the envelope belongs to SPEC-090 (D-016) | aligned |
 | `bootstrap_workspace(...)` | not from this spec: `app/teams.py::bootstrap(...)` is from SPEC-100 §2.5 | no change |
 
@@ -1226,9 +1226,18 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   per order and final tie-break by `issue.id`; `limit` 1-200 (default 50) is validated here and not in the
   edge; `has_more` comes from asking for `limit + 1` (never `COUNT(*)`); the cursor is
   `base64url(sort_key + "|" + id)`, opaque, and is decoded with the codec of SPEC-030 —`app/` does not do
-  `base64`—; an unreadable cursor or one from another `order` is `Validation(rule='INVALID_CURSOR')`. `NULL` goes to the
-  end in both directions. `offset` does not exist in this layer: web pagination uses a cursor, and the cap
-  500 of D-011 is applied in SPEC-070 before calling.
+  `base64`—; an unreadable cursor, one from another `order` or one from the other direction is
+  `Validation(rule='INVALID_CURSOR')`. `NULL` goes to the end in **both** directions: `reverse` inverts
+  the values and the `issue.id` tie-breaker, never the treatment of the absence (D-044), so an issue
+  without a `due_date` and one with `No priority` are last in `ASC` and in `DESC` alike. The keyset
+  predicate that follows from it is declared once, in SPEC-030 §2.6.1, in its two forms — an anchor
+  with a value and an anchor without one, where a row comparison against `NULL` would return no row.
+  `offset` does not exist in this layer: web pagination uses a cursor, and the cap 500 of D-011 is
+  applied in SPEC-070 before calling. The direction of each `order`
+  is the one SPEC-030 §2.6.1 declares (ASC, with `reverse` inverting key and tie-breaker together):
+  this layer neither chooses it nor passes a second one. `IssuePage` carries **no total** — no use case
+  counts the filtered set (REQ-N008) — and the `total_estimate` key the edges publish is a constant
+  `null` added at the edge.
 - **R19 — Read models without shadowing (D-019).** `IssueDetail`, `IssueListItem` and `AgendaEntry` are
   consumed as SPEC-030 declares them, including `visible` (not `is_visible`) and `is_open`; `app/` does not
   rename nor recompute those fields. `IssueRepo.positions` is invoked with `state_id` to read only the
@@ -1476,41 +1485,66 @@ Flow invariants:
     limit = f.limit or 50; 1 <= limit <= 200 otherwise => Validation(rule='LIMIT_RANGE')
     order = f.order or "manual"; order not in {manual,created,updated,priority,due}
             => Validation(rule='ORDER_INVALID')
- 2. tx = uow.read()                                # readonly repos, no BEGIN IMMEDIATE
+ 2. conn = db.ro_connection()                      # read-only connection, no BEGIN IMMEDIATE;
+                                                   # the port takes the database, not a unit of work
     team_id = f.team_id
-    ws_id = tx.teams.workspace().id                  # 030 §2.4
-    if team_id is not a 26-char ULID: team = tx.teams.get_by_key(ws_id, team_id)
+    ws_id = reads.workspace_id(conn)                 # 030 §2.4
+    if team_id is not a 26-char ULID: team = reads.team_by_key(conn, ws_id, team_id)
             -> None => NotFound(resource='team', key=team_id); team_id = team.id
- 3. if f.cursor:
-        (sort_key, last_id) = keyset.decode_cursor(f.cursor)     # base64url(sort_key|id), SPEC-030
-        invalid shape or sort_key from another `order` => Validation(rule='INVALID_CURSOR')
- 4. rows = reads.list_view(tx.connection,
-                           ListFilters(team_id=team_id, state=..., assignee=..., label=...,
-                                       priority=..., project=..., cycle=..., parent=...,
-                                       include_archived=f.include_archived, order=order,
-                                       cursor=..., limit=limit + 1))
+ 3. dir = "desc" if f.reverse else "asc"           # the direction is 030 §2.6.1's, not this layer's;
+                                                   # lowercase is the token's form (030 §2.6.2); the
+                                                   # uppercase SQL keyword belongs to the adapter
+ 4. if f.cursor:
+        (sort_key, last_id) = keyset.decode_cursor(f.cursor)   # base64url(order:dir|id), SPEC-030 §2.6.2
+        sort_key != f"{order}:{dir}" => Validation(rule='INVALID_CURSOR')
+        # exact string match against the canonical token: same order and same lowercase direction,
+        # which is what the adapter encoded in 030 §2.6.2
+        # the anchor must belong to the resolved team: reads.list_view raises INVALID_CURSOR when
+        # `SELECT <SORT_KEYS[order]> FROM v_issue WHERE id = last_id AND team_id = :team_id` is empty
+ 5. page = reads.list_view(conn, ListFilters(team_id=team_id, <every other filter of f,
+                                                     unchanged>, order=order, reverse=f.reverse,
+                                                     cursor=f.cursor, limit=limit))
         # exact signature from 030 §2.6: list_view(conn, filters: ListFilters) -> IssuePage
         # q is a title filter inside ListFilters (D-025): LIKE '%term%' over title, ESCAPE
-        # SQL-4: ORDER BY <sort_key> <dir>, issue.id <dir>  with NULL at the end;
-        # WHERE (sort_key, id) > (?, ?) — tuple comparison, no OFFSET
- 5. has_more = len(rows) > limit; items = rows[:limit]
- 6. next_cursor = keyset.encode_cursor(items[-1].sort_key, items[-1].id) if has_more else None
- 7. return IssuePage(items=tuple(items), next_cursor=next_cursor, has_more=has_more)
+        # the adapter asks for limit + 1 itself; the caller passes the user's limit, never limit + 1
+        # SQL-4: ORDER BY (<sort_key> IS NULL) ASC, <sort_key> <dir>, i.id <dir>   (D-044, 030 §2.6.1)
+        # WHERE the keyset predicate of 030 §2.6.1, in one of its two forms: an anchor with a value
+        #   (every absent row, or a later value, or the same value with a later id) or an anchor
+        #   without one (key IS NULL AND i.id <dir> cursor_id). Never a tuple comparison against a
+        #   NULL anchor — it returns no row — and never OFFSET.
+ 6. return page                       # items trimmed to limit, has_more by limit + 1, next_cursor
+                                     # already encoded by the adapter (030 §2.6.2)
 ```
 
 Flow rules:
 
+- **The filter travels as one object and this layer does not reinterpret it.** `list_issues` forwards
+  every family of `ListFilters` untouched (state, state type, priority, assignee, labels, project,
+  cycle, parent, `q`, visibility); the OR inside the state/state-type/priority families and the AND of
+  `label_ids` are decided in SPEC-030 §2.6, and folding or splitting a family here would give the CLI,
+  the API and the dashboard three different meanings for the same flag.
 - The cursor is **opaque**: the edge transports it as a string and does not interpret it; `app/` does not do
   `base64` (the codec belongs to SPEC-030) and never returns the `sort_key` in clear.
-- `limit + 1` is requested and then trimmed: `has_more` costs no `COUNT(*)` (D-011).
-- The order is **total** (`sort_key`, `id`): without the `id` tie-break, two issues with the same priority
-  can repeat or be lost between pages.
+- `limit + 1` is requested by the adapter and trimmed there: `has_more` costs no `COUNT(*)` (D-011), and
+  this layer passes the user's `limit` — asking for `limit + 1` here would make `limit=200` fail the
+  1-200 range of `ListFilters`.
+- The order is **total** (`sort_key`, `id`, same direction): without the `id` tie-break, two issues with
+  the same priority can repeat or be lost between pages. It is total across the rows without a value
+  for the same reason — `(<sort_key> IS NULL) ASC` puts them last in both directions and `id` orders
+  them among themselves (D-044) — so the page boundary does not depend on which section it falls in.
 - `order="manual"` uses `sort_order` (backlog) —the same column as `reorder_issue`—, not
   `board_order`: the listing and the board are two different orders of the same data.
 - `q` is a **title filter, not search**: workspace search is SPEC-090 / `search_issues` (D-025).
   `ListFilters.q` is passed through untouched to `reads.list_view`, which translates it to a
   `LIKE '%term%'` over `title` with the term's `%`/`_`/`\` escaped; this layer neither reinterprets it
   nor rejects it. The search grammar (`field:value`, negation, ranking) never enters this path.
+- **Nothing is counted.** `IssuePage` has `items`, `next_cursor` and `has_more` and no total (SPEC-030
+  §2.6): no use case runs `COUNT(*)` over the filtered set, and the `total_estimate` key that the edges
+  publish is a constant `null` they add themselves (REQ-N008).
+- **The cursor is positional, and it is bound to its ordering.** Page 2 sees the rows that sort after
+  the anchor; an issue created or closed in between changes the pages, not the validity of the cursor.
+  A cursor whose `sort_key` names another `order` or the other direction is `INVALID_CURSOR`, never a
+  silent restart at the first page, and so is one whose anchor no longer exists in the team.
 - `list_board` reuses the same pipeline per column (`state_id`) and the same `has_more` per group.
 
 ### 5.4 `update_issue` — field diff and history
@@ -1652,7 +1686,7 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `POSITION_OUT_OF_ORDER` | `Validation` | edge `sort_order` does not fall strictly between its neighbors | `move_issue` | 2 | 422 |
 | `RANKING_EXHAUSTED` | `Validation` | no float gap left even after rebalancing once | `move_issue`, `reorder_issue` | 2 | 422 |
 | `RANKING_DEGRADED` | `HifaError` | second consecutive failure after rebalancing: bug | `move_issue`, `rebalance_board` | **6** | 500 |
-| `INVALID_CURSOR` | `Validation` | unreadable, truncated cursor or one from another `order` | `list_issues`, `list_board` | 2 | 422 |
+| `INVALID_CURSOR` | `Validation` | unreadable or truncated cursor, one from another `order` or the other direction, or one whose anchor does not exist in the team | `list_issues`, `list_board` | 2 | 422 |
 | `LIMIT_RANGE` | `Validation` | `limit` outside 1-200 | `list_issues`, `list_board` | 2 | 422 |
 | `ORDER_INVALID` | `Validation` | `order` outside the D-011 vocabulary | `list_issues`, `list_board` | 2 | 422 |
 | `INCLUDE_INVALID` | `Validation` | `include` with a key outside `{comments,relations,attachments,history,children}` | `issue_detail` | 2 | 422 |
@@ -2133,6 +2167,37 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 17 (2026-11-13): **the listing port has one shape.** `§2.3` and `§5.3`
+  described the same function once as taking a unit of work and once as taking the database;
+  `ListFilters` already carries `limit`, `cursor`, `order` and `reverse` (D-011), so the extra
+  parameters had no content and the two forms would have built two listings.
+- spec_revision 16 (2026-11-13): **the cursor is compared against the token the adapter encodes.** §5.3
+  step 3 already derived `dir` in lowercase and step 4 already compared `f"{order}:{dir}"`, which is the
+  canonical form of SPEC-030 §2.6.2; the steps now say so, so the validation cannot be read as accepting
+  the uppercase SQL keyword. The encoder of SPEC-030 §2.6.2 emits the same lowercase form, which is the
+  pair this step accepts. No signature, rule name or error code changed.
+- spec_revision 15 (2026-11-13): **the position of the rows without a value is not a direction (D-044).**
+  R18 stated that `NULL` goes to the end in both directions and SPEC-030 §2.6.1 built the `ORDER BY`
+  from a single `dir` that inverted the key **and** the sentinel which carried the absence, which sent
+  the undated rows and `No priority` to the top under `reverse`. D-044 keeps R18 and states the order
+  in two parts — `(<sort_key> IS NULL) ASC` first, then the key and the `issue.id` tie-breaker in
+  `dir` — so `reverse` inverts the sequence of values and never the treatment of the absence. R18
+  drops the open point and points at the two forms of the keyset predicate that SPEC-030 §2.6.1 now
+  declares; §5.3 stops publishing a tuple comparison against a possibly `NULL` anchor, which returned
+  no row and ended the listing silently; the `total` flow rule says why the order stays total across
+  the rows without a value. No signature changed.
+- spec_revision 14 (2026-11-13): **`list_issues` is closed on the points an implementer had to
+  invent.** (1) §5.3 stops deriving the page: the adapter asks for `limit + 1`, trims and encodes
+  `next_cursor` (SPEC-030 §2.6.2), so the caller passes the user's `limit` — passing `limit + 1` from
+  here made `limit=200` exceed the 1-200 range of `ListFilters` — and the step that read
+  `items[-1].sort_key`, a field `IssueListItem` does not declare, is gone. (2) The cursor is validated
+  against `f"{order}:{dir}"`: a cursor from another order **or from the other direction** is
+  `INVALID_CURSOR`, and one whose anchor is absent from the team is rejected instead of restarting
+  silently at page 1. (3) The flow rules say what this layer must **not** reinterpret — the family
+  semantics of `ListFilters` (OR inside state/state-type/priority, AND for labels and across families,
+  SPEC-030 §2.6), the direction of each order (SPEC-030 §2.6.1) and the absence of a total
+  (`IssuePage` has no `total`; the `total_estimate` key is an edge constant, REQ-N008). R18 and the
+  `INVALID_CURSOR` row of §6 carry the same readings. No public signature changed.
 - spec_revision 13 (2026-11-13): **one table decides which milestone a state type stamps.**
   §3.2 declares `apply_milestones` for an issue that already exists and for one that does not,
   so the creation path and the move path read the same table instead of carrying a copy each.
