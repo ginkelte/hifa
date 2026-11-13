@@ -1347,3 +1347,22 @@ cycles which no requirement of v1 states; inventing it here would add a second p
 satisfy a sentence of SPEC-050. (c) *Publish one field name per edge*: the same error would arrive with
 different payloads depending on the transport, which is what the edge parity of P2 forbids.
 
+## D-043 — Sending an issue to the trash is a per-issue write, not a subtree
+
+**Conflict.** `001-mvp-v1.tasks.md` (T-06) describes sending an issue to the trash with
+`trashed = 1` on the issue **and its descendants inside one transaction**. `SPEC-040` §5.5 declares
+exactly one UPDATE of `trashed`, on the addressed issue, and `SPEC-050` §2.5.3 states that
+`issue delete` has no cascade.
+
+**Resolution: the component specs win, and the trash stays per-issue.** `SPEC-040` and `SPEC-050`
+are normative for the write; the task line describes an intention that no requirement of v1 restates
+and that the archive axis does not need: a parent and a child are independent rows, each with its own
+`trashed` layer, and hiding a subtree is a matter of the read, not of the write.
+
+- **SPEC-040** §5.5 keeps one UPDATE of `trashed` on the addressed issue.
+- **SPEC-050** §2.5.3 keeps the "no cascade" sentence.
+- **001-mvp-v1.tasks.md** T-06 is superseded on this point and follows the two component specs.
+
+**Why not the alternative.** Cascading the trash would make one write touch rows the caller never
+addressed, and restoring the parent would then have to guess which children to bring back — a subtree
+semantics the archive axis deliberately does not have (D-015 keeps every layer reversible per row).

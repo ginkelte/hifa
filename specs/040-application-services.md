@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 10
+spec_revision: 12
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -503,7 +503,7 @@ def update_issue(uow: UnitOfWork, cmd: UpdateIssue, actor: Actor) -> Issue: ...
 
 
 # raises: NotFound(issue|state|member|project|milestone|cycle|parent),
-#         Validation(those of create_issue + CLOSE_WITH_OPEN_CHILDREN|ISSUE_TRASHED|STATE_ARCHIVED),
+#         Validation(those of create_issue + TEAM_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|ISSUE_TRASHED|STATE_ARCHIVED),
 #         InvalidTransition(ISSUE_ARCHIVED)
 # Field-by-field diff: one history row per column that changes, none when the value is identical (§5.4).
 
@@ -1399,7 +1399,7 @@ numeric positions: the client does not send the whole column (070 R9) and the se
                 # nothing is written
  6.     column = tx.issues.positions(team_id=issue.team_id, scope="board", state_id=target.id)
         # positions sorted by board_order; the issue itself is excluded from the computation
-        if cmd.rebalance or (cmd.sort_order is None and ranking.exhausted(column)):
+        if cmd.rebalance or (cmd.sort_order is None and ranking.needs_rebalance(column)):
             column = _rebalance_column(tx, issue.team_id, target.id)      # R9, same transaction
  7.     according to cmd.position (R8); `first`/`last` are idempotent only in the target column:
           first  -> None if the issue already lives in the target column and is its first (R8)
@@ -2133,6 +2133,14 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 12 (2026-11-13): **every condition a write enforces is named by the function that
+  enforces it.** `update_issue` publishes `TEAM_ARCHIVED` among its own conditions instead of
+  inheriting it implicitly, so the list of refusals of the edit path is complete on the page
+  the implementer reads.
+- spec_revision 11 (2026-11-13): **the column check names the predicate the domain declares.**
+  §5.2 step 6 calls `ranking.needs_rebalance`, so a move that would close the fractional gap
+  rebalances the column in the same transaction instead of depending on a name the ranking
+  module does not provide.
 - spec_revision 10 (2026-11-13): **the position and `updated_at` rules have one reading each.** (1) §5.2
   step 7 states the only source of `None` — R8 idempotency, when the issue already is the first or the last
   element of the column it lives in — and leaves `ranking.last([])` for the empty column of a real move;
