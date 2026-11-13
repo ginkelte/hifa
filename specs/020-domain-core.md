@@ -4,7 +4,7 @@ title: Domain core
 component: domain
 status: review
 version: 1
-spec_revision: 4
+spec_revision: 5
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -696,12 +696,18 @@ class InvalidTransition(HifaError):
         self,
         message: str | None = None,
         *,
+        rule: str,
+        field: str | None = None,
         current: str,
         target: str,
         allowed: tuple[str, ...] = (),
         details: Mapping[str, Any] | None = None,
     ) -> None: ...
 
+    @property
+    def rule(self) -> str: ...
+    @property
+    def field(self) -> str | None: ...
     @property
     def current(self) -> str: ...
     @property
@@ -1183,6 +1189,10 @@ Executable from top to bottom; every step has a verification command.
 
 ## Notes
 
+- spec_revision 5 (2026-11-13): **the transition class carries the rule that decided it.**
+  §2.6 declares `rule` and `field` on `InvalidTransition`, the two attributes the edges map to
+  an exit code and a field name, so a write refused because the issue is archived names the
+  condition and the reference it acted on.
 - spec_revision 4 (2026-11-13): **`InvalidTransition` has a producer.** §6 stops calling the class
   reserved: no function of this layer raises it, and the single producer is the use-case layer, which
   raises it for a write on an issue with `archived_at` not null (SPEC-040 §6, R20; D-042). The class,
