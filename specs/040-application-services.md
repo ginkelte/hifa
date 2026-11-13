@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 19
+spec_revision: 20
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -85,7 +85,7 @@ a `dict` of changes: the typed command is the only transport (R4).
 | `create_member`, `update_member`, `deactivate_member` | `members` | write functions | yes |
 | `create_project`, `update_project`, `archive_project`, `add_milestone` | `projects` | write functions | yes |
 | `create_cycle`, `complete_cycle`, `add_issues_to_cycle` | `cycles` | write functions | yes |
-| `issue_detail`, `list_issues`, `list_board`, `agenda`, `search_issues`, `list_comments`, `list_attachments`, `list_members`, `member_detail`, `list_teams`, `team_detail`, `list_states`, `list_labels`, `label_detail`, `list_projects`, `project_detail`, `list_cycles`, `cycle_detail` | `boards` / `teams` / `labels` / `members` / `projects` / `cycles` | read functions | yes |
+| `issue_detail`, `list_issues`, `list_board`, `list_blocked`, `agenda`, `search_issues`, `list_comments`, `list_attachments`, `list_members`, `member_detail`, `list_teams`, `team_detail`, `list_states`, `list_labels`, `label_detail`, `list_projects`, `project_detail`, `list_cycles`, `cycle_detail` | `boards` / `teams` / `labels` / `members` / `projects` / `cycles` | read functions | yes |
 
 Read vocabulary, without exceptions: `list_<plural>` returns a tuple of summary rows;
 `<singular>_detail` returns the detail read model. `issue_detail` is the only one with a name of its
@@ -819,6 +819,20 @@ def list_board(
 # `ListFilters`; six loose kwargs (`state`, `assignee`, `label`, `cycle`, `project`, `q`) are NOT
 # the contract and no edge may reintroduce them. `order`, `cursor` and `offset` are ignored by the
 # board: the column order is `board_order`, not the listing's sort key (D-011).
+
+
+def list_blocked(db: Database, *, team: str | None = None) -> tuple[IssueListItem, ...]: ...
+
+
+# raises: NotFound(team).
+#
+# The live issues that are the target of a `blocks` edge whose source's `state.type` is neither
+# `completed` nor `canceled`: the verdict of SPEC-020 §4.1 R7 (D-046), read by `blocked_view` of
+# SPEC-030 §2.6 (SQL-10) and not re-decided here — no flag, no column and no `blocked_by` name
+# travels in a command. `team=None` spans the workspace; a key or ULID resolves like every other
+# team reference (`team_by_ref`) and no team is `NotFound(team)`. Ordered by `identifier` ASC. It is
+# not paginated: R18 pages `list_issues` and `list_board` only, and this read has no cursor and no
+# total. It is a read, so it opens `Database.ro_connection()` and takes no unit of work.
 
 
 def agenda(
@@ -1791,6 +1805,7 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `complete_cycle` | cycle | — | `CYCLE_ALREADY_COMPLETED` | — |
 | `add_issues_to_cycle` | cycle, issue | `CYCLE_COMPLETED`, `CYCLE_TEAM_MISMATCH` | — | — |
 | `issue_detail` / `list_*` / `agenda` / `search_issues` | issue, team, project, cycle, label, member | `INVALID_CURSOR`, `LIMIT_RANGE`, `ORDER_INVALID`, `INCLUDE_INVALID`, `DATE_RANGE_INVERTED`, `QUERY_EMPTY` | — | — |
+| `list_blocked` | team | — | — | — |
 
 Payload shape: the one of SPEC-020 §6 (`{"error": {"code", "message", "details"}}`). `details` always
 includes `resource`/`key` in `NotFound`, `rule`/`field` in `Validation` and `rule` in `Conflict`. The
@@ -2202,6 +2217,17 @@ Feature: Application use cases
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 20 (2026-11-13): **the blocked read is declared, and its predicate is cited (D-048).**
+  §2.2 gains `list_blocked(db, *, team=None) -> tuple[IssueListItem, ...]` — the read behind
+  `hifa issue blocked` (SPEC-050 §2.5.3) — with `NotFound(team)` as its only refusal, `identifier` ASC
+  as its order and no cursor, no limit and no total. The predicate is not written here: it is the
+  derived verdict of SPEC-020 §4.1 R7 (`is_hard` + `WorkflowStateType.is_terminal` of the blocker,
+  D-046) computed by `blocked_view` of SPEC-030 §2.6 (SQL-10), so this layer transports a read and
+  decides no rule. `blocked_by` stays a name: no command, field or code of this layer carries it. §2.1
+  exports the name and §6 gives the read its own matrix row with no `Validation` code — it is the one
+  read that cannot raise `INVALID_CURSOR`, `LIMIT_RANGE` or `ORDER_INVALID`, because it has none of
+  those knobs. No existing signature, envelope or exit code changed, so `version` stays at 3.
 
 - spec_revision 19 (2026-11-13): **every code of D-047 appears in a `# raises:` list, and the lists match
   §5.1 and §6.** §2.2 says "what is not listed is not raised", but `create_issue` declared a bare
