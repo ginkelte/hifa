@@ -1,3 +1,10 @@
+# [0.5.0](https://github.com/ginkelte/hifa/compare/v0.4.0...v0.5.0) (2026-11-13)
+
+
+### Features
+
+* **cli:** relate two issues, read what joins them, and list what is held back ([#19](https://github.com/ginkelte/hifa/issues/19)) ([848b61f](https://github.com/ginkelte/hifa/commit/848b61f1d190483e7d128ab3f2ec3639f98fe27e))
+
 # [0.4.0](https://github.com/ginkelte/hifa/compare/v0.3.1...v0.4.0) (2026-11-13)
 
 
