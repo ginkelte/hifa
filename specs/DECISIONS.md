@@ -1305,3 +1305,45 @@ code created on every run, and it was run red before the fix landed.
 
 P-12 is closed by this decision and its entry is left as written (append-only); nothing in P-12's
 description loses, the proposed fix it recorded is what R13 now states.
+
+## D-042 — `invalid_transition` has exactly one cause: writing an archived issue
+**Date:** 2026-11-13 · **Wins:** SPEC-040 §6 (R20) · **Touches:** SPEC-040 §2.2, §4.1, §5.5, §6;
+SPEC-050 §2.5.4, §2.6, §2.6.1, R5; SPEC-060 §6.1, §6.2, §6.3, §7; SPEC-070 §5.4
+
+The three edges publish the same five buckets of D-014 for the errors of a write, and one of them
+carries a single `code`: `invalid_transition`. The map has to be the same map, because the CLI, the API
+and the dashboard are three transports of one application layer (A7, P4): a client that learns the
+rule on one edge must not have to relearn it on the next.
+
+**Resolution.** In v1 `invalid_transition` — exit **5** in the CLI, **409** in the API — has exactly
+one producer: R20 of SPEC-040 §6, `ISSUE_ARCHIVED`, raised when a command writes an issue whose
+`archived_at` is not null. Everything else that reads like a state-machine refusal is `Validation` —
+exit **2**, **422**, `validation_error` — because that is the class SPEC-020 §2.5 raises:
+`CLOSE_WITH_OPEN_CHILDREN` (a terminal target or an archive with open sub-issues), `STATE_ARCHIVED`,
+`STATE_TEAM_MISMATCH` and `ISSUE_TRASHED`. A parent with open sub-issues is 422, not 409, on every
+edge.
+
+Consequences, recorded in the specs:
+
+- **`cycle close` loses exit 5.** `complete_cycle` declares `NotFound(cycle)` and
+  `Conflict(CYCLE_ALREADY_COMPLETED)` and no clock-based refusal (SPEC-040 §2.2, §6), so a cycle whose
+  `ends_at` is in the future is closed like any other and `hifa cycle close` exits 0, 3 or 4. A refusal
+  that no use case can raise is a rule the code cannot obey, so the condition is removed instead of
+  extending the layer to satisfy it.
+- **The payload names the reference.** `InvalidTransition` carries `rule='ISSUE_ARCHIVED'` and
+  `field='ref'`: the parameter that carried the reference is called `ref` on all three surfaces
+  (`hifa issue <verb> REF`, `POST /api/v1/issues/{ref}/…`, `data-identifier` on the board), so one
+  field name reaches the client whichever edge it uses.
+- **SPEC-050** §2.6.1 lists the single condition, §2.6 and §2.5.4 stop offering exit 5 for a cycle, and
+  R5 stops listing `cycle close` among the idempotent verbs.
+- **SPEC-060** publishes the map in §6.1; its example and its `move`-to-Done scenario answer
+  `validation_error` 422.
+- **SPEC-070** §5.4 step 4 answers 422 and keeps the same board reload and toast it already had.
+
+**Why not the alternatives.** (a) *Give `CLOSE_WITH_OPEN_CHILDREN` an `invalid_transition` code*: it is
+a domain rule that needs a count, not a transition of a state machine, and SPEC-020 reserves the class
+for R20 on purpose. (b) *Make `complete_cycle` refuse a future cycle*: that is a product rule about
+cycles which no requirement of v1 states; inventing it here would add a second producer to the layer to
+satisfy a sentence of SPEC-050. (c) *Publish one field name per edge*: the same error would arrive with
+different payloads depending on the transport, which is what the edge parity of P2 forbids.
+

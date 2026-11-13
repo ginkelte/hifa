@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 1
-spec_revision: 5
+version: 2
+spec_revision: 6
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/060-api-rest.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-13
 ---
 
 # SPEC-060 — REST API
@@ -894,9 +894,10 @@ $ curl -s -X PATCH localhost:7777/api/v1/issues/ENG-13 -H 'content-type: applica
 ```
 
 ```console
-$ curl -s -X POST localhost:7777/api/v1/issues/ENG-13/move \
+$ curl -si -X POST localhost:7777/api/v1/issues/ENG-13/move \
     -H 'content-type: application/json' -d '{"state":"Done"}'
-{"error":{"code":"invalid_transition","message":"cannot complete ENG-13: it has 2 open sub-issues",
+HTTP/1.1 422 Unprocessable Entity
+{"error":{"code":"validation_error","message":"cannot complete ENG-13: it has 2 open sub-issues",
           "field":"state","details":null}}
 ```
 
@@ -1070,7 +1071,7 @@ Exception           -> 500  internal_error
 | `validation_error` | 422 | invalid payload/query, unknown field, null `title`, `limit` out of range, invalid cursor | yes |
 | `not_found` | 404 | nonexistent ref/resource | `ref` or the param name |
 | `conflict` | 409 | uniqueness, label in use, team with issues, member with open issues, duplicate relation | yes |
-| `invalid_transition` | 409 | illegal transition (SPEC-050 §2.6.1), closing a future cycle | `state` |
+| `invalid_transition` | 409 | writing an issue with `archived_at` not null (SPEC-040 §6, R20) | `ref` |
 | `forbidden` | 403 | `read_only=True` and a write method | `null` |
 | `method_not_allowed` | 405 | method not declared for the route | `null` |
 | `payload_too_large` | 413 | body > 1 MiB | `null` |
@@ -1079,7 +1080,10 @@ Exception           -> 500  internal_error
 | `internal_error` | 500 | unmapped exception | `null` |
 
 `InvalidTransition` and `Conflict` share a status (409) but **not** the `code`: the client distinguishes
-"retryable with different data" (conflict) from "workflow rule" (invalid_transition).
+"retryable with different data" (conflict) from "the issue is archived" (invalid_transition). The map is
+the one D-042 records for the three edges: `invalid_transition` has a single producer, R20 of SPEC-040 §6,
+and every state-machine refusal that SPEC-020 raises — `CLOSE_WITH_OPEN_CHILDREN`, `STATE_ARCHIVED`,
+`STATE_TEAM_MISMATCH`, `ISSUE_TRASHED` — is `validation_error` 422.
 
 ### 6.2 Messages
 
@@ -1093,6 +1097,7 @@ internal data. The exact text is contract: the tests assert it.
 | duplicate key | `team with key 'ENG' already exists` |
 | label in use | `label 'bug' is in use by 12 issues` |
 | completing with open children | `cannot complete ENG-13: it has 2 open sub-issues` |
+| writing an archived issue | `issue 'ENG-13' is archived; restore it first` |
 | unknown field | `unknown field: colr` |
 | null in non-nullable | `title cannot be null` |
 | read-only | `server in read-only mode` |
@@ -1231,11 +1236,11 @@ Feature: hifa REST API
     And the issue ENG-14 still exists with trashed false
     And `SELECT COUNT(*) FROM issue` does not change
 
-  Scenario: move to Done with open sub-issues is 409 invalid_transition
+  Scenario: move to Done with open sub-issues is 422 validation_error
     Given an issue ENG-13 with two sub-issues in "Todo"
     When POST /api/v1/issues/ENG-13/move is performed with body {"state":"Done"}
-    Then the status is 409
-    And error.code is "invalid_transition"
+    Then the status is 422
+    And error.code is "validation_error"
     And the state of the issue did not change
 
   Scenario: a state from another team is 422
@@ -1350,6 +1355,13 @@ Feature: hifa REST API
 
 ## 11. Notes
 
+- spec_revision 6 (2026-11-13): **the error map is the one SPEC-040 §6 publishes (D-042), so `version` 2.**
+  `invalid_transition` describes its only producer — a write on an issue whose `archived_at` is not null
+  (R20) — and carries `field: ref`, the name of the parameter on every surface. A refused state machine,
+  which SPEC-020 expresses as `Validation` (`CLOSE_WITH_OPEN_CHILDREN`, `STATE_ARCHIVED`,
+  `STATE_TEAM_MISMATCH`, `ISSUE_TRASHED`), is `validation_error` 422: the `move` example of §6.3, the
+  message catalog of §6.2 and the `move`-to-Done scenario of §7 say 422, and §6.2 gains the message of the
+  archived case.
 - spec_revision 5 (2026-11-11): **`TeamCreate.key` stops disagreeing with the domain (D-030).** The
   field carried a private copy of the key pattern, `^[A-Z][A-Z0-9]{1,4}$` (2-5 characters), while
   SPEC-020 §2.2 owns `KEY_PATTERN` = `^[A-Z][A-Z0-9]{1,9}$` (2-10) and SPEC-100 §2.3 seeds its
