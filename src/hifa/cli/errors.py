@@ -58,7 +58,7 @@ _JSON_CODES: dict[str, str] = {
 #: CLI codes whose message is already the whole sentence: the code is not repeated on
 #: `stderr` (it stays in the `--json` envelope and in the exit code).
 _UNPREFIXED_CLI_CODES: frozenset[str] = frozenset(
-    {"invalid_option", "database_not_found", "no_changes", "confirmation_required"}
+    {"invalid_option", "database_not_found", "no_changes", "confirmation_required", "not_found"}
 )
 
 

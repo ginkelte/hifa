@@ -14,17 +14,21 @@ a presentation helper (it resolves names for the envelope), not a use case.
 
 from __future__ import annotations
 
+import enum
 import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 
 from hifa.adapters.clock import SystemClock
 from hifa.adapters.idgen import UlidGen
+from hifa.adapters.sqlite.connection import Database
+from hifa.adapters.sqlite.reads import IssueListItem, IssuePage, ListFilters, OrderKey
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
+from hifa.app.boards import list_issues
 from hifa.app.commands import (
     UNSET,
     Actor,
@@ -47,7 +51,7 @@ from hifa.cli import output
 from hifa.cli.context import CliContext
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
 from hifa.config import ConfigError, resolve_config
-from hifa.domain.entities import Issue, Label, Member
+from hifa.domain.entities import Issue, Label, Member, Team
 from hifa.domain.errors import HifaError, NotFound
 
 issue_app = typer.Typer(
@@ -57,7 +61,7 @@ issue_app = typer.Typer(
     add_completion=False,
 )
 
-#: Columns of the row printed by every issue mutation.
+#: Columns of the row printed by every issue mutation and by `issue list`.
 ISSUE_TABLE_COLUMNS: tuple[str, ...] = (
     "identifier",
     "p",
@@ -70,6 +74,18 @@ ISSUE_TABLE_COLUMNS: tuple[str, ...] = (
 
 #: Priority -> single-cell glyph.
 PRIORITY_GLYPHS: dict[int, str] = {0: "–", 1: "U", 2: "H", 3: "M", 4: "L"}
+
+
+class StateTypeChoice(enum.StrEnum):
+    """The six workflow state types a listing can select."""
+
+    triage = "triage"
+    backlog = "backlog"
+    unstarted = "unstarted"
+    started = "started"
+    completed = "completed"
+    canceled = "canceled"
+
 
 _PRIORITY_NAMES: dict[str, int] = {
     "none": 0,
@@ -146,6 +162,118 @@ def create_command(
         raise fail(exc) from exc
 
     output.emit(row, table_cols=ISSUE_TABLE_COLUMNS, json_obj=payload)
+
+
+@issue_app.command("list")
+def list_command(
+    ctx: typer.Context,
+    team: str | None = typer.Option(None, "--team", help="Team key or ULID."),
+    state: list[str] | None = typer.Option(
+        None, "-s", "--state", help="State name (case-insensitive) or ULID (repeatable)."
+    ),
+    state_type: list[StateTypeChoice] | None = typer.Option(
+        None,
+        "--state-type",
+        help="triage, backlog, unstarted, started, completed or canceled (repeatable).",
+    ),
+    priority: list[int] | None = typer.Option(
+        None, "-p", "--priority", help="Priority 0..4, 0 is No priority (repeatable)."
+    ),
+    assignee: str | None = typer.Option(
+        None, "-a", "--assignee", help="Member id, display name or email."
+    ),
+    mine: bool = typer.Option(False, "--mine", help="Only the issues of the resolved member."),
+    unassigned: bool = typer.Option(
+        False, "--unassigned", help="Only the issues without an assignee."
+    ),
+    labels: list[str] | None = typer.Option(
+        None, "-l", "--label", help="Label name (case-insensitive) or ULID (repeatable)."
+    ),
+    project: str | None = typer.Option(None, "--project", help="Project ULID."),
+    cycle: str | None = typer.Option(None, "--cycle", help="Cycle ULID."),
+    no_cycle: bool = typer.Option(False, "--no-cycle", help="Only the issues without a cycle."),
+    parent: str | None = typer.Option(
+        None, "--parent", help="Parent issue (ENG-1 or ULID): its direct children only."
+    ),
+    query: str | None = typer.Option(None, "--query", help="Substring of the title."),
+    open_issues: bool = typer.Option(
+        True, "--open/--all", help="Only open issues (default) or every state."
+    ),
+    archived: bool = typer.Option(False, "--archived", help="Only the archived issues."),
+    trashed: bool = typer.Option(False, "--trashed", help="Only the trash (implies --all)."),
+    sort: str = typer.Option(
+        "manual", "--sort", help="manual (default), created, updated, priority or due."
+    ),
+    reverse: bool = typer.Option(False, "--reverse", help="Invert the order."),
+    limit: int = typer.Option(50, "--limit", help="Page size, 1-200."),
+    cursor: str | None = typer.Option(
+        None, "--cursor", help="Cursor from the next_cursor of the previous page."
+    ),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """List the issues of one team, one page at a time."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+    json_mode = output.options().json
+    quiet_mode = output.options().quiet
+
+    try:
+        _reject_contradictory_filters(
+            assignee=assignee,
+            mine=mine,
+            unassigned=unassigned,
+            archived=archived,
+            trashed=trashed,
+            cycle=cycle,
+            no_cycle=no_cycle,
+        )
+        rows, items, page = _run_list(
+            db_flag=db if db is not None else root.db,
+            team=team,
+            state=state,
+            state_types=state_type,
+            priorities=priority,
+            assignee=assignee,
+            mine=mine,
+            unassigned=unassigned,
+            labels=labels,
+            project=project,
+            cycle=cycle,
+            no_cycle=no_cycle,
+            parent=parent,
+            query=query,
+            open_issues=open_issues,
+            archived=archived,
+            trashed=trashed,
+            sort=sort,
+            reverse=reverse,
+            limit=limit,
+            cursor=cursor,
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    envelope = {
+        "items": items,
+        "next_cursor": page.next_cursor,
+        "has_more": page.has_more,
+        "total_estimate": None,
+    }
+    output.emit(
+        rows,
+        table_cols=ISSUE_TABLE_COLUMNS,
+        json_obj=envelope,
+        quiet_obj=[row["identifier"] for row in rows],
+    )
+    if not rows and not json_mode and not quiet_mode:
+        output.write_note("0 issues")
 
 
 @issue_app.command("edit")
@@ -352,6 +480,211 @@ def restore_command(
     _emit_issue(row, payload)
 
 
+# --- reads ------------------------------------------------------------------------------
+
+
+def _reject_contradictory_filters(
+    *,
+    assignee: str | None,
+    mine: bool,
+    unassigned: bool,
+    archived: bool,
+    trashed: bool,
+    cycle: str | None,
+    no_cycle: bool,
+) -> None:
+    """The flag pairs that cannot both be true: the edge refuses, it never picks one.
+
+    Each pair describes one column in two directions, so honouring both would mean
+    guessing which half the caller meant instead of answering it.
+    """
+    if assignee is not None and mine:
+        raise CliError(
+            "use -a/--assignee or --mine, not both", code="invalid_option", field="assignee"
+        )
+    if assignee is not None and unassigned:
+        raise CliError(
+            "use -a/--assignee or --unassigned, not both", code="invalid_option", field="assignee"
+        )
+    if mine and unassigned:
+        raise CliError(
+            "use --mine or --unassigned, not both", code="invalid_option", field="assignee"
+        )
+    if archived and trashed:
+        raise CliError(
+            "use --archived or --trashed, not both", code="invalid_option", field="archived"
+        )
+    if cycle is not None and no_cycle:
+        raise CliError("use --cycle or --no-cycle, not both", code="invalid_option", field="cycle")
+
+
+def _run_list(
+    *,
+    db_flag: str | None,
+    team: str | None,
+    state: list[str] | None,
+    state_types: list[StateTypeChoice] | None,
+    priorities: list[int] | None,
+    assignee: str | None,
+    mine: bool,
+    unassigned: bool,
+    labels: list[str] | None,
+    project: str | None,
+    cycle: str | None,
+    no_cycle: bool,
+    parent: str | None,
+    query: str | None,
+    open_issues: bool,
+    archived: bool,
+    trashed: bool,
+    sort: str,
+    reverse: bool,
+    limit: int,
+    cursor: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], IssuePage]:
+    """Resolve the references and the team, build one filter object and read one page.
+
+    The references are names or ids by contract, so the edge resolves them against the
+    repositories and hands `list_issues` a `ListFilters` of ids; the predicates, the
+    ordering and the page size belong to the layer below and are not repeated here.
+    """
+    cfg = resolve_config(db_flag=db_flag)
+    db_path = Path(cfg.db_path)
+    if str(db_path) == ":memory:" or not db_path.is_file():
+        raise CliError(
+            f"database not found: {db_path}",
+            code="database_not_found",
+            field="db",
+            exit_code=EXIT_NOT_FOUND,
+        )
+
+    uow = UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        with uow.read() as repos:
+            resolved = _team_entity(repos, _resolve_team(repos, team, cfg.default_team))
+            filters = ListFilters(
+                team_id=resolved.id,
+                state_ids=_state_filter(repos, resolved, state),
+                state_types=tuple(choice.value for choice in state_types or ()),
+                priorities=tuple(int(value) for value in priorities or ()),
+                assignee_id=_assignee_filter(repos, assignee, mine=mine),
+                unassigned=unassigned,
+                label_ids=_label_filter(repos, resolved, labels),
+                project_id=project,
+                cycle_id=cycle,
+                no_cycle=no_cycle,
+                parent_id=_parent_filter(repos, resolved, parent),
+                q=query,
+                is_open=_is_open_filter(open_issues=open_issues, trashed=trashed),
+                archived_only=archived,
+                trashed_only=trashed,
+                order=cast("OrderKey", sort),
+                reverse=reverse,
+                limit=limit,
+                cursor=cursor,
+            )
+    finally:
+        uow.close()
+
+    page = list_issues(Database(db_path), filters)
+    items = [_list_item(item) for item in page.items]
+    return [_list_row(item) for item in page.items], items, page
+
+
+def _is_open_filter(*, open_issues: bool, trashed: bool) -> bool | None:
+    """`True` for the default open listing, no predicate for `--all` and for the trash.
+
+    The trash is the deeper layer: a trashed issue is reachable whatever its state, so the
+    flag opens the state axis on its own.
+    """
+    return None if trashed or not open_issues else True
+
+
+def _team_entity(repos: Repos, ref: str) -> Team:
+    """Team by ULID or by key, in any case; an unknown reference is exit 3."""
+    wanted = ref.strip()
+    for team in repos.teams.list(include_archived=True):
+        if team.id == wanted or team.key.casefold() == wanted.casefold():
+            return team
+    raise NotFound(resource="team", key=ref)
+
+
+def _state_filter(repos: Repos, team: Team, refs: list[str] | None) -> tuple[str, ...]:
+    """State names (case-insensitive, within the team) or ULIDs, resolved to ids."""
+    if not refs:
+        return ()
+    candidates = repos.states.list_for_team(team.id, include_archived=True)
+    by_ref: dict[str, str] = {}
+    for candidate in candidates:
+        by_ref[candidate.id] = candidate.id
+        by_ref.setdefault(candidate.name.casefold(), candidate.id)
+    ids: list[str] = []
+    for ref in refs:
+        text = ref.strip()
+        found = by_ref.get(text) or by_ref.get(text.casefold())
+        if found is None:
+            raise _not_found("state", ref)
+        ids.append(found)
+    return tuple(ids)
+
+
+def _label_filter(repos: Repos, team: Team, refs: list[str] | None) -> tuple[str, ...]:
+    """Label names (case-insensitive; the team label before the workspace one) or ULIDs."""
+    if not refs:
+        return ()
+    workspace = repos.teams.workspace()
+    by_ref: dict[str, str] = {}
+    if workspace is not None:
+        team_labels = repos.labels.list(workspace.id, team_id=team.id, include_retired=True)
+        shared_labels = repos.labels.list(workspace.id, team_id=None, include_retired=True)
+        for candidate in (*team_labels, *shared_labels):
+            by_ref[candidate.id] = candidate.id
+            by_ref.setdefault(candidate.name.casefold(), candidate.id)
+    ids: list[str] = []
+    for ref in refs:
+        text = ref.strip()
+        found = by_ref.get(text) or by_ref.get(text.casefold())
+        if found is None:
+            raise _not_found("label", ref)
+        ids.append(found)
+    return tuple(ids)
+
+
+def _parent_filter(repos: Repos, team: Team, ref: str | None) -> str | None:
+    """Parent identifier or ULID of the resolved team, as an id; unknown is exit 3."""
+    if ref is None:
+        return None
+    text = ref.strip()
+    issue = repos.issues.get(text) or repos.issues.get_by_identifier(text)
+    if issue is None or issue.team_id != team.id:
+        raise _not_found("parent", ref, noun="issue")
+    return issue.id
+
+
+def _assignee_filter(repos: Repos, ref: str | None, *, mine: bool) -> str | None:
+    """`--mine` is the resolved member; `-a` is the member reference of the vocabulary."""
+    if not mine:
+        return _resolve_assignee(repos, ref)
+    member_id = _local_member(repos)
+    if member_id is None:
+        raise CliError(
+            "no member for --mine: use HIFA_MEMBER, an email or a ULID",
+            code="missing_context",
+            field="assignee",
+        )
+    return member_id
+
+
+def _not_found(field: str, ref: str, *, noun: str | None = None) -> CliError:
+    """Exit 3 naming the flag whose reference matched nothing."""
+    return CliError(
+        f"{noun or field} not found: {ref}",
+        code="not_found",
+        field=field,
+        exit_code=EXIT_NOT_FOUND,
+    )
+
+
 # --- orchestration ----------------------------------------------------------------------
 
 
@@ -483,6 +816,7 @@ def _resolve_team(repos: Repos, flag: str | None, default_team: str | None) -> s
 
 
 def _resolve_assignee(repos: Repos, ref: str | None) -> str | None:
+    """Member id for a reference of the vocabulary: ULID, display name or email, any case."""
     if ref is None:
         return None
     value = ref.strip()
@@ -499,8 +833,24 @@ def _resolve_assignee(repos: Repos, ref: str | None) -> str | None:
             )
     member = repos.members.get(value) or repos.members.get_by_email(value)
     if member is None:
-        raise NotFound(resource="member", key=value)
+        member = _member_by_display_name(repos, value)
+    if member is None:
+        raise _not_found("assignee", value, noun="member")
     return member.id
+
+
+def _member_by_display_name(repos: Repos, value: str) -> Member | None:
+    """Member whose display name or email equals `value` ignoring case."""
+    workspace = repos.teams.workspace()
+    if workspace is None:
+        return None
+    wanted = value.casefold()
+    for candidate in repos.members.list(workspace.id, include_inactive=True):
+        if candidate.display_name.casefold() == wanted:
+            return candidate
+        if candidate.email is not None and candidate.email.casefold() == wanted:
+            return candidate
+    return None
 
 
 def _local_member(repos: Repos) -> str | None:
@@ -919,6 +1269,63 @@ def _table_row(payload: dict[str, Any]) -> dict[str, Any]:
         "labels": ", ".join(label["name"] for label in labels) or None,
         "due": payload["due_date"],
     }
+
+
+def _list_row(item: IssueListItem) -> dict[str, Any]:
+    """One row of `issue list`: the columns of the listing table."""
+    return {
+        "identifier": item.identifier,
+        "p": PRIORITY_GLYPHS.get(int(item.priority), "–"),
+        "state": item.state_name,
+        "assignee": item.assignee_name,
+        "title": item.title,
+        "labels": ", ".join(label.name for label in _sorted_labels(item)) or None,
+        "due": _iso_date(item.due_date),
+    }
+
+
+def _list_item(item: IssueListItem) -> dict[str, Any]:
+    """One element of the page: every field the listing read model carries.
+
+    Dates are serialized here because the summary is not a domain entity and the formatter
+    only knows how to encode the types `--json` may meet.
+    """
+    return {
+        "id": item.id,
+        "identifier": item.identifier,
+        "title": item.title,
+        "priority": int(item.priority),
+        "priority_label": item.priority_label,
+        "estimate": item.estimate,
+        "due_date": _iso_date(item.due_date),
+        "state": {
+            "id": item.state_id,
+            "name": item.state_name,
+            "type": item.state_type,
+            "color": item.state_color,
+        },
+        "assignee": None
+        if item.assignee_id is None
+        else {"id": item.assignee_id, "display_name": item.assignee_name},
+        "project_id": item.project_id,
+        "cycle_id": item.cycle_id,
+        "parent_id": item.parent_id,
+        "labels": [
+            {"id": label.id, "name": label.name, "color": label.color}
+            for label in _sorted_labels(item)
+        ],
+        "sort_order": item.sort_order,
+        "board_order": item.board_order,
+        "is_open": bool(item.is_open),
+        "team_key": item.team_key,
+        "created_at": _iso(item.created_at),
+        "updated_at": _iso(item.updated_at),
+    }
+
+
+def _sorted_labels(item: IssueListItem) -> tuple[Any, ...]:
+    """Labels by name, ignoring case, so two runs over the same data print the same order."""
+    return tuple(sorted(item.labels, key=lambda label: label.name.casefold()))
 
 
 def _team_ref(team: Any) -> dict[str, Any] | None:

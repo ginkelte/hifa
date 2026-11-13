@@ -78,6 +78,11 @@ def write_line(text: str = "") -> None:
     typer.echo(text)
 
 
+def write_note(text: str) -> None:
+    """Diagnostic line to `stderr`: it never shares the stream that carries data."""
+    typer.echo(text, err=True)
+
+
 # --- table -----------------------------------------------------------------------------
 
 #: Columns whose content is truncated.
@@ -311,4 +316,5 @@ __all__ = [
     "render_table",
     "write_json",
     "write_line",
+    "write_note",
 ]

@@ -14,7 +14,7 @@ from hifa.adapters.sqlite import reads
 from hifa.adapters.sqlite.connection import Database
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssuePage, ListFilters
 from hifa.domain.entities import Team
-from hifa.domain.errors import NotFound
+from hifa.domain.errors import NotFound, Validation
 
 #: Collections a detail read asks for. Owned by `issue_detail`, which rejects any other name.
 DETAIL_INCLUDE: frozenset[str] = reads.DETAIL_INCLUDE
@@ -81,17 +81,40 @@ def resolve_filters(
 
 
 def list_issues(db: Database, filters: ListFilters) -> IssuePage:
-    """Keyset page of the listing; `filters.team_id` may be a key or a ULID."""
+    """Keyset page of the listing; `filters.team_id` may be a key or a ULID.
+
+    The page size and the ordering are re-checked here, not only in `ListFilters`: an object
+    that skipped its constructor still must not reach the query. The cursor is decoded here
+    only to compare its ordering against the token this layer would encode, so a page
+    presented under another sort or the other direction is refused instead of silently
+    restarting; the position and the anchor belong to the adapter.
+    """
+    limit = filters.limit if filters.limit is not None else reads.DEFAULT_LIMIT
+    if not 1 <= limit <= reads.MAX_LIMIT:
+        raise Validation("limit out of range", rule="LIMIT_RANGE", field="limit", value=limit)
+
+    order = filters.order or "manual"
+    if order not in reads.SORT_KEYS:
+        raise Validation("unknown order", rule="ORDER_INVALID", field="order", value=order)
+
+    if filters.cursor:
+        token, _ = reads.decode_cursor(filters.cursor)
+        if token != reads.sort_token(order, filters.reverse):
+            raise Validation(
+                "cursor names another ordering",
+                rule="INVALID_CURSOR",
+                field="cursor",
+                value=filters.cursor,
+            )
+
     conn = db.ro_connection()
     try:
-        if len(filters.team_id) == 26:
-            resolved = filters.team_id
-        else:
-            team = reads.team_by_ref(conn, filters.team_id)
-            if team is None:
-                raise NotFound(resource="team", key=filters.team_id)
-            resolved = team.id
-        return reads.list_view(conn, replace(filters, team_id=resolved))
+        resolved = reads.team_by_ref(conn, filters.team_id)
+        if resolved is None:
+            raise NotFound(resource="team", key=filters.team_id)
+        return reads.list_view(
+            conn, replace(filters, team_id=resolved.id, order=order, limit=limit)
+        )
     finally:
         conn.close()
 
