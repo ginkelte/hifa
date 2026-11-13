@@ -1,3 +1,10 @@
+# [0.6.0](https://github.com/ginkelte/hifa/compare/v0.5.0...v0.6.0) (2026-11-13)
+
+
+### Features
+
+* **web:** the dashboard notices a foreign write without moving the reader ([#20](https://github.com/ginkelte/hifa/issues/20)) ([83e7235](https://github.com/ginkelte/hifa/commit/83e7235cae4fdd5e7623c57cc48854c2e0f372b5))
+
 # [0.5.0](https://github.com/ginkelte/hifa/compare/v0.4.0...v0.5.0) (2026-11-13)
 
 
