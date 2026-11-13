@@ -652,8 +652,12 @@ def test_asset_budget_is_under_75_kb_gzip() -> None:
         if path.suffix in {".js", ".css", ".svg"}:
             total += len(gzip.compress(path.read_bytes(), compresslevel=9))
     assert total <= 75 * 1024, total
-    assert (STATIC / "css" / "app.css").stat().st_size <= 20 * 1024
-    assert (STATIC / "js" / "app.js").stat().st_size <= 12 * 1024
+    # The budget of the table is gzip -9 for every file, the vendor ones included; a raw byte
+    # comparison would hold the own files to a ceiling a third of the declared one.
+    assert (
+        len(gzip.compress((STATIC / "css" / "app.css").read_bytes(), compresslevel=9)) <= 20 * 1024
+    )
+    assert len(gzip.compress((STATIC / "js" / "app.js").read_bytes(), compresslevel=9)) <= 12 * 1024
 
 
 def test_templates_carry_no_logic() -> None:

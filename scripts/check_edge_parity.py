@@ -221,6 +221,7 @@ FRAGMENT_ALLOWLIST: Mapping[Route, str] = {
     ("GET", "/_/issues/{identifier}/card"): "htmx partial of one board card",
     ("GET", "/_/issues/{identifier}/panel"): "htmx partial of the issue panel",
     ("GET", "/_/counts"): "htmx partial of the dashboard counters",
+    ("GET", "/_/revision"): "htmx read of the change signal: one number, no HTML to swap",
     ("POST", "/_/issues"): "htmx quick-add: the web transport of `issue create`",
     ("POST", "/_/states/{state_id}/position"): "htmx write of the board drag & drop",
 }

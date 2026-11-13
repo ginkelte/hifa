@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/css/app.css">
   {% block head %}{% endblock %}
 </head>
-<body class="no-js">
+<body class="no-js" data-revision="{{ page.revision }}" data-refresh="{{ page.refresh_url or '' }}">
   {% include "partials/sidebar.html" %}
   <div class="shell">
     <header class="topbar">
@@ -40,6 +40,9 @@
   </div>
   <div id="panel" class="panel-slot">{% block panel %}{% endblock %}</div>
   <div id="toasts">{% include "partials/toasts.html" %}</div>
+  {% if page.refresh_url %}
+  <div id="revision-probe" hx-get="/_/revision" hx-swap="none" hx-trigger="every {{ page.revision_poll }}"></div>
+  {% endif %}
   <noscript><p class="noscript">Without JavaScript the filters and every issue page still work as plain links; quick add, the issue panel and the keyboard shortcuts need it.</p></noscript>
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/vendor/alpine.csp.min.js" defer></script>

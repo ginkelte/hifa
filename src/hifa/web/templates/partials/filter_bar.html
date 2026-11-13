@@ -1,7 +1,7 @@
 <form class="filter-bar" method="get" action="{{ vm.filter_action }}"
       hx-get="/_/issues?view={{ vm.view }}&team={{ vm.team.key }}"
       hx-trigger="keyup changed delay:250ms from:find input[name=q], change from:find select"
-      hx-target="{{ vm.target }}" hx-swap="innerHTML" hx-include="closest form">
+      hx-target="{{ vm.target }}" hx-swap="outerHTML" hx-include="closest form">
   <input type="search" name="q" class="filter-search" value="{{ vm.filter_text.q }}"
          placeholder="Filter by title" aria-label="Filter by title" autocomplete="off">
   {% for chip in vm.chips %}
