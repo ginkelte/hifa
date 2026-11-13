@@ -1724,6 +1724,13 @@ answer only if the probe stops using that path.
   the file underneath, because SQLite does not notify anyone. `hx-trigger="every REVISION_POLL [visible]"` is one
   request per **visible** tab every 5 s, with no reconnect story, no state on the server and no daemon to keep
   alive; hidden tabs cost nothing. The interval is a single constant so that changing it is one edit.
+- **The visibility guard cannot ride on the trigger.** htmx compiles a trigger's `[condition]` filter through
+  `Function`, and this layer serves `script-src 'self'` (SPEC-070 §2.1.4) — no `'unsafe-eval'`. An eval that is
+  refused is caught by htmx and reported as *do not fire*, so the filter would be not a weaker guard but a silent
+  stop: the probe would never run and the dashboard would look untouched. The interval stays unfiltered in the
+  attribute and the guard moves to the client, which cancels `htmx:beforeRequest` for the probe while the tab is
+  hidden. The alternative — widening the CSP to allow eval — trades a page-wide capability for a one-line
+  condition, and the layer already refuses that trade for Alpine, which is why the CSP build is the one vendored.
 - **The cost is bounded and declared.** One read-only connection per process (a new resource in this layer,
   closed by `lifespan`), one `PRAGMA` per visible tab per interval, one fragment re-render per observed foreign
   revision, and one read of one issue when an open, clean panel re-renders. Nothing is written, nothing is
