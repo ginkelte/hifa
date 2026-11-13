@@ -435,16 +435,38 @@ def test_the_pending_value_is_spent_by_the_answer_that_adopted_it() -> None:
 
 
 def test_a_reload_that_never_answers_does_not_silence_the_page() -> None:
-    """htmx's own request timeout is 0 (none at all), so the bound is the client's: a reload still
-    in flight after it is abandoned and asked again instead of blocking every later tick."""
+    """The wait is bounded, and the retry that follows is a request htmx will actually send.
+
+    htmx has no request timeout of its own, so the bound is the client's. Releasing the flag is
+    not enough, though: htmx keys the request in flight on the element that acts — here
+    `document.body`, because the reload calls `htmx.ajax` without a `source` — and while that slot
+    is taken it queues the next call, resolves its promise at once and sends nothing. The watchdog
+    therefore aborts that element before it asks again, or the retry would leave the flag clear and
+    the browser idle: a page that looks alive with a board that never updates.
+
+    This test pins the shape of that order. The two real requests are proven in a browser against
+    a proxy that never answers; a source check could not see them.
+    """
     source = JS.read_text(encoding="utf-8")
     assert re.search(r"var RELOAD_MS = \d+;", source), "the wait has a bound"
+    assert re.search(r"var RELOAD_MS = 10000;", source), "and it is the 10 s the contract names"
 
     swap = _block("function swapInto(")
     assert "setTimeout(" in swap
     watchdog = swap[swap.index("setTimeout(") :]
     assert re.search(r"revision\.inFlight = false", watchdog), "the bound releases the flag"
     assert "flushRevision()" in watchdog, "and asks again"
+
+    # The abort comes first: the slot htmx keys the request on has to be free before the retry,
+    # and it is the same element the reload acted as.
+    abort = watchdog.index('window.htmx.trigger(document.body, "htmx:abort")')
+    retry = watchdog.index("flushRevision()")
+    assert abort < retry, "the stale request is aborted before the reload is asked again"
+
+    # One path, not two: the retry is the call the first attempt already made, and nothing in the
+    # watchdog opens a request of its own beside it.
+    assert source.count("window.htmx.ajax(") == 1, "one request mechanism, not a parallel second"
+    assert "htmx.ajax(" not in watchdog[:retry], "the watchdog does not send the request itself"
 
     settle = _block("function settle(")
     assert re.search(r"if \(token !== reloads\) return;", settle), (

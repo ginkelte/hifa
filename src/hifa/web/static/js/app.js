@@ -121,6 +121,15 @@
       // silence the page for the rest of the session.
       revision.inFlight = false;
       revision.watchdog = null;
+      // htmx keys the request in flight on the element that acts, and `htmx.ajax` called without
+      // a `source` acts as `document.body`. While that slot is taken htmx queues the next call,
+      // resolves its promise immediately and sends nothing, so asking again below would never
+      // leave the browser. Aborting on the same element hands the slot back first.
+      try {
+        window.htmx.trigger(document.body, "htmx:abort");
+      } catch (error) {
+        /* no htmx on the page: there is no slot to release */
+      }
       flushRevision();
     }, RELOAD_MS);
     var done = function () {
