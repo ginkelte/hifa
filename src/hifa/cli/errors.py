@@ -57,8 +57,19 @@ _JSON_CODES: dict[str, str] = {
 
 #: CLI codes whose message is already the whole sentence: the code is not repeated on
 #: `stderr` (it stays in the `--json` envelope and in the exit code).
+# Codes whose sentence already names what is missing, so no `(field: …)` suffix is added.
+_NO_FIELD_SUFFIX_CODES: frozenset[str] = frozenset({"missing_context"})
+
+
 _UNPREFIXED_CLI_CODES: frozenset[str] = frozenset(
-    {"invalid_option", "database_not_found", "no_changes", "confirmation_required", "not_found"}
+    {
+        "invalid_option",
+        "database_not_found",
+        "no_changes",
+        "confirmation_required",
+        "not_found",
+        "missing_context",
+    }
 )
 
 
@@ -160,9 +171,14 @@ def error_payload(exc: BaseException) -> dict[str, object]:
 
 
 def format_human(exc: BaseException) -> str:
-    """`hifa: <message> (field: <field>)` line — the prefix and the `field` are contractual."""
+    """`hifa: <message> (field: <field>)` line — the prefix and the `field` are contractual.
+
+    Two exceptions, both declared by the message catalog: a code whose message already reads
+    as a sentence is not prefixed, and a message that names what is missing carries no field.
+    """
     message = error_message_for(exc)
-    field = error_field_for(exc)
+    code = getattr(exc, "code", "")
+    field = None if code in _NO_FIELD_SUFFIX_CODES else error_field_for(exc)
     return f"hifa: {message}" + (f" (field: {field})" if field else "")
 
 

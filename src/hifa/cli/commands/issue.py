@@ -48,7 +48,7 @@ from hifa.app.issues import (
     update_issue,
 )
 from hifa.cli import output
-from hifa.cli.context import CliContext
+from hifa.cli.context import CliContext, resolve_team
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
 from hifa.config import ConfigError, resolve_config
 from hifa.domain.entities import Issue, Label, Member, Team
@@ -561,7 +561,7 @@ def _run_list(
     uow = UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())
     try:
         with uow.read() as repos:
-            resolved = _team_entity(repos, _resolve_team(repos, team, cfg.default_team))
+            resolved = _team_entity(repos, resolve_team(repos, cfg, flag=team))
             filters = ListFilters(
                 team_id=resolved.id,
                 state_ids=_state_filter(repos, resolved, state),
@@ -722,7 +722,7 @@ def _run_create(
     uow = UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())
     try:
         with uow.read() as repos:
-            team_ref = _resolve_team(repos, team, cfg.default_team)
+            team_ref = resolve_team(repos, cfg, flag=team)
             assignee_id = _resolve_assignee(repos, assignee)
             actor = Actor(member_id=_local_member(repos), source="cli", label="cli")
         cmd = CreateIssue(
@@ -799,20 +799,6 @@ def _split_labels(labels: list[str] | None) -> tuple[str, ...]:
             if name and name not in result:
                 result.append(name)
     return tuple(result)
-
-
-def _resolve_team(repos: Repos, flag: str | None, default_team: str | None) -> str:
-    candidate = flag or os.environ.get("HIFA_TEAM") or default_team
-    if candidate and candidate.strip():
-        return candidate.strip()
-    teams = [team for team in repos.teams.list() if team.archived_at is None]
-    if len(teams) == 1:
-        return teams[0].key
-    raise CliError(
-        "team required: use --team, HIFA_TEAM or [cli].default_team in .hifa.toml",
-        code="missing_context",
-        field="team",
-    )
 
 
 def _resolve_assignee(repos: Repos, ref: str | None) -> str | None:

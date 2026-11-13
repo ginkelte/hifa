@@ -21,6 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import CLI_ENV
+from hifa.cli.context import TEAM_REQUIRED_MESSAGE
 from hifa.cli.main import app
 from hifa.config import CONFIG_FILENAME
 
@@ -439,7 +440,11 @@ def test_show_without_key_uses_the_configured_default_team(sandbox: SimpleNamesp
 def test_show_without_key_and_without_a_resolvable_default_exits_two(
     sandbox: SimpleNamespace,
 ) -> None:
-    """B6: an unresolvable implicit team is exit 2 `missing_context`, not a Typer parse error."""
+    """B6: an unresolvable implicit team is exit 2 `missing_context`, not a Typer parse error.
+
+    The text is the single one the contract declares for a team that cannot be resolved, the
+    same sentence `issue` verbs print: `team` does not get a wording of its own.
+    """
     assert run("team", "create", "OPS", "Operations").exit_code == 0
     write_config(sandbox, '[cli]\ndefault_team = "ZZZ"\n')
 
@@ -447,10 +452,8 @@ def test_show_without_key_and_without_a_resolvable_default_exits_two(
 
     assert result.exit_code == 2, out(result)
     assert result.stdout == ""
-    assert "missing_context" in result.stderr
-    assert "team required: pass KEY, set HIFA_TEAM or [cli].default_team in .hifa.toml" in (
-        result.stderr
-    )
+    assert TEAM_REQUIRED_MESSAGE in result.stderr
+    assert "missing_context" not in result.stderr  # the catalog prints the sentence, not the code
 
 
 def test_show_without_key_and_json_emits_the_missing_context_code(

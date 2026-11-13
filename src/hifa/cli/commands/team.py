@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import enum
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,7 +27,7 @@ from hifa.app.teams import (
     team_detail,
 )
 from hifa.cli import output
-from hifa.cli.context import CliContext
+from hifa.cli.context import CliContext, resolve_team
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
 from hifa.config import DEFAULT_TIMEZONE, Config, ConfigError, resolve_config
 from hifa.domain.entities import Team, WorkflowState
@@ -44,13 +43,9 @@ team_app = typer.Typer(
 #: Columns of `team list` / `team create` (`KEY  NAME  ISSUES  ARCHIVED`).
 TEAM_TABLE_COLUMNS: tuple[str, ...] = ("key", "name", "issues", "archived")
 
+
 #: `--visibility` choices. A `StrEnum` makes Typer reject anything else
 #: with exit 2 at parse time, so the edge declares the closed set.
-MISSING_CONTEXT_MESSAGE = (
-    "team required: pass KEY, set HIFA_TEAM or [cli].default_team in .hifa.toml"
-)
-
-
 class VisibilityChoice(enum.StrEnum):
     """`--visibility {public,private,restricted}`."""
 
@@ -274,33 +269,11 @@ def _run_show(*, db_flag: str | None, key: str | None, include_states: bool = Fa
     cfg = _config(db_flag)
     uow = _uow(cfg)
     try:
-        ref = key if key is not None else default_team(cfg, uow)
+        with uow.read() as repos:
+            ref = resolve_team(repos, cfg, flag=key)
         return team_detail(uow, ref)
     finally:
         uow.close()
-
-
-def default_team(cfg: Config, uow: UnitOfWork) -> str:
-    """Resolve the team when `KEY` is absent (`--team` is not declared yet).
-
-    Order: `HIFA_TEAM`, `[cli].default_team`, the only non-archived team. The configured
-    value only counts when the workspace actually has that team — otherwise the resolution
-    failed and the command must not fall back to "the first team" by alphabetical order or
-    by `created_at`: exit 2 `missing_context`.
-    """
-    candidate = (os.environ.get("HIFA_TEAM") or "").strip() or (cfg.default_team or "").strip()
-    with uow.read() as tx:
-        workspace = tx.teams.workspace()
-        if (
-            candidate
-            and workspace is not None
-            and tx.teams.get_by_key(workspace.id, candidate) is not None
-        ):
-            return candidate
-        teams = [team for team in tx.teams.list() if team.archived_at is None]
-    if len(teams) == 1:
-        return teams[0].key
-    raise CliError(MISSING_CONTEXT_MESSAGE, code="missing_context", field="team")
 
 
 # --- presentation -------------------------------------------------------------------------
@@ -390,9 +363,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 __all__ = [
-    "MISSING_CONTEXT_MESSAGE",
     "TEAM_TABLE_COLUMNS",
-    "default_team",
     "VisibilityChoice",
     "create_command",
     "list_command",
