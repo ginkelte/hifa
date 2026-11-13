@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 3
-spec_revision: 17
+spec_revision: 18
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -612,7 +612,7 @@ Everything lives in `src/hifa/web/static/`, served by `StaticFiles` mounted at `
 |---|---|---|---|---|
 | `vendor/htmx.min.js` | 2.0.4 | BSD-2-Clause | **16 KB** | fragments, `hx-*`, `HX-Trigger` |
 | `vendor/alpine.csp.min.js` | 3.14.8 | MIT | **16 KB** | local widget state (CSP build: no `eval`, see R14) |
-| `vendor/sortable.min.js` | 1.15.2 | MIT | **10 KB** | board drag & drop |
+| `vendor/sortable.min.js` | 1.15.2 | MIT | **15 KB** | board drag & drop |
 | `css/app.css` | — | own | **≤ 20 KB** (target 14 KB) | the whole design (§2.5) |
 | `js/app.js` | — | own | **≤ 12 KB** (target 6 KB) | Alpine registrations, `422` listener, shortcuts, drop, the change signal and its deferral |
 | `img/sprite.svg` | — | own (Lucide, ISC) | **3 KB** | inline icons via `<use>` |
@@ -624,6 +624,12 @@ Total budget: **≤ 75 KB gzip** (real sum: ~66 KB). Verified in the test:
 find src/hifa/web/static -type f \( -name '*.js' -o -name '*.css' -o -name '*.svg' \) \
   -exec sh -c 'gzip -9 -c "$1" | wc -c' _ {} \; | awk '{s+=$1} END {print s}'
 ```
+
+Every figure in that table is **`gzip -9`**, the two own files included: a raw byte count would hold
+`app.js` to a ceiling a third of the declared one. The ceilings of `app.css` (**≤ 20 KB**) and
+`app.js` (**≤ 12 KB**) are enforced at that compression level by
+`tests/e2e/web/test_dashboard.py::test_asset_budget_is_under_75_kb_gzip`, together with the
+**≤ 75 KB** total.
 
 Rules:
 
@@ -1060,7 +1066,7 @@ anything.
 | Interval | one constant, `REVISION_POLL = "5s"` in `src/hifa/web/app.py` beside `DEFAULT_LIMIT`/`MAX_LIMIT`, surfaced as `page["revision_poll"]` (§2.3.1). No template, script or test writes the duration a second time |
 | Poller | `<div id="revision-probe" hx-get="/_/revision" hx-swap="none" hx-trigger="every {{ page.revision_poll }}">` in `base.html`: one request per **visible** tab per interval, and none while the tab is hidden. The visibility condition is **not** a `hx-trigger` filter: htmx compiles a `[condition]` through `Function`, which `script-src 'self'` forbids, and a filter that throws is treated as *do not fire*, so the poll would never run — the condition is enforced on the client by cancelling `htmx:beforeRequest` for this element while `document.hidden` |
 | Page marker | `<body data-revision="{{ page.revision }}">` — the number this page was rendered with |
-| Adopt | every `200`/`201` of this layer carries `HX-Revision` (§2.1.3); on `htmx:afterRequest` the poller stores it as the page's known number |
+| Adopt | every `200`/`201` of this layer carries `HX-Revision` (§2.1.3), but **only an answer whose target is `#board` or `#issues-tbody` adopts it** as the page's known number. A panel, a row, the palette and the counters answer with the number the server observed — foreign commits included — and did not update the board, so they adopt nothing (D-050) |
 
 **Which pages carry the poller.** The board and the list carry it: they hold a collection that a write can change. The detail page (§2.3.1) carries its revision in `data-revision` and answers `HX-Revision`, and its `data-refresh` is empty — there is no collection to reload, so there is nothing for the poller to swap and it is not rendered. An empty `data-refresh` is the marker, not a missing value: the client reads it and spends the pending revision without a request.
 | Reload | only when the probe's number differs from the known one: an **htmx** GET of `page["refresh_url"]` (§2.3.1) into `#board` / `#issues-tbody` with `innerHTML` — the same fragment the filter bar reloads, filters included. It travels through htmx and not through `fetch`: the fragment arrives carrying `hx-get`, `hx-target` and `hx-push-url` on its rows and cards, htmx binds attributes on the nodes it swaps, and a body written with `innerHTML` on a plain response leaves a board of inert cards — the tab stops opening panels until a manual reload |
@@ -1078,10 +1084,20 @@ refresh waits for the interaction instead of ending it:
 **The reload is what the page is showing, not what its URL says.** A filter typed into the filter bar
 lives in the form, not in the page's query: the poller appends the form's current values to
 `page["refresh_url"]` before the request, because a reload without them answers a different question
-and puts a filtered board under an input that still says so. A reload that never answers does not
-freeze the poll either: the wait is bounded, and a tick that found the previous request still in
-flight gives up on it and asks again, so one hung request cannot silence the page for the rest of the
-session.
+and puts a filtered board under an input that still says so.
+
+**The wait is bounded, and the retry is a request.** htmx has no request timeout of its own, so the
+bound is the client's: `RELOAD_MS = 10000` in `src/hifa/web/static/js/app.js`, armed when the reload
+is sent and cleared when its answer settles. A tick that found the previous request still in flight
+gives up on it and asks again, so one hung request cannot silence the page for the rest of the
+session (D-050). Clearing the client's own flag is not enough: htmx keys the request in flight on the
+element that acts — `document.body` here, because the reload calls `htmx.ajax` without a `source` —
+and while that slot is taken it queues the next call, resolves its promise at once and sends
+nothing, so the retry would leave a page that looks alive over a board that never updates. The
+watchdog therefore clears the flag, aborts the stale request on the body
+(`htmx.trigger(document.body, "htmx:abort")`, htmx's own way of releasing the slot) and only then
+asks the reload again through the same single path. The bound is on the wait, not on the answer: an
+answer that arrives after it is ignored by its token and adopts nothing.
 
 **The collection fragment carries rows, not the page's form.** The quick-add `<form>` belongs to the
 page: a list fragment that shipped it as an out-of-band swap would replace the form the user is
@@ -1191,7 +1207,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R23** | **The sidebar is a per-request read.** `page["teams"]` is built from the database on every request that renders a page; it is never captured once in `create_app`, never stored on `app.state` and never memoized for the life of the process. The CLI is the **other writer** of that same SQLite file (D-030), so a team created by `hifa team create` while `hifa serve` is running must appear in the sidebar on the **next request**, with no restart. The active team is marked and the block is never hidden, not even with a single team. → **REQ-F070-13** |
 | **R24** | **`default_team` is never absent, and the root never guesses.** `config.py` always resolves `[cli].default_team` — the configured value, else `[team].key`, which itself defaults to `DEFAULT_TEAM_KEY` (SPEC-100 §2.3) — so "2+ teams and no default" is **not** a reachable state and is not what the picker is for. What `GET /` does, in this order: (1) the resolved default names a team that exists ⇒ `303` to `/{key}/board`; (2) exactly one non-archived team ⇒ `303` to it (this is the fresh-database case, where the default key exists); (3) **canonical picker case** — the default names a team that is **not in the database** (a second team created under another key, a regenerated `.bak`, a `.hifa.toml` copied from another workspace) and there are 2+ non-archived teams ⇒ `200` `team_picker.html` (§2.3.8) listing every team and linking to `/{team}/board`, with `reason = "several_teams"`; (4) **secondary case** — the caller passed no default at all (`create_app(default_team=None)`: embedding, tests, a bootstrap that skipped config) and there are 2+ teams ⇒ the same `200` picker, with `reason = "no_default_team"`; (5) no teams ⇒ `404` `error.html`. It never picks by `created_at`, alphabetical order, cookie or session, and never answers `404` when a usable answer exists. → **REQ-F070-14** |
 | **R25** | **Reordering the columns changes the presentation order, nothing else.** `POST /_/states/{id}/position` writes `workflow_state.position` and **only** that: no issue changes `state_id` or `board_order`, no `issue_history` row is written and no counter moves. The payload is `{before, after}` with **state ids** (`null` at the edge), never a float; the new `position` is `domain.ranking.between(prev, next)` computed on the server and persisted by `update_state`. The response is `204` + `HX-Trigger: board-reordered` with no swap (the DOM already moved), `403` in `--read-only`, `404` for an unknown state and `422` for neighbours from another team. The canonical order a **new** team is seeded with is `DEFAULT_STATES` (SPEC-100 §2.5, D-034); an existing team is reordered with this route or with `hifa state update` (SPEC-050 §2.5.6), never with a migration. → **REQ-F070-06** |
-| **R26** | **The page notices a foreign write by a change signal, never by a timer.** `GET /_/revision` answers `{"revision": <n>}` read from `PRAGMA data_version` on the process's single long-lived read connection (§2.1.3.1, §3, D-049); the number changes iff another connection committed since the previous read — which is what the CLI is, and what the process's own per-request connections are. The page carries the number it was rendered with (`<body data-revision>`, `page["revision"]`) and adopts the one every response returns (`HX-Revision`); the poller (`hx-trigger="every {{ page.revision_poll }}"`, `hx-swap="none"`, visibility enforced in the client by cancelling `htmx:beforeRequest` while the tab is hidden — never as a `[condition]` filter, which the CSP's `script-src 'self'` makes unrunnable) reloads `page["refresh_url"]` into `#board`/`#issues-tbody` **only when the numbers differ**, so no request and no swap happens while nothing changed. The reload is **deferred, never forced**, while a detail panel is open, the quick add holds unsaved text or a drag is in flight; the last revision seen is applied as soon as the interaction ends (§2.6.8). The number is opaque — compared for equality, never ordered, never arithmetic, never displayed. Without JS nothing of this runs and a reload shows the new data (P5). The probe is a read: `--read-only` neither blocks it nor changes it. → **REQ-F070-15** |
+| **R26** | **The page notices a foreign write by a change signal, never by a timer.** `GET /_/revision` answers `{"revision": <n>}` read from `PRAGMA data_version` on the process's single long-lived read connection (§2.1.3.1, §3, D-049); the number changes iff another connection committed since the previous read — which is what the CLI is, and what the process's own per-request connections are. The page carries the number it was rendered with (`<body data-revision>`, `page["revision"]`) and adopts the `HX-Revision` of an answer that replaced the collection; a panel, a row, the palette or the counters do not adopt (D-050); the poller (`hx-trigger="every {{ page.revision_poll }}"`, `hx-swap="none"`, visibility enforced in the client by cancelling `htmx:beforeRequest` while the tab is hidden — never as a `[condition]` filter, which the CSP's `script-src 'self'` makes unrunnable) reloads `page["refresh_url"]` into `#board`/`#issues-tbody` **only when the numbers differ**, so no request and no swap happens while nothing changed. The reload is **deferred, never forced**, while a detail panel is open, the quick add holds unsaved text or a drag is in flight; the last revision seen is applied as soon as the interaction ends (§2.6.8). The number is opaque — compared for equality, never ordered, never arithmetic, never displayed. Without JS nothing of this runs and a reload shows the new data (P5). The probe is a read: `--read-only` neither blocks it nor changes it. → **REQ-F070-15** |
 
 Component-specific requirements:
 
@@ -1293,8 +1309,18 @@ Component-specific requirements:
 7. A blocking state that ends with a pending revision applies it immediately: back to step 6, no
    waiting for the next tick.
 8. A write of the page itself (quick add, inline edit, drop, filter change) answers with HX-Revision
-   and the page adopts it in the htmx afterRequest hook: step 4 is already true on the next tick, so
-   the user's own action never causes a second render of what it just produced.
+   and the page adopts it in the htmx afterRequest hook **only if that answer replaced the
+   collection**: step 4 is already true on the next tick, so the user's own action never causes a
+   second render of what it just produced. A write whose answer rendered something else — a panel, a
+   row, the palette, the counters — does not adopt: its number is the one the server observed,
+   foreign commits included, and believing it would spend the difference between the page and the
+   database without updating the board (D-050).
+9. The wait for the answer is bounded by RELOAD_MS (10 s, src/hifa/web/static/js/app.js). When it
+   expires the request is abandoned and asked again: the client clears its in-flight flag, aborts
+   the stale request on document.body — the element htmx keyed it on, because htmx.ajax was called
+   without a source — and only then flushes the pending revision through the same single path. The
+   abort is what makes the retry leave the browser: without it htmx queues the second call behind
+   the slot the hung one still holds, resolves its promise at once and sends nothing.
 ```
 
 ## 6. Errors
@@ -1735,6 +1761,40 @@ Feature: hifa web dashboard
   without guarantees.
 
 ## 11. Notes
+
+- spec_revision 18 (2026-11-13): **the client adopts only the collection, and the bound is named.**
+  Three things the previous revision described in prose or not at all, stated where the contract is
+  read. (1) The `Adopt` row of §2.6.8 still said the poller stored the `HX-Revision` of *every*
+  answer; only an answer whose target is `#board` or `#issues-tbody` adopts it, and a panel, a row,
+  the palette or the counters adopt nothing — they answer with the number the server observed,
+  foreign commits included, and none of them updated the board, so believing theirs spends the
+  difference between the page and the database without updating the page and leaves a stale board
+  behind a poller that has gone quiet (D-050). R26 and §5.6 step 8 carry the same rule. (2) "The wait
+  is bounded" named no bound and no mechanism: §2.6.8 and §5.6 now name `RELOAD_MS` (10 s) in
+  `src/hifa/web/static/js/app.js`, and state why clearing the client's own flag is not enough — htmx
+  keys the request in flight on the element that acts (`document.body`, because the reload calls
+  `htmx.ajax` without a `source`), queues the next call while that slot is taken and resolves its
+  promise without sending anything, so the stale request is aborted on the body with `htmx:abort`
+  before the reload is asked again through the same single path. A browser measured the failure: after
+  one hung reload every later tick resolved in the same millisecond with no XHR sent. (3) §2.4 said
+  `gzip -9` in the column header and nowhere that the two own-file ceilings are enforced at that
+  compression level; they are, by `test_asset_budget_is_under_75_kb_gzip`, at **≤ 20 KB for
+  `app.css` and ≤ 12 KB for `app.js`**, and the vendored `sortable.min.js` row declared 10 KB where
+  1.15.2 measures 14.4 KB gzip — corrected to 15 KB. The **≤ 75 KB** total does not move.
+- spec_revision 17 (2026-11-13): **the client contract is the one D-050 records.** The panel became a
+  blocking state like the others and stopped being re-rendered under the reader: the revision is one
+  global number, so *"re-render the panel only if its issue changed"* is not a condition that can be
+  evaluated, and replacing the markup of a panel a person is reading costs more than waiting for them
+  to close it. The same revision said that **only an answer which replaced the collection adopts its
+  number** — in the §2.6.8 prose and in §5.6, because the panel, a row, the palette and the counters
+  answer with the number the server observed and none of them updated the board. It added the two
+  paragraphs that are not about the panel as well: the reload carries the values typed in the filter
+  bar, since the page's query is not what the reader is looking at; a request that never answers is
+  given up on and asked again, so one hung reload cannot silence the page; and the collection
+  fragment stops shipping the quick-add form out of band, which replaced the form under the cursor on
+  every automatic reload. §5.6 steps 6 and 8 followed so the loop stops re-rendering an open, clean
+  panel and stops spending the pending value on it. The `Adopt` row of the table was left saying the
+  poller stores the number of every answer, which is what rev 18 corrects.
 
 - spec_revision 14 (2026-11-13): **the page notices a write from another connection, and `version` 3
   because the public surface gains a route (D-049).** A page was a snapshot: it showed what the file
