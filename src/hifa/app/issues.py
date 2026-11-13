@@ -207,18 +207,37 @@ def _resolve_state(tx: Repos, team: Team, ref: str | None) -> WorkflowState:
     )
 
 
+def _validate_parent(
+    tx: Repos,
+    parent: Issue,
+    *,
+    child_id: str,
+    child_team_id: str,
+    subtree_height: int = 0,
+) -> None:
+    """Applies the hierarchy rules with the parent's own chain, read from the tree.
+
+    The `ancestors` map handed to the rule is always the parent's upward chain, the parent
+    included: the level the parent already occupies, which is what both the depth bound and
+    the cycle walk read. Creation passes no height because the issue has no descendants yet;
+    a reparent passes the height of the subtree it carries.
+    """
+    rules.validate_parent(
+        child_id=child_id,
+        child_team_id=child_team_id,
+        parent=parent,
+        ancestors=tx.issues.ancestor_chain(parent.id),
+        subtree_height=subtree_height,
+    )
+
+
 def _resolve_parent(tx: Repos, ref: str | None, team: Team, child_id: str) -> Issue | None:
     if ref is None:
         return None
     parent = tx.issues.get_by_identifier(ref) or tx.issues.get(ref)
     if parent is None:
         raise NotFound(resource="parent", key=ref)
-    rules.validate_parent(
-        child_id=child_id,
-        child_team_id=team.id,
-        parent=parent,
-        ancestors=tx.issues.ancestor_chain(parent.id),
-    )
+    _validate_parent(tx, parent, child_id=child_id, child_team_id=team.id)
     return parent
 
 
@@ -599,17 +618,22 @@ def _open_children(tx: Repos, issue: Issue, target: WorkflowState) -> int:
 
 
 def _resolve_parent_id(tx: Repos, ref: str | None, issue: Issue) -> str | None:
-    """New parent of an edit; `None` unparents and the hierarchy rules still apply."""
+    """New parent of an edit; `None` unparents and the hierarchy rules still apply in full.
+
+    A reparent carries its descendants, so the rules are checked against the height of the
+    subtree that moves and not only against the moved issue.
+    """
     if ref is None:
         return None
     parent = tx.issues.get_by_identifier(ref) or tx.issues.get(ref)
     if parent is None:
         raise NotFound(resource="parent", key=ref)
-    rules.validate_parent(
+    _validate_parent(
+        tx,
+        parent,
         child_id=issue.id,
         child_team_id=issue.team_id,
-        parent=parent,
-        ancestors=tx.issues.ancestor_chain(issue.id),
+        subtree_height=tx.issues.subtree_height(issue.id),
     )
     return parent.id
 

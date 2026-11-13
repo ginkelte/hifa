@@ -179,6 +179,24 @@ class IssueRepo(BaseRepo):
         )
         return {row[0]: row[1] for row in rows}
 
+    def subtree_height(self, issue_id: str, *, max_depth: int = 32) -> int:
+        """Edges on the longest downward path below `issue_id`, in a single query.
+
+        0 for a leaf and for an issue that does not exist. The depth bound of the tree is
+        checked against this number, so it is read for the whole subtree at once instead
+        of walking one level per statement.
+        """
+        value = self._scalar(
+            "WITH RECURSIVE down(id, depth) AS ("
+            "  SELECT id, 0 FROM issue WHERE parent_id = ?"
+            "  UNION ALL"
+            "  SELECT i.id, down.depth + 1 FROM issue i"
+            "  JOIN down ON i.parent_id = down.id WHERE down.depth < ?"
+            ") SELECT COALESCE(MAX(depth), -1) + 1 FROM down",
+            (issue_id, max_depth),
+        )
+        return int(value)
+
     def positions(
         self,
         team_id: str,
@@ -396,14 +414,23 @@ class IssueRepo(BaseRepo):
         return [relation_from_row(row) for row in rows]
 
     def add_relation(self, relation: IssueRelation) -> IssueRelation:
+        """Insert one edge in the order its type is stored in, and return the stored row.
+
+        The pair is normalised here, before the INSERT, by the type itself: `blocks` keeps
+        the caller's direction and the symmetric types are stored sorted, so the schema's
+        `UNIQUE` sees one key per edge and refuses the reversed spelling of a stored one.
+        """
         self._guard_write()
+        issue_id, related_issue_id = relation.type.canonical_pair(
+            relation.issue_id, relation.related_issue_id
+        )
         row = self._one(
             "INSERT INTO issue_relation (id, issue_id, related_issue_id, type, created_at)"
             " VALUES (?, ?, ?, ?, ?) RETURNING *",
             (
                 relation.id,
-                relation.issue_id,
-                relation.related_issue_id,
+                issue_id,
+                related_issue_id,
                 str(relation.type),
                 dt_text(relation.created_at),
             ),
@@ -411,9 +438,9 @@ class IssueRepo(BaseRepo):
         return relation_from_row(row)
 
     def remove_relation(self, relation_id: str) -> bool:
+        """`True` when a row was there, through the same translator the insert uses."""
         self._guard_write()
-        cursor = self._conn.execute("DELETE FROM issue_relation WHERE id = ?", (relation_id,))
-        return cursor.rowcount > 0
+        return self._run("DELETE FROM issue_relation WHERE id = ?", (relation_id,)) > 0
 
     def get_relation(self, relation_id: str) -> IssueRelation | None:
         row = self._one(

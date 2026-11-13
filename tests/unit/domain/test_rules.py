@@ -21,6 +21,7 @@ def test_size_constants() -> None:
     assert rules.MAX_TITLE == 255
     assert rules.MAX_BODY == 50_000
     assert rules.MAX_DESCRIPTION == 100_000
+    assert rules.MAX_SUBISSUE_DEPTH == 5
 
 
 # --- title -----------------------------------------------------------------------------
@@ -283,6 +284,42 @@ def test_validate_parent_tolerates_cycle_without_the_child(team: Team, issue: Is
     assert rules.validate_parent(issue.id, team.id, parent, {"01B": "01B"}) is None
 
 
+def test_validate_parent_accepts_a_subtree_that_reaches_the_last_level(
+    team: Team, issue: Issue
+) -> None:
+    """Parent at level 3 + the child (1) + a subtree of height 1 = exactly 5 levels."""
+    parent = issue.model_copy(update={"id": "01C"})
+    ancestors = {"01C": "01B", "01B": "01A", "01A": None}
+    assert rules.validate_parent(issue.id, team.id, parent, ancestors, subtree_height=1) is None
+
+
+def test_validate_parent_rejects_a_subtree_past_the_bound(team: Team, issue: Issue) -> None:
+    """The same parent with a height-2 subtree would put a descendant at level 6."""
+    parent = issue.model_copy(update={"id": "01C"})
+    ancestors = {"01C": "01B", "01B": "01A", "01A": None}
+    with pytest.raises(Validation) as excinfo:
+        rules.validate_parent(issue.id, team.id, parent, ancestors, subtree_height=2)
+    assert excinfo.value.rule == "PARENT_DEPTH_EXCEEDED"
+    assert excinfo.value.field == "parent_id"
+    assert excinfo.value.details["max_depth"] == rules.MAX_SUBISSUE_DEPTH
+
+
+def test_validate_parent_rejects_a_leaf_under_the_fifth_level(team: Team, issue: Issue) -> None:
+    """Without any subtree, six levels of ancestry are already too deep."""
+    parent = issue.model_copy(update={"id": "01E"})
+    ancestors = {"01E": "01D", "01D": "01C", "01C": "01B", "01B": "01A", "01A": None}
+    with pytest.raises(Validation) as excinfo:
+        rules.validate_parent(issue.id, team.id, parent, ancestors)
+    assert excinfo.value.rule == "PARENT_DEPTH_EXCEEDED"
+
+
+def test_validate_parent_counts_a_missing_subtree_as_a_leaf(team: Team, issue: Issue) -> None:
+    """`subtree_height` defaults to 0: an issue that does not exist yet creates a leaf."""
+    parent = issue.model_copy(update={"id": "01D"})
+    ancestors = {"01D": "01C", "01C": "01B", "01B": "01A", "01A": None}
+    assert rules.validate_parent(issue.id, team.id, parent, ancestors) is None
+
+
 # --- cierre ---------------------------------------------------------------------------
 
 
@@ -390,6 +427,24 @@ def test_validate_relation_does_not_mutate_existing_list() -> None:
     existing = [("A", "B", RelationType.SIMILAR)]
     rules.validate_relation("C", "D", RelationType.SIMILAR, existing)
     assert existing == [("A", "B", RelationType.SIMILAR)]
+
+
+def test_validate_relation_scope_accepts_two_teams_of_one_workspace(
+    issue: Issue, other_team: Team
+) -> None:
+    """An edge never crosses a workspace, but it may join two teams of it."""
+    far_end = issue.model_copy(update={"id": "01FAR", "team_id": other_team.id})
+    assert rules.validate_relation_scope(issue, far_end) is None
+
+
+def test_validate_relation_scope_rejects_two_workspaces(issue: Issue) -> None:
+    far_end = issue.model_copy(update={"id": "01FAR", "workspace_id": "01OTHERWS"})
+    with pytest.raises(Validation) as excinfo:
+        rules.validate_relation_scope(issue, far_end)
+    assert excinfo.value.rule == "RELATION_WORKSPACE_MISMATCH"
+    assert excinfo.value.code == "RELATION_WORKSPACE_MISMATCH"
+    assert excinfo.value.details["source_workspace_id"] == issue.workspace_id
+    assert excinfo.value.details["target_workspace_id"] == "01OTHERWS"
 
 
 # --- labels ---------------------------------------------------------------------------

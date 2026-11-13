@@ -578,7 +578,7 @@ in the checking `validate_*` functions). All of them raise `Validation` with a s
 MAX_TITLE = 255
 MAX_BODY = 50_000
 MAX_DESCRIPTION = 100_000
-MAX_SUBISSUE_DEPTH = 5   # a root issue is level 1; the deepest descendant is level 5
+MAX_SUBISSUE_DEPTH = 5  # a root issue is level 1; the deepest descendant is level 5
 
 
 def validate_title(title: str) -> str:
