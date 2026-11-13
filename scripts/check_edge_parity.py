@@ -143,7 +143,7 @@ class Capability:
 # Ticket ids: the rule is that `debt=` names the ticket that CLOSES the gap. A ticket that is
 # already done, or this checker's own ticket (HIFA-37), is not honest: it would keep the debt
 # line green while nothing is planned to remove it.
-# * HIFA-1  (T-06) ships `hifa issue show REF --with history` — it closes `issue.show`.
+# * HIFA-49 ships `hifa issue show REF --with history` — it closes `issue.show`.
 # * HIFA-2  (T-07) ships `issue list --sort manual`: the list verb and, through it, the board
 #           model (T-08 note), so it closes `issue.list` and `issue.board`.
 # * HIFA-7  (T-11) brings full-text search and replaces the `/search` stub: `search.issues`.
@@ -179,8 +179,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(name="issue.archive", cli="issue archive", web=None, debt="HIFA-3"),
     Capability(name="issue.delete", cli="issue delete", web=None, debt="HIFA-3"),
     Capability(name="issue.restore", cli="issue restore", web=None, debt="HIFA-3"),
-    # T-06 ships `hifa issue show REF --with history`, which is the CLI of this page.
-    Capability(name="issue.show", cli=None, web=("GET", "/{team}/issue/{ref}"), debt="HIFA-1"),
+    # The CLI transport of this page is `hifa issue show`, which no verb carries yet.
+    Capability(name="issue.show", cli=None, web=("GET", "/{team}/issue/{ref}"), debt="HIFA-49"),
     # HIFA-2 (T-07) ships the verb that exposes both reads; the board read MODEL
     # (`app/boards.columns`, counts and wip) is T-08 / HIFA-4, so this line closes
     # only when both are done -- the ticket named below is the later of the two.
