@@ -1,3 +1,10 @@
+# [0.3.0](https://github.com/ginkelte/hifa/compare/v0.2.1...v0.3.0) (2026-11-13)
+
+
+### Features
+
+* **cli:** list issues with filters, deterministic order and a keyset cursor ([#16](https://github.com/ginkelte/hifa/issues/16)) ([e2c3ec6](https://github.com/ginkelte/hifa/commit/e2c3ec6f3bc9b853908e7056cfe8d059c72878d0))
+
 ## [0.2.1](https://github.com/ginkelte/hifa/compare/v0.2.0...v0.2.1) (2026-11-13)
 
 # [0.2.0](https://github.com/ginkelte/hifa/compare/v0.1.9...v0.2.0) (2026-11-13)

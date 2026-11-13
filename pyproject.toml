@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "hifa"
 # SPEC-110 §2.1: exactly one version literal exists in the tree, this line, and only the release
 # pipeline writes it (`@semantic-release/exec` `prepareCmd`, §2.5). Nobody bumps it by hand.
-version = "0.2.1"
+version = "0.3.0"
 description = "Tracker de issues local: CLI + SQLite + dashboard"
 readme = "README.md"
 requires-python = ">=3.11"
