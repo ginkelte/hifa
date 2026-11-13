@@ -110,6 +110,10 @@ class CliConfig:
     """`[cli]` section of `.hifa.toml`."""
 
     default_team: str | None = None
+    #: `True` when `.hifa.toml` names the team. The effective `default_team` also falls back
+    #: to `[team].key`, so only a declared value is a choice of team; the fallback is what
+    #: `hifa init` writes into a fresh file.
+    default_team_declared: bool = False
 
 
 @dataclass(frozen=True)
@@ -545,12 +549,10 @@ def resolve_config(
         color=file_team.color or DEFAULT_COLOR,
         timezone=file_team.timezone or DEFAULT_TIMEZONE,
     )
+    declared_team = file_cfg.cli.default_team if file_cfg is not None else None
     cli = CliConfig(
-        default_team=(
-            file_cfg.cli.default_team
-            if file_cfg is not None and file_cfg.cli.default_team
-            else team.key
-        )
+        default_team=declared_team or team.key,
+        default_team_declared=bool(declared_team),
     )
     web = file_cfg.web if file_cfg is not None else WebConfig()
 

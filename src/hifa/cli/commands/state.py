@@ -26,8 +26,7 @@ from hifa.app.teams import (
     update_state,
 )
 from hifa.cli import output
-from hifa.cli.commands.team import MISSING_CONTEXT_MESSAGE, default_team
-from hifa.cli.context import CliContext
+from hifa.cli.context import TEAM_REQUIRED_MESSAGE, CliContext, resolve_team
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
 from hifa.config import Config, ConfigError, resolve_config
 from hifa.domain.entities import WorkflowState
@@ -238,9 +237,8 @@ def _uow(cfg: Config) -> UnitOfWork:
 
 def _team_ref(cfg: Config, uow: UnitOfWork, team: str | None) -> str:
     """`--team`, else the configured default resolution (exit 2 when it cannot be resolved)."""
-    if team is not None and team.strip():
-        return team.strip()
-    return default_team(cfg, uow)
+    with uow.read() as repos:
+        return resolve_team(repos, cfg, flag=team)
 
 
 def _neighbor_id(uow: UnitOfWork, team_ref: str, name: str | None) -> str | None:
@@ -376,7 +374,7 @@ def _run_update(
         team_ref = _team_ref(cfg, uow, team)
         state_id = _neighbor_id(uow, team_ref, name)
         if state_id is None:  # pragma: no cover - `name` is a required argument
-            raise CliError(MISSING_CONTEXT_MESSAGE, code="missing_context", field="state")
+            raise CliError(TEAM_REQUIRED_MESSAGE, code="missing_context", field="state")
         cmd = UpdateState(
             state=state_id,
             name=new_name if new_name is not None else UNSET,
