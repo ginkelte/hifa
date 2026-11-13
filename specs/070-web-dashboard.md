@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 1
-spec_revision: 11
+spec_revision: 12
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -907,6 +907,11 @@ nothing else. It does not move issues, does not touch `issue.state_id`, `issue.b
   that swipes scrolls the page; a drag begins only after a long press that has also moved past a few
   pixels. Without them a column drag starts on the first `touchmove` and `Sortable` cancels the
   scroll, which on a phone means the page cannot be scrolled at all.
+- `preventOnFilter: false`. `Sortable` defaults it to `true`, which makes the instance call
+  `preventDefault()` on the `touchstart` of any contact that matches `filter` — a card. The gesture
+  then never becomes a scroll: the page is frozen exactly where the finger touched a card, and the
+  click that follows still opens the panel. A filtered element is not a drag target, so the instance
+  has nothing to say about its gesture.
 - `onEnd` reads **only** state ids from the DOM: the previous and next siblings of the moved
   column, `data-state-id` each, `null` at the edges.
 
@@ -1525,6 +1530,8 @@ Feature: hifa web dashboard
   the static template test rejects `|default(` as well as `|length`, and the quick-add form and the
   rows fragment receive `form_oob`, `form_error` and `form_errors` from every route that renders
   them, so a missing key breaks the test instead of silently rendering the wrong HTML.
+- spec_revision 12 (2026-11-12): the board instance sets `preventOnFilter: false`, so a touch that
+  lands on a card still scrolls the page (§2.6.5).
 - spec_revision 11 (2026-11-12): a gesture that moves never opens a panel (§2.6.7), and on a
   phone the panel is a full-width sheet whose heading stays put so its `Close` control does
   not scroll away (§2.5.6).
