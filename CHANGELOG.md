@@ -1,3 +1,10 @@
+## [0.3.1](https://github.com/ginkelte/hifa/compare/v0.3.0...v0.3.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **cli:** resolve the team of an invocation before reading or writing ([#17](https://github.com/ginkelte/hifa/issues/17)) ([eab361d](https://github.com/ginkelte/hifa/commit/eab361d9744a0132ad42a1151cdf0722458a0ba2))
+
 # [0.3.0](https://github.com/ginkelte/hifa/compare/v0.2.1...v0.3.0) (2026-11-13)
 
 
