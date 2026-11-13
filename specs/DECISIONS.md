@@ -1410,3 +1410,163 @@ which is the property the keyset stands on: if the absent rows changed ends with
 boundary between the valued and the absent section would move under a predicate that seeks from an
 anchor on the other side of it, and the page that crosses that boundary would repeat or skip a row.
 An ascending flag makes one predicate per case exact instead of approximate.
+
+## D-045 — The four relation types are one table, and each type has one stored order
+
+**Date:** 2026-11-13 · **Wins:** SPEC-020 §2.1 · **Touches:** SPEC-020 §2.1, §2.2, §4.1 R7, REQ-F020-20;
+SPEC-040 §2.1, §3.1, R11, REQ-F040-10; SPEC-050 §2.5.3, R18; SPEC-080 §3, §5.3, §6.1, R25
+
+`issue_relation` holds one row per edge with four `type` values (SPEC-010 §3). Four facts about each type
+decide every read and every write: which end is the source, whether the type is symmetric, which name is read
+from each end, and whether the edge gates work. Written down in more than one spec they drift — one layer says
+"source → target", another "issue → related" — and a reader cannot tell which of the two orders is the stored
+one.
+
+**Resolution: SPEC-020 §2.1 carries the table; no other spec restates it.**
+
+| `type` | stored pair | `is_symmetric` | name from `issue_id` (`out`) | name from `related_issue_id` (`in`) | `is_hard` |
+|---|---|---|---|---|---|
+| `blocks` | `(blocker, blocked)` — the order the caller gave | `False` | `blocks` | `blocked_by` | `True` |
+| `duplicate` | `(min ULID, max ULID)` | `True` | `duplicate` | `duplicate` | `False` |
+| `related` | `(min ULID, max ULID)` | `True` | `related` | `related` | `False` |
+| `similar` | `(min ULID, max ULID)` | `True` | `similar` | `similar` | `False` |
+
+- **`blocks` keeps the direction it was given.** The source is the blocker and the order *is* the meaning of
+  the row: swapping it inverts the fact, because `A` blocks `B` is not `B` blocks `A`.
+- **The symmetric types are stored in a canonical order, and every writer applies it.** `RelationType.canonical_pair`
+  sorts the two ULIDs by code point and returns `(min, max)`. Both write paths call it before the INSERT —
+  `relate_issues` (SPEC-040 R11) and `import_json` (SPEC-080 §5.3) — so the pair always reaches the repository
+  already normalised and `UNIQUE(issue_id, related_issue_id, type)` of SPEC-010 sees one triple per edge. The
+  `UNIQUE` is the **backstop**, not the rule: it catches a writer that skipped the normalisation, and the same
+  gap is closed at the other end by the inverse-order lookup `validate_relation` keeps for a caller that did.
+  An `INSERT` that reaches SQLite unnormalised is a bug of the writer, not a case the schema is asked to
+  classify.
+- **The normalisation has one owner.** `canonical_pair` is the only place the order is decided; `relate_issues`
+  calls it (SPEC-040 R11), `import_json` calls it (SPEC-080 §5.3) and `validate_relation` documents that its
+  arguments arrive ordered, keeping the inverse-order lookup as the net for a caller that skipped that step.
+
+**Why.** `UNIQUE(issue_id, related_issue_id, type)` indexes an ordered triple: `(A,B,related)` and
+`(B,A,related)` are two different keys to SQLite although they are one fact. Without a canonical order the
+table accepts the same edge twice, every read that looks at both ends returns it twice, the panel lists the
+same issue on both sides, and `unrelate` deletes one row while the other keeps the edge alive — the relation
+reappears on the next load. Sorting by ULID yields exactly one storable order per pair with no trigger, no
+CHECK and no migration: both writers apply the same function, and the constraint the schema already declares
+stands behind them as the backstop — it refuses the second spelling, it does not decide the first. The ULID is
+the key because it is the only total order the two rows share — `identifier` belongs to a team and the pair may
+cross teams.
+
+**Why not the alternatives.** (a) *Store both directions and keep them in sync*: two rows to insert, delete
+and repair, with no constraint able to express "these two rows are one edge" (D-046). (b) *Order the pair
+inside the SQL* (`MIN`/`MAX` in the INSERT): the application layer would carry a second copy of the rule and
+the read would still re-derive the order to answer `blocked_by`. (c) *A `UNIQUE` over
+`MIN(issue_id, related_issue_id)` / `MAX(...)`*: there is no functional index in the schema of v1, so every
+query would compare two spellings of the same pair.
+
+SPEC-060 R10 and the relation panel of SPEC-070 §2.3.4 already read this rule the same way — one edge, the
+inverse resolved on read — so neither is edited; SPEC-030 §2.4 `relations` already returns the issue's rows
+in both directions, which is what the canonical order needs, so the schema and its `UNIQUE` stand as they
+are. SPEC-080 §5.3 is the second writer: `import_json` normalises every `issue_relation` row with
+`canonical_pair` before the `INSERT … executemany`, and a row that normalises onto an edge already stored — in
+the file or in the destination — is the `RELATION_DUPLICATE` conflict SPEC-040 publishes for the same
+duplicate, never a silent second row.
+
+## D-046 — `blocked_by` is read, never stored
+
+**Date:** 2026-11-13 · **Wins:** SPEC-020 §2.1 · **Touches:** SPEC-020 §2.1, §2.2 `IssueRelation`, §4.1 R7;
+SPEC-040 §2.1 `RelateIssues`, §2.2, R11; SPEC-050 §2.5.3, R18
+
+One `blocks` edge is visible from both ends: `A blocks B` reads as `B blocked by A` for the issue that is the
+target. The table of SPEC-010 has four `type` values and none of them is `blocked_by`.
+
+**Resolution: `blocked_by` is a name, not a row.**
+
+- **It is derived on read.** `RelationType.name_as_seen("in")` answers `inverse_name` for the end that is
+  `related_issue_id` — `blocked_by` for `blocks`, the type's own value for the symmetric types. A surface
+  renders it by replacing `_` with a space and invents no second name.
+- **`RelationType.parse` is the only input alias.** `'blocked_by'` → `(BLOCKS, swap=True)`: the pair the caller
+  wrote is swapped before `canonical_pair` and the INSERT, so `relate A blocked_by B` stores `(B, A, blocks)`
+  and means `B` blocks `A`. The four stored tokens → `(value, False)`; anything else is
+  `Validation(rule='COMMAND_FIELD', field='type')`.
+- **The inverse is not a field.** `IssueRelation` mirrors the row (`id`, `issue_id`, `related_issue_id`,
+  `type`, `created_at`) and carries no `blocked_by`, no `inverse` and no `is_blocked`. The swap is input
+  vocabulary and never reaches the stored `type`, which is one of the four values of the `CHECK`.
+- **The verdict is derived too.** A `blocks` edge gates while the blocker is not finished: the answer is
+  `is_hard` plus `WorkflowStateType.is_terminal` of the blocker's state, computed on read. `completed` and
+  `canceled` both release the blocked issue, and no flag is written on the edge or on the issue, so a finished
+  blocker cannot leave a task blocked by a stale column.
+
+**Why.** Two rows for one fact need a writer that inserts both and a writer that deletes both, and nothing in
+the schema can reject a pair that lost a half; each read would then answer according to the end it started
+from. Swapping once, where the input vocabulary is parsed, keeps the decision in one place: `app/` hands the
+repository the pair it already normalised, every read begins at a row whose source is the blocker, and
+`blocked_by` costs one property call instead of a second query.
+
+**Why not the alternatives.** (a) *A fifth `CHECK` value*: the vocabulary of the table would stop matching
+SPEC-010, and the two rows of one edge would still need synchronising. (b) *A flag on `issue`*: an edge has
+two ends and a column has one; the flag would be a second truth on the entity. (c) *Let each edge map the
+name*: the CLI, the API and the panel would each decide when `blocks` reads as `blocked_by`, which is the
+drift this decision removes (P4).
+
+## D-047 — Hierarchy and relation refusals: one code each, and the parent layer does not cascade
+
+**Date:** 2026-11-13 · **Wins:** SPEC-020 §2.5 · **Touches:** SPEC-020 §2.5, §4.1 R6/R7, §6; SPEC-040 §5.1,
+§5.4, §6, R11; SPEC-050 §2.5.3
+
+The hierarchy and the relations share the `issue` table and one set of validations, and both refuse more than
+a cycle: a parent from another team, a tree that is too deep, an edge that crosses a workspace. A refusal with
+no name is a refusal each layer spells for itself — and the depth bound was stated for a create while a
+reparent of a chain could push a descendant past it.
+
+**Resolution: seven codes, declared in SPEC-020 §2.5 and mapped once in SPEC-020 §6.**
+
+| `rule` | Raised by | Condition | Class | CLI | HTTP |
+|---|---|---|---|---|---|
+| `PARENT_SELF` | `validate_parent` | `parent.id == child.id` | `Validation` | 2 | 422 |
+| `PARENT_TEAM_MISMATCH` | `validate_parent` | parent and child in different teams | `Validation` | 2 | 422 |
+| `PARENT_CYCLE` | `validate_parent` | `child_id` appears in the ancestor chain of `parent` | `Validation` | 2 | 422 |
+| `PARENT_DEPTH_EXCEEDED` | `validate_parent` | `len(ancestors) + 1 + subtree_height > MAX_SUBISSUE_DEPTH` | `Validation` | 2 | 422 |
+| `RELATION_WORKSPACE_MISMATCH` | `validate_relation_scope` | the two ends live in different workspaces | `Validation` | 2 | 422 |
+| `RELATION_SELF` | `validate_relation` | `source_id == target_id` | `Validation` | 2 | 422 |
+| `RELATION_DUPLICATE` | `validate_relation` (and the `UNIQUE`) | the triple exists, or its canonical inverse does | `Conflict` | 4 | 409 |
+
+- **Depth: five levels, root = 1, counting the subtree that moves.** `MAX_SUBISSUE_DEPTH = 5` and the bound is
+  evaluated as `len(ancestors) + 1 + subtree_height`: `ancestors` is the chain of the parent (so its length is
+  the depth the parent already has) and `subtree_height` is the longest downward path below the issue being
+  attached (0 for a leaf and 0 for an issue that does not exist yet). A create and a reparent are then bounded
+  by the same expression; without the height, moving a three-level subtree under a level-3 issue would leave a
+  descendant at level 6 while every individual write looked legal.
+- **Team and workspace are different axes.** The hierarchy never crosses a team (`PARENT_TEAM_MISMATCH`); a
+  relation never crosses a workspace (`RELATION_WORKSPACE_MISMATCH`) and *may* cross teams. The workspace of an
+  edge is the one fact a relation shares with the hierarchy, and the far end's team travels in the read model
+  so a surface can still label it with its own key (SPEC-030 §2.6, `IssueDetail.relations`).
+- **The bucket follows D-014 and D-042.** Only `RELATION_DUPLICATE` is `Conflict` / exit 4: it is uniqueness,
+  the case bucket 4 exists for, and the same bucket the `UNIQUE` produces when the domain lookup is skipped.
+  The other six are `Validation` / exit 2 / 422 — D-042 puts every domain refusal there.
+- **The reads stay in `app/`.** `ancestors` comes from `IssueRepo.ancestor_chain` and the height is counted
+  from `IssueRepo.list_children` inside the same transaction (SPEC-030 §2.4); the domain decides with the
+  numbers it receives and reads nothing (SPEC-020 §1).
+- **The parent layer neither reparents nor cascades.** Archiving or trashing a parent writes one row — its
+  `archived_at` or its `trashed` (SPEC-040 §5.5) — and changes no child: `parent_id` is untouched, no child is
+  archived, trashed or hidden, and `restore_issue` clears only the columns of the addressed issue. Archiving a
+  parent is still refused while it has open children (`CLOSE_WITH_OPEN_CHILDREN`, R6), so the layer never
+  detaches a live subtree; the per-row reversibility is D-015 and the trash of one issue not being a subtree
+  write is D-043. This decision cites both instead of restating them.
+
+**Why.** Each refusal needs a name that the three edges map identically, or the CLI, the API and the dashboard
+answer three different codes for one rule (A7, P2). The depth bound needs the height of the moved subtree
+because the tree is bounded as a whole, not per write. And the parent's archive must stay a per-row write: a
+cascade would touch rows the caller never addressed, and restoring the parent would have to guess which
+children to bring back — the subtree semantics the archive axis deliberately does not have.
+
+**Why not the alternatives.** (a) *One `PARENT_INVALID` for the four hierarchy cases*: the user gets the same
+message for a typo in the reference and for a subtree that is too deep, and no test can tell them apart.
+(b) *Bound the depth on the moved issue only*: it is the create rule, and it lets a reparent build a tree
+deeper than the constant names. (c) *Make the depth and the scope `Conflict` because they feel structural*:
+bucket 4 is uniqueness and version (D-014), and a cross-workspace edge is a bad reference, not a duplicate.
+(d) *Reparent the children to the parent's parent when it is archived*: it rewrites rows the command did not
+address and makes the archive a subtree operation (D-015, D-043).
+
+**Verification.** Unit tests per `REQ-F020-10` and `REQ-F020-11`, the acceptance scenarios of
+`specs/acceptance/001-mvp-v1/07-hierarchy-relations.feature`, and the `# raises:` lines of SPEC-040 §2.2 and
+the use-case matrix of SPEC-040 §6, which list every code above.
+

@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 17
+spec_revision: 19
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -468,6 +468,12 @@ Command validation (`__post_init__`, identical in all):
 4. `title`/`body`/`name`/`url` are validated with `rules.validate_title` / `validate_comment_body` /
    `validate_attachment_url` in the **use case**, not in the command, so that the message includes the
    resource.
+5. **One exception to (1) and (2): `RelateIssues.type` and `UnrelateIssues.type`.** They stay as they
+   arrived (`str | RelationType`) and the use case parses them with `RelationType.parse`, because that
+   function answers `(type, swap)` and the swap is part of the value (D-046): a `__post_init__` that kept
+   only the enum would turn `blocked_by` into `blocks` and write the pair in the direction the caller
+   gave, which is the opposite edge. A token outside the vocabulary is `Validation(rule='COMMAND_FIELD',
+   field='type')`, raised by the use case before any read.
 
 ### 2.2 Use cases — signatures
 
@@ -496,14 +502,22 @@ until the use case exists (D-031), so no edge publishes a behaviour that contrad
 def create_issue(uow: UnitOfWork, cmd: CreateIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(team|parent|label|project|milestone|cycle), Validation, Conflict(UNIQUE)
+# raises: NotFound(team|parent|label|project|milestone|cycle),
+#         Validation(PARENT_SELF|PARENT_TEAM_MISMATCH|PARENT_CYCLE|PARENT_DEPTH_EXCEEDED,
+#                    TITLE_EMPTY|TITLE_TOO_LONG|PRIORITY_OUT_OF_RANGE|TEAM_ARCHIVED,
+#                    STATE_TEAM_MISMATCH|LABEL_TEAM_MISMATCH|LABEL_NOT_FOUND|PROJECT_TEAM_MISMATCH,
+#                    MILESTONE_PROJECT_MISMATCH|CYCLE_TEAM_MISMATCH|CYCLE_COMPLETED,
+#                    MEMBER_INACTIVE|ESTIMATE_*),
+#         Conflict(UNIQUE)
 
 
 def update_issue(uow: UnitOfWork, cmd: UpdateIssue, actor: Actor) -> Issue: ...
 
 
 # raises: NotFound(issue|state|member|project|milestone|cycle|parent),
-#         Validation(those of create_issue + TEAM_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|ISSUE_TRASHED|STATE_ARCHIVED),
+#         Validation(those of create_issue — PARENT_SELF|PARENT_TEAM_MISMATCH|PARENT_CYCLE
+#                    |PARENT_DEPTH_EXCEEDED included —
+#                    + TEAM_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|ISSUE_TRASHED|STATE_ARCHIVED),
 #         InvalidTransition(ISSUE_ARCHIVED)
 # Field-by-field diff: one history row per column that changes, none when the value is identical (§5.4).
 
@@ -586,13 +600,14 @@ def remove_label(uow: UnitOfWork, cmd: RemoveLabel, actor: Actor) -> Issue: ...
 def relate_issues(uow: UnitOfWork, cmd: RelateIssues, actor: Actor) -> IssueRelation: ...
 
 
-# raises: NotFound(issue), Validation(RELATION_SELF), Conflict(RELATION_DUPLICATE)
+# raises: NotFound(issue), Validation(COMMAND_FIELD|RELATION_SELF|RELATION_WORKSPACE_MISMATCH),
+#         Conflict(RELATION_DUPLICATE)
 
 
 def unrelate_issues(uow: UnitOfWork, cmd: UnrelateIssues, actor: Actor) -> None: ...
 
 
-# raises: NotFound(issue|relation)
+# raises: NotFound(issue|relation), Validation(COMMAND_FIELD)
 
 
 def comment_on_issue(uow: UnitOfWork, cmd: CommentOnIssue, actor: Actor) -> Comment: ...
@@ -1042,13 +1057,13 @@ the write lock of the UoW (SPEC-030 §2.2), so that the decision and the write s
 | Use case | Writes (same tx) | Reads before writing |
 |---|---|---|
 | `create_issue` | `issue` (1 INSERT), `issue_label` (N), `issue_history` (`created`) | `team`, `workspace`, `workflow_state`, `label`×N, `project`, `project_milestone`, `cycle`, `issue` (parent), board/backlog positions |
-| `update_issue` | `issue` (at most 1 UPDATE, and none when no column changes), `issue_history` (1 row per column changed) | `issue`, `team`, `workflow_state` (current and target), `member`, `project`, `project_milestone`, `cycle`, `issue` (parent) + `ancestor_chain`, `count_open_children` (only when the target state is terminal), positions of the target column (only when `state` changes) |
+| `update_issue` | `issue` (at most 1 UPDATE, and none when no column changes), `issue_history` (1 row per column changed) | `issue`, `team`, `workflow_state` (current and target), `member`, `project`, `project_milestone`, `cycle`, `issue` (parent) + `ancestor_chain`, `list_children` of the issue (only when `parent` changes, for the height of the moved subtree), `count_open_children` (only when the target state is terminal), positions of the target column (only when `state` changes) |
 | `move_issue` | `issue` (`state_id` + milestones + `board_order` + `updated_at`), `issue_history` (1 row per column changed) | `issue`, current and target `workflow_state`, `count_open_children`, positions of the target state |
 | `reorder_issue` | `issue` (1 position UPDATE) or `issue`×N if there is a rebalance, `issue_history` | `positions` of the scope, neighbors |
 | `archive_issue` / `trash_issue` / `restore_issue` | `issue` (1 UPDATE of `archived_at` and/or `trashed`, none when the layer already has the requested value), `issue_history` (1 row per column changed) | `issue`, `count_open_children` (only in `archive_issue`, of the three) |
 | `add_label` / `remove_label` | `issue_label` (1 INSERT OR IGNORE / DELETE), `issue_history` | `issue`, `label` |
-| `relate_issues` | `issue_relation` (1 INSERT), `issue_history` (`relation`) | both `issue`s, existing relations of the pair |
-| `unrelate_issues` | `issue_relation` (1 DELETE), `issue_history` | both `issue`s, existing relation |
+| `relate_issues` | `issue_relation` (1 INSERT), `issue_history` (`relation`) | both `issue`s (each one's `workspace_id`, D-047), existing relations of the pair read in both orders (D-045) |
+| `unrelate_issues` | `issue_relation` (1 DELETE), `issue_history` | both `issue`s, existing relation (matched on the normalised pair, D-045) |
 | `comment_on_issue` | `comment` (1 INSERT) | `issue`, `comment` (parent) |
 | `resolve_comment` | `comment` (`resolved_at`), `issue_history`? **no** | `comment`, `issue` |
 | `create_team` | `workspace` (if it does not exist), `team`, `workflow_state`×6 | `workspace`, `team` (key collision) |
@@ -1084,9 +1099,9 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | I1 | Title not empty, priority 0-4, valid `due_date`, estimate scale | `domain.rules` | needs no IO |
 | I2 | The state belongs to the issue's team | `domain.rules.validate_state_team` | the judge is pure; `app` reads the `state` |
 | I3 | Do not close with open children | `domain.rules.validate_close` (judgment) + `app` (`count_open_children`) | the domain cannot count |
-| I4 | No hierarchy cycles | `domain.rules.validate_parent` (judgment) + `app` (`ancestor_chain`) | the graph is read by the repo |
+| I4 | No hierarchy cycles, no parent from another team, no tree deeper than 5 levels | `domain.rules.validate_parent` (judgment) + `app` (`ancestor_chain`, and the height of the moved subtree) | the graph is read by the repo (SPEC-020 R6, D-047) |
 | I5 | Label from the correct team and not retired | `domain.rules.validate_label_scope` | the `label` is read by `app` |
-| I6 | Relation without self-reference nor symmetric duplicate | `domain.rules.validate_relation` | existing relations are read by `app` |
+| I6 | One row per edge: no self-reference, no duplicate — the symmetric pair in one canonical order (D-045) — and no edge across workspaces (D-047) | `domain.rules.validate_relation` + `validate_relation_scope` | existing relations and both `workspace_id`s are read by `app` |
 | I7 | `project`/`milestone` compatible with the issue's team | **`app` only** | requires reading `project` and `project_milestone`; there is no pure rule that fits |
 | I8 | `cycle` from the same team and not completed | **`app` only** | requires reading `cycle` |
 | I9 | Unique `number`/`identifier` | `adapters` (SPEC-030 R2/SQL-1) | requires the write lock |
@@ -1187,10 +1202,17 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   same milestone table, not a second rule.
 - **R10 — Idempotent labels.** `add_label` of an already present label is not an error and generates no history;
   `remove_label` of an absent one is `NotFound(resource='label_link')`.
-- **R11 — Directed relations.** `blocks` is persisted **once**, in the direction
-  `(issue blocks related)`. `blocked_by` is accepted as input and inverted before writing. The
-  symmetric types (`related`, `similar`, `duplicate`) are persisted in the order they arrive and are
-  checked in both directions (SPEC-020 REQ-F020-11).
+- **R11 — One row per edge, in the order the type declares (D-045, D-046).** The pair reaches the
+  repository already normalised by `RelationType.canonical_pair`, which is the only place that order is
+  decided: `blocks` is persisted **once**, `(blocker, blocked)`, because that direction is the meaning
+  of the row, and the symmetric types (`related`, `similar`, `duplicate`) are persisted as
+  `(min ULID, max ULID)`. `import_json` is the other writer and calls the same function before its
+  `INSERT` (SPEC-080 §5.3, R25); the `UNIQUE` of SPEC-010 is the backstop behind both. `blocked_by` is
+  accepted as input — `RelationType.parse` returns
+  `(BLOCKS, swap=True)` and the pair is swapped before the write, on `relate` **and** on `unrelate`,
+  so the alias addresses the same row it created — and it is never a stored `type`. The consequence
+  the tests assert: `relate B related A` after `relate A related B` is `Conflict(RELATION_DUPLICATE)`,
+  because both spellings normalise to the one triple the `UNIQUE` of SPEC-010 has.
 - **R12 — Layered, reversible, and never a delete.** `archive_issue` sets `archived_at = now`;
   `trash_issue` sets `trashed = 1`; `restore_issue` clears both. None of them deletes a row, and none of
   them touches `state_id`, `board_order`, `sort_order`, the milestones, the labels, the comments, the
@@ -1271,7 +1293,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-07** | `move_issue` toward a terminal state with open children raises `Validation(rule='CLOSE_WITH_OPEN_CHILDREN')` and does not modify the issue |
 | **REQ-F040-08** | `reorder_issue` uses `between`; on `RANKING_EXHAUSTED` it rebalances the scope and retries once |
 | **REQ-F040-09** | `add_label`/`remove_label` validate scope with `rules.validate_label_scope`, are idempotent on add and write history |
-| **REQ-F040-10** | `relate_issues` normalizes `blocked_by` to inverted `blocks`, rejects self-relation and symmetric duplicate |
+| **REQ-F040-10** | `relate_issues` normalizes `blocked_by` to inverted `blocks` and stores every symmetric type in the canonical order (D-045), so the reversed pair of an existing edge is `Conflict(RELATION_DUPLICATE)` and one row answers both ends; rejects a self-relation and an edge across workspaces (D-047) |
 | **REQ-F040-11** | `unrelate_issues` deletes the relation and writes history; if it does not exist, `NotFound(resource='relation')` |
 | **REQ-F040-12** | `comment_on_issue` validates `body`, requires `parent_id` to be a comment of the same issue and sets `author_id` from the actor |
 | **REQ-F040-13** | `resolve_comment` sets `resolved_at` only once (idempotent) and returns the comment |
@@ -1332,7 +1354,8 @@ archive axis (§5.5). The remaining use cases follow the same pattern
  8.     estimate = rules.validate_estimate(cmd.estimate, team.issue_estimation_type)
  9.     parent = tx.issues.get_by_identifier(cmd.parent) or tx.issues.get(cmd.parent) if given
         rules.validate_parent(child_id=<new id>, child_team_id=team.id,
-                              parent=parent, ancestors=tx.issues.ancestor_chain(parent.id))
+                              parent=parent, ancestors=tx.issues.ancestor_chain(parent.id),
+                              subtree_height=0)     # the new issue has no children yet (R6, D-047)
 10.     for each label: label = get_by_name / get  -> Validation(rule='LABEL_NOT_FOUND') if missing
         rules.validate_label_scope(team.id, label)          # includes label.retired_at
 11.     project / milestone / cycle: same matrix as §3.1 (PROJECT_TEAM_MISMATCH,
@@ -1571,7 +1594,8 @@ it fixes the order of the history rows (R3).
                         its project != the resulting project of the issue => MILESTONE_PROJECT_MISMATCH
         cycle_id     -> tx.cycles.get(...); None => NotFound(cycle);
                         other team => CYCLE_TEAM_MISMATCH; completed => CYCLE_COMPLETED
-        parent       -> the resolution of §5.1 step 9 (PARENT_SELF | PARENT_TEAM_MISMATCH | PARENT_CYCLE)
+        parent       -> the resolution of §5.1 step 9, plus the height of the subtree the issue carries:
+                        (PARENT_SELF | PARENT_TEAM_MISMATCH | PARENT_CYCLE | PARENT_DEPTH_EXCEEDED)
         estimate     -> rules.validate_estimate(cmd.estimate, team.issue_estimation_type)
         due_date     -> rules.validate_due_date(cmd.due_date)         # DUE_DATE_FORMAT
  5.     now = uow.clock.now()              # one clock, read before R7 derives any milestone
@@ -1597,8 +1621,13 @@ Details that are part of the contract:
   sends `MoveIssue`, not `UpdateIssue`. Both `state_id` and `board_order` are recorded when they change.
 - **Ordering of the references.** `project_id` is resolved before `milestone_id` because the milestone is
   validated against the project the issue ends up with, not the one it had.
-- **`parent=None` unparents.** The new parent must belong to the issue's team and must not create a cycle
-  (I4); the `ancestor_chain` read is the same one `create_issue` uses. `sub_issue_sort_order` is **kept**
+- **`parent=None` unparents.** The new parent must belong to the issue's team, must not create a cycle
+  and must not take the tree past `MAX_SUBISSUE_DEPTH` (5 levels, root = 1) once the subtree the issue
+  carries is counted (I4, SPEC-020 R6, D-047): `ancestors` is the `ancestor_chain` read of `create_issue`
+  and `subtree_height` is the longest downward path below the issue, counted from
+  `tx.issues.list_children` in the same transaction — so moving a chain of three levels under a level-3
+  issue is `PARENT_DEPTH_EXCEEDED` and not a write that leaves a descendant at level 6.
+  `sub_issue_sort_order` is **kept**
   as it is in both directions: it is not recalculated on reparent, so an unchanged column produces no
   history row (R3), and the value only changes through `create_issue` and `reorder_issue(scope="sub")`
   (§2.1).
@@ -1715,8 +1744,8 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `CYCLE_ALREADY_COMPLETED` | `Conflict` | closing a cycle twice | `complete_cycle` | 4 | 409 |
 | `DATE_RANGE_INVERTED` | `Validation` | `target < start`, `ends_at <= starts_at` | `create_project`, `add_milestone`, `create_cycle`, `agenda` | 2 | 422 |
 | `DUPLICATE_MILESTONE` / `DUPLICATE_CYCLE_NUMBER` | `Conflict` | repeated milestone name or `(team_id, number)` | `add_milestone`, `create_cycle` | 4 | 409 |
-| `RELATION_SELF` / `PARENT_CYCLE` / `PARENT_SELF` | `Validation` | invalid relation or hierarchy (SPEC-020) | `relate_issues`, `create_issue`, `update_issue` | 2 | 422 |
-| `RELATION_DUPLICATE` | `Conflict` | relation already existing (includes the inverted pair) | `relate_issues` | 4 | 409 |
+| `RELATION_SELF` / `PARENT_SELF` / `PARENT_TEAM_MISMATCH` / `PARENT_CYCLE` / `PARENT_DEPTH_EXCEEDED` / `RELATION_WORKSPACE_MISMATCH` | `Validation` | invalid relation or hierarchy (SPEC-020 §2.5, D-047): an edge on one issue, a self-parent, a parent from another team, a tree past `MAX_SUBISSUE_DEPTH`, an edge across workspaces | `relate_issues`, `create_issue`, `update_issue` | 2 | 422 |
+| `RELATION_DUPLICATE` | `Conflict` | the edge already exists: the same triple, or the symmetric pair stored in the opposite order (D-045) | `relate_issues` | 4 | 409 |
 | `UNIQUE_IDENTIFIER` / `DUPLICATE_NUMBER` | `Conflict` | `identifier` / `(team_id, number)` collision | `create_issue` | 4 | 409 |
 | `COMMAND_FIELD` / `ACTOR_SOURCE` | `Validation` | a command field or the actor's `source` does not convert | any use case (in `__post_init__`) | 2 | 422 |
 | `DB_BUSY` / `DB_READONLY` | `Conflict` | SQLite busy or opened read-only (SPEC-030 §6) | any use case | 4 | 409 |
@@ -1735,7 +1764,7 @@ Use case → expected errors matrix (contract for the tests of §7):
 
 | Use case | `NotFound` | `Validation` | `Conflict` | `InvalidTransition` |
 |---|---|---|---|---|
-| `create_issue` | team, parent, label, project, milestone, cycle, member | `TEAM_ARCHIVED`, `STATE_TEAM_MISMATCH`, `LABEL_TEAM_MISMATCH`, `PROJECT_TEAM_MISMATCH`, `MILESTONE_PROJECT_MISMATCH`, `CYCLE_COMPLETED`, `PARENT_CYCLE`, `MEMBER_INACTIVE`, `ESTIMATE_*` | `UNIQUE_IDENTIFIER`, `DUPLICATE_NUMBER` | — |
+| `create_issue` | team, parent, label, project, milestone, cycle, member | `TITLE_EMPTY`, `TITLE_TOO_LONG`, `PRIORITY_OUT_OF_RANGE`, `TEAM_ARCHIVED`, `STATE_TEAM_MISMATCH`, `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND`, `PROJECT_TEAM_MISMATCH`, `MILESTONE_PROJECT_MISMATCH`, `CYCLE_TEAM_MISMATCH`, `CYCLE_COMPLETED`, `PARENT_SELF`, `PARENT_TEAM_MISMATCH`, `PARENT_CYCLE`, `PARENT_DEPTH_EXCEEDED`, `MEMBER_INACTIVE`, `ESTIMATE_*` | `UNIQUE_IDENTIFIER`, `DUPLICATE_NUMBER` | — |
 | `update_issue` | issue, state, project, milestone, cycle, parent, member | those of `create_issue` + `CLOSE_WITH_OPEN_CHILDREN`, `ISSUE_TRASHED`, `STATE_ARCHIVED` | — | `ISSUE_ARCHIVED` |
 | `assign_issue` / `set_priority` / `set_due_date` | issue, member | `MEMBER_INACTIVE`, `ISSUE_TRASHED`, `PRIORITY_OUT_OF_RANGE`, `DUE_DATE_FORMAT` | — | `ISSUE_ARCHIVED` |
 | `move_issue` | issue, workflow_state, neighbor | `STATE_TEAM_MISMATCH`, `STATE_ARCHIVED`, `CLOSE_WITH_OPEN_CHILDREN`, `POSITION_NEIGHBOR`, `POSITION_OUT_OF_ORDER`, `RANKING_EXHAUSTED`, `ISSUE_TRASHED` | — | `ISSUE_ARCHIVED` |
@@ -1744,8 +1773,8 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `archive_issue` | issue | `CLOSE_WITH_OPEN_CHILDREN`, `ISSUE_TRASHED` | — | — |
 | `trash_issue` / `restore_issue` | issue | — | — | — |
 | `add_label` / `remove_label` | issue, label, label_link | `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND` | `LABEL_RETIRED` | `ISSUE_ARCHIVED` |
-| `relate_issues` | issue (×2) | `RELATION_SELF` | `RELATION_DUPLICATE` | — |
-| `unrelate_issues` | issue, relation | — | — | — |
+| `relate_issues` | issue (×2) | `COMMAND_FIELD`, `RELATION_SELF`, `RELATION_WORKSPACE_MISMATCH` | `RELATION_DUPLICATE` | — |
+| `unrelate_issues` | issue, relation | `COMMAND_FIELD` | — | — |
 | `comment_on_issue` | issue, comment (parent) | `BODY_EMPTY`, `COMMENT_PARENT_MISMATCH` | — | — |
 | `update_comment` / `resolve_comment` | comment | `BODY_EMPTY` | — | — |
 | `add_attachment` | issue | `ATTACHMENT_URL_INVALID`, `ATTACHMENT_URL_SCHEME` | — | — |
@@ -1855,6 +1884,13 @@ Feature: Application use cases
     When relate_issues(issue=ENG-1, related=ENG-2, type="blocked_by") is run
     Then a relation exists with issue_id ENG-2, related_issue_id ENG-1 and type "blocks"
     And the inverse relation does not exist
+
+  @REQ-F040-10
+  Scenario: the same symmetric edge written from the other end is a duplicate
+    Given the issues ENG-1 and ENG-2 with the relation "related" stored in the canonical order
+    When relate_issues is run with the two references in the opposite order and type "related"
+    Then Conflict is raised with rule "RELATION_DUPLICATE"
+    And issue_relation holds exactly one row between ENG-1 and ENG-2
 
   @REQ-F040-11
   Scenario: unrelating something nonexistent is NotFound
@@ -2167,6 +2203,33 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 19 (2026-11-13): **every code of D-047 appears in a `# raises:` list, and the lists match
+  §5.1 and §6.** §2.2 says "what is not listed is not raised", but `create_issue` declared a bare
+  `Validation`, which left `PARENT_SELF`, `PARENT_TEAM_MISMATCH`, `PARENT_CYCLE` and
+  `PARENT_DEPTH_EXCEEDED` — the four refusals §5.1 step 9 raises — outside every `# raises:` line, and
+  `update_issue` could inherit them only by reference. `create_issue` now names the four `PARENT_*` codes
+  and the field/label/cross-reference rules of steps 4-11, `update_issue` names the four again inside
+  "those of `create_issue`", and the rev-18 note that claimed both lines already listed them is corrected
+  to describe what the file says. `unrelate_issues` keeps `COMMAND_FIELD` alone and says why: a delete
+  validates neither the workspace nor the self-edge. The `create_issue` row of §6 picks up the five codes
+  the step list already raised and the matrix was missing (`TITLE_EMPTY`, `TITLE_TOO_LONG`,
+  `PRIORITY_OUT_OF_RANGE`, `LABEL_NOT_FOUND`, `CYCLE_TEAM_MISMATCH`), so the matrix and the signature
+  agree. R11 also names `import_json` as the other caller of `canonical_pair` (D-045). No signature,
+  exit bucket or HTTP mapping changed.
+- spec_revision 18 (2026-11-13): **the relation and hierarchy writes follow the domain table and
+  publish every code they can raise (D-045, D-046, D-047).** R11 stops saying that the symmetric types
+  are stored "in the order they arrive": the pair reaches the repository normalised by
+  `RelationType.canonical_pair`, so the reversed pair of an existing edge is the same triple and the
+  `RELATION_DUPLICATE`; `blocked_by` is the input alias on `relate` **and** on `unrelate`, which
+  addresses the row it created, and §2.1 declares that these two `type` fields are the one exception to
+  the `__post_init__` normalisation, because `parse` answers the swap as well. `relate_issues` declares
+  `COMMAND_FIELD|RELATION_SELF|RELATION_WORKSPACE_MISMATCH` and `unrelate_issues` declares
+  `COMMAND_FIELD` (a delete validates neither the scope nor the self-edge, so it raises neither);
+  `create_issue` declares the four `PARENT_*` codes next to its field and cross-reference rules and
+  `update_issue` declares them again as part of "those of `create_issue`", §5.4 counts the height of the moved
+  subtree with `list_children` (the reparent is bounded like a create) and §3.1/§3.2/§6 list the reads,
+  the invariants and the codes once. No public signature changed; the exit and HTTP buckets are the
+  ones SPEC-020 §6 and D-014 already declare.
 - spec_revision 17 (2026-11-13): **the listing port has one shape.** `§2.3` and `§5.3`
   described the same function once as taking a unit of work and once as taking the database;
   `ListFilters` already carries `limit`, `cursor`, `order` and `reverse` (D-011), so the extra

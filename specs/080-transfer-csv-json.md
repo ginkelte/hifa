@@ -4,7 +4,7 @@ title: CSV and JSON transfer
 component: application
 status: review
 version: 1
-spec_revision: 4
+spec_revision: 5
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/transfer.py
@@ -214,6 +214,7 @@ re-raise on exception) and reads with `db.ro_connection()` or `db.connect()`.
 | `tx.cycles` | cycles | `list(team_id)` |
 | `tx.issues` | issues | `next_number(team_id)`; `get_by_identifier(identifier)`; `get(issue_id)`; `insert(issue)`; `update(issue)`; `set_labels(issue_id, label_ids)`; `label_ids(issue_id)` |
 | `tx.members` | members | `get_by_email(email)`; `find_by_display_name(display_name) -> list[Member]`; `insert(member)` |
+| `RelationType` (SPEC-020 §2.1) | order of a relation pair | `canonical_pair(a, b) -> tuple[str, str]` — the one function that decides the stored order (D-045), applied to every `issue_relation` row before the `INSERT` |
 | `transfer_sql` | JSON dump/load | `dump_table(conn, table, columns) -> list[dict]`; `load_table(conn, table, columns, rows) -> int`; `delete_all(conn, tables) -> int` |
 
 `tx.members` covers the `member` table, which SPEC-030 §3 assigns to the adapter; its three methods
@@ -373,7 +374,8 @@ only difference is `COMMIT` → `ROLLBACK` (§5.1 step 7). That is why the `Impo
 | `issue_label` | INSERT/DELETE | PK `(issue_id, label_id)`; with `--on-conflict update` the whole set is replaced |
 | `issue_fts` | INSERT/UPDATE (via triggers) | never written directly; the SPEC-090 triggers maintain the index |
 | `issue_history` | INSERT (JSON import only) | `id INTEGER AUTOINCREMENT`; the `id` from the file is preserved |
-| `comment`, `attachment`, `issue_relation`, `team_membership`, `project_milestone` | INSERT (JSON only) | SPEC-010 FKs |
+| `issue_relation` | INSERT (JSON only) | one row per edge, stored in the order `RelationType.canonical_pair` decides for the symmetric types and as given for `blocks` (D-045); `UNIQUE(issue_id, related_issue_id, type)` as the backstop |
+| `comment`, `attachment`, `team_membership`, `project_milestone` | INSERT (JSON only) | SPEC-010 FKs |
 
 Invariants this component **must** hold when any import finishes:
 
@@ -538,6 +540,15 @@ Invariants this component **must** hold when any import finishes:
 - **R24 — Sizes (REQ-N080-03).** An input file larger than **64 MiB** is rejected (`file_too_large`,
   exit 2), as is a JSON with more than **200 000** total rows. The CSV is processed in streaming
   (`csv.reader` over the file object): the whole file is never materialized in memory.
+- **R25 — JSON: one row per relation edge (D-045).** `import_json` is the second writer of
+  `issue_relation`, so it applies the same normalisation as `relate_issues`: every row of that table
+  goes through `RelationType.canonical_pair` before the `INSERT`, and the order it produces is the one
+  declared in SPEC-020 §2.1 (the table is not restated here). `type` is one of the four stored values,
+  never `blocked_by` (D-046). A row whose normalised triple already exists — earlier in the same file,
+  or in the destination under `mode='merge'` — is `Conflict(rule='RELATION_DUPLICATE')` (exit 4), the
+  code SPEC-040 publishes for that duplicate, and the import commits nothing; it is never stored as a
+  second row and never skipped silently. `UNIQUE(issue_id, related_issue_id, type)` of SPEC-010 remains
+  the backstop for a writer that skipped this step.
 
 ### 4.1 Edge case catalog (normative)
 
@@ -643,9 +654,16 @@ import: 1. read the whole JSON, validate format/schema_version/tables  → unsup
         3. per table in JOURNAL_ORDER (17): validate columns against PRAGMA table_info, sort
            self-references topologically, INSERT with executemany in batch_size batches.
            `schema_migration` is skipped (skipped + warning schema_migration_not_imported)
-        4. after issue: INSERT INTO issue_fts(issue_fts) VALUES('integrity-check')
+        4. issue_relation, before it is written: every row's pair goes through
+           RelationType.canonical_pair for the symmetric types (related, similar, duplicate) and
+           stays as given for `blocks`; `blocked_by` is never a stored `type` (D-045, D-046).
+           The normalised triple is looked up in the rows this file already staged and in the
+           destination table: a hit ⇒ Conflict(rule='RELATION_DUPLICATE'), nothing of the import
+           is committed. Two rows that are the same edge spelled both ways are therefore one row
+           and one conflict, never two rows.
+        5. after issue: INSERT INTO issue_fts(issue_fts) VALUES('integrity-check')
            if it fails → 'rebuild' and warning fts_rebuilt
-        5. COMMIT (or ROLLBACK if dry_run)  → ImportReport(rows=Σ inserted)
+        6. COMMIT (or ROLLBACK if dry_run)  → ImportReport(rows=Σ inserted)
 ```
 
 ## 6. Errors
@@ -669,12 +687,14 @@ import: 1. read the whole JSON, validate format/schema_version/tables  → unsup
 | `NotFound` — `file_not_found` | input path nonexistent or unreadable | 3 | — |
 | `NotFound` — `team_not_found` | `--team` does not exist in the workspace | 3 | — |
 | `Conflict` — `destination_exists` | `import_json --mode replace` without `--force` | 4 | — |
+| `Conflict` — `RELATION_DUPLICATE` | an `issue_relation` row normalises onto an edge that already exists, in the file or in the destination (§5.3 step 4, R25) | 4 | — |
 
-`import_csv` never returns exit 1, 5 or 6; the only `4` is `destination_exists` from an
-`import --mode replace` without `--force` (D-014). Row errors do **not** abort the process: they
-accumulate and the exit code summarizes the result of the whole batch. This component exposes no
-HTTP endpoints in v1 (SPEC-060 may wrap it; in that case `Validation` maps to 422 and `NotFound` to
-404 without changing the codes in this table).
+`import_csv` never returns exit 1, 5 or 6, and its only `4` is `destination_exists` from an
+`import --mode replace` without `--force` (D-014); `import_json` answers `4` also for
+`RELATION_DUPLICATE`, which is the code SPEC-040 publishes for the same duplicate (D-045, D-047). Row
+errors do **not** abort the process: they accumulate and the exit code summarizes the result of the
+whole batch. This component exposes no HTTP endpoints in v1 (SPEC-060 may wrap it; in that case
+`Validation` maps to 422 and `NotFound` to 404 without changing the codes in this table).
 
 ### 6.2 `RowError.code` codes
 
@@ -824,6 +844,14 @@ Feature: Issue import and export in CSV and JSON
     And PRAGMA foreign_key_check returns no rows
     And issue_fts answers the search for an imported title
 
+  Scenario: a JSON that spells one edge both ways is a declared conflict
+    Given an empty database
+    And a JSON whose "issue_relation" holds both (ENG-1, ENG-2, related) and (ENG-2, ENG-1, related)
+    When "hifa import backup.json --mode replace --force" is executed
+    Then the exit code is 4
+    And the error.rule is "RELATION_DUPLICATE"
+    And the count of "issue_relation" is 0
+
   Scenario: paths that escape the directory are rejected
     Given a destination "../etc/out.csv"
     When "hifa export --out ../etc/out.csv" is executed
@@ -906,6 +934,20 @@ Feature: Issue import and export in CSV and JSON
 
 ## 11. Notes
 
+- spec_revision 5 (2026-11-13): **the JSON import is a writer of `issue_relation`, so it normalises the
+  pair (D-045).** §3 said `issue_relation` was "INSERT (JSON only)" validating nothing but the column
+  names against `PRAGMA table_info`, which let `(A,B,related)` and `(B,A,related)` both be stored: two
+  rows for one edge, and `UNIQUE(issue_id, related_issue_id, type)` cannot see them as one key. §5.3
+  step 4 now runs every row of that table through `RelationType.canonical_pair` — the function
+  `relate_issues` uses (SPEC-040 R11) — before the `INSERT … executemany`, and R25 declares the rule
+  without restating the order: the table lives in SPEC-020 §2.1. A normalised triple that already
+  exists, in the file or in the destination, is `Conflict(rule='RELATION_DUPLICATE')` (exit 4): the
+  code SPEC-040 already publishes for that duplicate, added to §6.1 as the second `4` of `import_json`
+  next to `destination_exists`. `blocked_by` remains input vocabulary and never a stored `type`
+  (D-046). The `UNIQUE` stops being described as the enforcement and becomes the backstop it is.
+  §2.1.1 lists the one function the import consumes from the domain, §7 carries the scenario of a file
+  that spells the edge both ways, and nothing else in the contract changed: no signature, no flag, no
+  `RowError` code (the JSON import has no per-row errors), no CSV behaviour.
 - spec_revision 4 (2026-11-11): translated to English (repo-wide language convention).
 - **r3 (`spec_revision: 3`) — batch close (D-023).** The §5.1 step 7 pseudocode did `COMMIT` inside
   the row loop, against the prose of §2.3.1/R17 ("one transaction per batch") and against R15

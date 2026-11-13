@@ -3,8 +3,8 @@ id: SPEC-020
 title: Domain core
 component: domain
 status: review
-version: 1
-spec_revision: 5
+version: 2
+spec_revision: 7
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -58,8 +58,8 @@ here.
 | `format`, `parse`, `validate_key`, `normalize_key`, `is_valid_key`, `KEY_PATTERN`, `IDENTIFIER_PATTERN` | `identifier` | functions / constants | yes |
 | `between`, `needs_rebalance`, `rebalance`, `first`, `last` | `ranking` | functions | yes |
 | `INITIAL_GAP`, `MIN_GAP` | `ranking` | stable constants | yes |
-| `validate_title`, `validate_priority`, `validate_due_date`, `validate_date_range`, `validate_estimate`, `validate_state_team`, `validate_parent`, `validate_close`, `validate_transition`, `validate_relation`, `validate_label_scope`, `validate_archive_team`, `validate_comment_body` | `rules` | functions | yes |
-| `MAX_TITLE`, `MAX_BODY`, `MAX_DESCRIPTION` | `rules` | stable constants | yes |
+| `validate_title`, `validate_priority`, `validate_due_date`, `validate_date_range`, `validate_estimate`, `validate_state_team`, `validate_parent`, `validate_close`, `validate_transition`, `validate_relation`, `validate_relation_scope`, `validate_label_scope`, `validate_archive_team`, `validate_comment_body` | `rules` | functions | yes |
+| `MAX_TITLE`, `MAX_BODY`, `MAX_DESCRIPTION`, `MAX_SUBISSUE_DEPTH` | `rules` | stable constants | yes |
 | `HifaError`, `NotFound`, `Conflict`, `Validation`, `InvalidTransition` | `errors` | exceptions | yes |
 
 ### 2.1 `domain/enums.py`
@@ -121,8 +121,37 @@ class RelationType(enum.StrEnum):
         """False only for blocks; True for duplicate, related and similar."""
 
     @property
+    def is_hard(self) -> bool:
+        """True only for blocks: the one type that gates work (§4.1 R7)."""
+
+    @property
     def inverse_name(self) -> str:
         """blocks -> 'blocked_by'; the rest return their own value."""
+
+    def name_as_seen(self, direction: Literal["out", "in"]) -> str:
+        """The type as read from one end of the row.
+
+        'out' (the queried issue is `issue_id`) -> the type's own value.
+        'in'  (the queried issue is `related_issue_id`) -> `inverse_name`, which is
+        'blocked_by' for blocks and the own value for the symmetric types.
+        """
+
+    def canonical_pair(self, source_id: str, target_id: str) -> tuple[str, str]:
+        """The `(issue_id, related_issue_id)` order this type is stored in.
+
+        blocks -> `(source_id, target_id)` unchanged: the caller's direction is the meaning.
+        symmetric -> sorted by ULID code point, so `(min, max)`; the `UNIQUE` of the DDL then
+        rejects the reversed pair instead of storing a second row.
+        """
+
+    @classmethod
+    def parse(cls, raw: str) -> tuple["RelationType", bool]:
+        """Input vocabulary -> `(type, swap)`.
+
+        The four values -> `(value, False)`. `'blocked_by'` -> `(BLOCKS, True)`: it is the
+        input alias of the inverse direction and the caller's pair is swapped before storing.
+        Anything else -> `Validation(rule='COMMAND_FIELD', field='type')`.
+        """
 
 
 class LabelGroupType(enum.StrEnum):
@@ -181,6 +210,22 @@ Serialization rules, verifiable:
 | `EstimationType` | `"tShirt"` | `TEXT 'tShirt'` | exact `"tShirt"` |
 | `TeamVisibility` | `"public"` | `TEXT 'public'` | exact `"public"` |
 | `MilestoneStatus` | `"unstarted"` | `TEXT 'unstarted'` | exact `"unstarted"` |
+
+**The relation types have one table, and this is it** (D-045). `SPEC-010` materializes the four values in
+the `CHECK` of `issue_relation`; `SPEC-030` (the read model), `SPEC-040` (`relate_issues`) and `SPEC-070`
+(the panel) cite this table instead of restating it.
+
+| `type` | stored pair | `is_symmetric` | name seen from `issue_id` (`out`) | name seen from `related_issue_id` (`in`) | `is_hard` |
+|---|---|---|---|---|---|
+| `blocks` | (blocker, blocked) — the direction the caller gave | `False` | `blocks` | `blocked_by` | `True` |
+| `duplicate` | (min ULID, max ULID) | `True` | `duplicate` | `duplicate` | `False` |
+| `related` | (min ULID, max ULID) | `True` | `related` | `related` | `False` |
+| `similar` | (min ULID, max ULID) | `True` | `similar` | `similar` | `False` |
+
+`blocked_by` is **not** a value of the enum, of the `CHECK` nor of any stored `type`: it is the name the
+inverse direction reads as (`name_as_seen("in")`), and `parse` accepts it as input. The token is
+`blocked_by`; a surface that renders it for a human replaces `_` with a space and does not invent a
+second name.
 
 ### 2.2 `domain/entities.py`
 
@@ -387,6 +432,17 @@ class Comment(Entity):
 
 
 class IssueRelation(Entity):
+    """Row of `issue_relation`, and nothing else: the stored edge.
+
+    `issue_id` is the row's source and `related_issue_id` its target; for `blocks` the source is
+    the blocker (§2.1). There is no `blocked_by`, `inverse` nor `is_blocked` field here: the
+    inverse direction and the verdict are derived from the row on read (SPEC-030 §2.4
+    `IssueRepo.relations`), because a stored second direction would be a second truth about the
+    same edge (D-045, D-046).
+    `type` is the stored value; the input alias `blocked_by` never reaches this field
+    (`RelationType.parse` inverts it before the write).
+    """
+
     id: str
     issue_id: str
     related_issue_id: str
@@ -522,6 +578,7 @@ in the checking `validate_*` functions). All of them raise `Validation` with a s
 MAX_TITLE = 255
 MAX_BODY = 50_000
 MAX_DESCRIPTION = 100_000
+MAX_SUBISSUE_DEPTH = 5   # a root issue is level 1; the deepest descendant is level 5
 
 
 def validate_title(title: str) -> str:
@@ -561,13 +618,26 @@ def validate_state_team(issue_team_id: str, state: WorkflowState) -> None:
 
 
 def validate_parent(
-    child_id: str, child_team_id: str, parent: Issue | None, ancestors: Mapping[str, str | None]
+    child_id: str,
+    child_team_id: str,
+    parent: Issue | None,
+    ancestors: Mapping[str, str | None],
+    subtree_height: int = 0,
 ) -> None:
     """parent None -> ok.
-    parent.id == child_id -> Validation(rule='PARENT_SELF').
-    parent.team_id != child_team_id -> Validation(rule='PARENT_TEAM_MISMATCH').
-    child_id appears in the ancestor chain of parent -> Validation(rule='PARENT_CYCLE').
-    ancestors: mapping issue_id -> parent_id already read by the repo (SPEC-030)."""
+    parent.id == child_id -> Validation(rule='PARENT_SELF', field='parent').
+    parent.team_id != child_team_id -> Validation(rule='PARENT_TEAM_MISMATCH', field='parent').
+    child_id appears in the ancestor chain of parent -> Validation(rule='PARENT_CYCLE', field='parent').
+    len(ancestors) + 1 + subtree_height > MAX_SUBISSUE_DEPTH
+        -> Validation(rule='PARENT_DEPTH_EXCEEDED', field='parent').
+    ancestors: mapping issue_id -> parent_id of the PARENT, already read by the repo
+        (SPEC-030 `ancestor_chain(parent.id)`); it includes `parent` itself, so
+        len(ancestors) is the depth of `parent` and the root counts as level 1.
+    subtree_height: edges on the longest downward path below `child_id` (0 for a leaf and 0
+        for an issue that does not exist yet), counted by `app/` from the children rows it reads
+        inside the transaction (SPEC-030 §2.4 `IssueRepo.list_children`; SPEC-040 §5.4).
+        It is what makes a reparent respect the bound for the deepest descendant and not only
+        for the moved issue."""
 
 
 def validate_close(target: WorkflowStateType, open_children: int) -> None:
@@ -588,9 +658,20 @@ def validate_relation(
     type: RelationType,
     existing: Sequence[tuple[str, str, RelationType]],
 ) -> None:
-    """source_id == target_id -> Validation(rule='RELATION_SELF').
+    """source_id == target_id -> Validation(rule='RELATION_SELF', field='related').
     (source_id, target_id, type) already exists -> Conflict(rule='RELATION_DUPLICATE').
-    If type.is_symmetric and (target_id, source_id, type) exists -> Conflict(idem)."""
+    If type.is_symmetric and (target_id, source_id, type) exists -> Conflict(idem).
+    source_id/target_id arrive ALREADY ordered by RelationType.canonical_pair: the ordering is
+    that method's job (§2.1), and the query in the inverse order is the net for a caller that
+    skipped it — the row it collides with is the same row, not a second one."""
+
+
+def validate_relation_scope(source: Issue, target: Issue) -> None:
+    """source.workspace_id != target.workspace_id
+        -> Validation(rule='RELATION_WORKSPACE_MISMATCH', field='related').
+    An edge lives inside one workspace and may cross teams: the far end's team travels in the
+    read model (SPEC-030 §2.6 `IssueDetail.relations` carries the stored row paired with the
+    far end's `IssueListItem`) so a surface can label it with its own key (§4.1 R7)."""
 
 
 def validate_label_scope(issue_team_id: str, label: Label) -> None:
@@ -771,11 +852,25 @@ Mapping invariants (mandatory for SPEC-030 and SPEC-040):
 - **R5 — Closing with children.** An issue **cannot** move to a state of type `completed` or
   `canceled` if it has at least one open child (`parent_id = issue.id`). `open_children` is counted
   by the repo; the domain only decides.
-- **R6 — Hierarchy.** `parent_id != id`; parent and child share `team_id`; the ancestor chain cannot
-  contain cycles (`A → B → A`).
-- **R7 — Relations.** There is no self-relation (`issue_id != related_issue_id`). `(issue_id,
-  related_issue_id, type)` is not duplicated. For symmetric types (`duplicate`, `related`, `similar`)
-  the inverted pair is not duplicated either.
+- **R6 — Hierarchy.** `parent_id != id`; parent and child share `team_id`, so a sub-issue never
+  crosses a team boundary — the hierarchy is the one axis a workspace does **not** share with
+  relations; the ancestor chain cannot contain cycles (`A → B → A`); and the tree is at most
+  `MAX_SUBISSUE_DEPTH` levels deep with the root as level 1. The bound is checked against the
+  **deepest descendant** of the issue being attached, not only against the issue itself, so a
+  reparent of a subtree is bounded like a create (`subtree_height`). The layers are not part of
+  the shape: archiving or trashing a parent does not change a child's `parent_id` and does not
+  hide the child (D-015, D-043).
+- **R7 — Relations.** There is no self-relation (`issue_id != related_issue_id`) and no edge between
+  two workspaces (`RELATION_WORKSPACE_MISMATCH`); inside a workspace an edge **may** join two teams.
+  `(issue_id, related_issue_id, type)` is not duplicated, and for the symmetric types the pair is
+  stored in one canonical order (§2.1), so the inverted pair is the **same row** read from the other
+  end and not a second one. `blocks` is stored from the blocker to the blocked issue; `blocked_by` is
+  derived (`name_as_seen("in")`) and never stored. §2.1's table is the only place where the direction,
+  the symmetry and the hardness of each type are stated.
+  **A `blocks` edge gates while the blocker is not finished.** The blocker's `state.type` decides it:
+  `completed` and `canceled` both release the blocked issue, so a finished blocker does not keep a
+  task blocked forever. That verdict is derived from `is_hard` + `WorkflowStateType.is_terminal` on
+  read and is never stored as a flag on the edge or on the issue (D-046).
 - **R8 — Labels.** A label is usable if `team_id` is `NULL` (workspace) or equals the issue's team,
   and if `retired_at IS NULL`.
 - **R9 — Archiving a team.** A team with open issues is not archived; those issues are first closed, moved or
@@ -808,8 +903,8 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-07** | `validate_title`, `validate_comment_body`, `validate_priority`, `validate_due_date`, `validate_estimate`, `validate_date_range` accept/reject according to R1-R3 and the scales of §2.1 | table of valid/invalid cases |
 | **REQ-F020-08** | `validate_state_team` rejects a state from another team with `rule='STATE_TEAM_MISMATCH'` and `field='state_id'` | 1 test |
 | **REQ-F020-09** | `validate_close`/`validate_transition` reject closing with `open_children > 0` with `rule='CLOSE_WITH_OPEN_CHILDREN'`; they allow closing with `open_children == 0` | 2 tests |
-| **REQ-F020-10** | `validate_parent` rejects self-parent, parent from another team and a cycle in the ancestor chain (including a 3+ level cycle) | 3 tests |
-| **REQ-F020-11** | `validate_relation` rejects self-relation (`Validation`), exact duplicate and symmetric duplicate (`Conflict`) | 3 tests |
+| **REQ-F020-10** | `validate_parent` rejects self-parent, parent from another team, a cycle in the ancestor chain (including a 3+ level cycle) and a tree deeper than `MAX_SUBISSUE_DEPTH` — counted with the height of the moved subtree, so reparenting a chain is bounded like creating one | 5 tests |
+| **REQ-F020-11** | `validate_relation` rejects self-relation (`Validation`), exact duplicate and symmetric duplicate (`Conflict`); `validate_relation_scope` rejects an edge between two workspaces (`RELATION_WORKSPACE_MISMATCH`) and accepts two teams of one workspace | 5 tests |
 | **REQ-F020-12** | `validate_label_scope` accepts workspace labels and own-team labels; rejects a label from another team and a retired label | 4 tests |
 | **REQ-F020-13** | `validate_archive_team` rejects archiving a team with `open_issues > 0` and one already archived | 2 tests |
 | **REQ-F020-14** | The 5 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}` | structure test + `isinstance` test |
@@ -818,6 +913,7 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-17** | `validate_date_range` rejects `target < start` in `project` and in `cycle` (`ends_at <= starts_at`) | 2 tests |
 | **REQ-F020-18** | Every DDL table with a writer has a model: `team_membership` → `TeamMembership` and `team_previous_key` → `TeamPreviousKey`, with field names identical to the columns; `schema_migration` is left out by explicit decision (§10) | test comparing `model_fields` with `PRAGMA table_info` of both tables |
 | **REQ-F020-19** | `validate_transition` rejects a target state with non-null `archived_at` with `Validation(rule='STATE_ARCHIVED', field='state_id')`, and accepts the same non-archived state type | 2 tests |
+| **REQ-F020-20** | `RelationType` answers the four facts of §2.1 for its four values: `is_symmetric`, `is_hard`, `canonical_pair` (unchanged for `blocks`, sorted by ULID for the symmetric ones) and `name_as_seen` (`blocks` when the issue is the source, `blocked_by` when it is the target of a `blocks` row, own value for the rest); `parse` accepts `blocked_by` as the inverse input and rejects any other name with `Validation(COMMAND_FIELD)` | table-driven over the 4 values + 2 parse cases |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -881,6 +977,8 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `Validation` | `CLOSE_WITH_OPEN_CHILDREN` | closing an issue with open sub-issues | exit 2 | 422 |
 | `Validation` | `STATE_TEAM_MISMATCH` / `LABEL_TEAM_MISMATCH` / `PARENT_TEAM_MISMATCH` | cross-team reference | exit 2 | 422 |
 | `Validation` | `PARENT_CYCLE` / `RELATION_SELF` / `PARENT_SELF` | relation with itself or hierarchy cycle | exit 2 | 422 |
+| `Validation` | `PARENT_DEPTH_EXCEEDED` | the tree would exceed `MAX_SUBISSUE_DEPTH` levels (root = 1), counting the moved subtree | exit 2 | 422 |
+| `Validation` | `RELATION_WORKSPACE_MISMATCH` | an edge between two workspaces | exit 2 | 422 |
 | `Validation` | `RANKING_EXHAUSTED` | no float gap between two positions | exit 2 | 422 |
 | `Validation` | `STATE_ARCHIVED` | move/create against a `workflow_state` with `archived_at` | exit 2 | 422 |
 | `NotFound` | `NOT_FOUND` | nonexistent id/identifier | exit 3 | 404 |
@@ -1044,6 +1142,54 @@ Feature: Pure domain core
     When creating (ENG-2, ENG-1, related) is attempted
     Then it raises Conflict with rule "RELATION_DUPLICATE"
 
+  @REQ-F020-11
+  Scenario: an edge between two workspaces is rejected
+    Given an issue of the ENG team in workspace A and an issue of the OPS team in workspace B
+    When rules.validate_relation_scope is called with that pair
+    Then it raises Validation with rule "RELATION_WORKSPACE_MISMATCH" and field "related"
+
+  @REQ-F020-20
+  Scenario: the symmetric types are stored in one canonical order
+    Given two issue ULIDs where "01J0AAA" sorts before "01J0BBB"
+    When canonical_pair is asked for "related" with ("01J0BBB", "01J0AAA")
+    Then the pair returned is ("01J0AAA", "01J0BBB")
+
+  @REQ-F020-20
+  Scenario: blocks keeps the direction the caller gave
+    Given two issue ULIDs where "01J0AAA" sorts before "01J0BBB"
+    When canonical_pair is asked for "blocks" with ("01J0BBB", "01J0AAA")
+    Then the pair returned is unchanged: ("01J0BBB", "01J0AAA")
+
+  @REQ-F020-20
+  Scenario: the inverse name is derived from the end of the row
+    Given a blocks row and a related row
+    When name_as_seen is asked from both ends of each row
+    Then the blocks row answers "blocks" from its source and "blocked_by" from its target
+    And the related row answers "related" from both ends
+
+  @REQ-F020-20
+  Scenario: blocked_by is accepted as an input alias
+    When RelationType.parse("blocked_by") is called
+    Then it answers (blocks, swap=True)
+
+  @REQ-F020-20
+  Scenario: a type outside the vocabulary is a command field error
+    When RelationType.parse("blocked-by") is called
+    Then it raises Validation with rule "COMMAND_FIELD" and field "type"
+
+  @REQ-F020-10
+  Scenario: the tree cannot exceed five levels
+    Given a chain of four issues from ENG-1 to ENG-4, so ENG-4 is level 4
+    When a fifth issue is attached below ENG-4 and a sixth below that one
+    Then the fifth is accepted and the sixth raises Validation with rule "PARENT_DEPTH_EXCEEDED"
+
+  @REQ-F020-10
+  Scenario: reparenting a subtree respects the bound for its deepest descendant
+    Given ENG-1 with a child ENG-2 and ENG-2 with a child ENG-3
+    And a chain of three issues at levels 1 to 3
+    When validate_parent is called to move ENG-1 below the level-3 issue with subtree_height 2
+    Then it raises Validation with rule "PARENT_DEPTH_EXCEEDED"
+
   @REQ-F020-12
   Scenario: a label from another team is rejected
     Given an issue of the ENG team and a label of the OPS team
@@ -1189,6 +1335,24 @@ Executable from top to bottom; every step has a verification command.
 
 ## Notes
 
+- spec_revision 7 (2026-11-13): **the pointers of the relation and hierarchy rules name the specs
+  that own them.** The two citations that named a `SPEC-030` symbol the adapter does not declare
+  (`RelationEdge`, and a repo `subtree_height`) now cite the ones it does: `IssueRepo.relations`,
+  §2.6 `IssueDetail.relations` and `IssueRepo.list_children`. The inverse read and the height of a
+  moved subtree are therefore traceable to a real signature, and the split stays the one §1
+  declares — `app/` reads and counts, this layer decides (D-045, D-046, D-047). No public symbol,
+  signature nor requirement changed.
+- spec_revision 6 (2026-11-13): **the four relation types are decided once (D-045, D-046, D-047).**
+  §2.1 gains the type table — stored pair, symmetry, the name read from each end and hardness — and
+  the four members that answer it (`is_hard`, `name_as_seen`, `canonical_pair`, `parse`), so no other
+  spec states what `blocks` means or that `blocked_by` is its inverse. `IssueRelation` says it models
+  the stored row and nothing else: a field for the inverse would be a second truth about one edge.
+  R7 carries the verdict that a `blocks` edge only gates while the blocker is not terminal, and the
+  workspace scope of an edge; R6 carries the depth bound and the fact that a layer is not a shape.
+  `validate_parent` gains `subtree_height` and `MAX_SUBISSUE_DEPTH`, and both new refusals
+  (`PARENT_DEPTH_EXCEEDED`, `RELATION_WORKSPACE_MISMATCH`) are `Validation` — exit 2 / 422 — because
+  D-014 reserves bucket 4 for uniqueness and version and D-042 puts every domain refusal in the
+  validation bucket. `validate_relation` states that its arguments arrive already ordered.
 - spec_revision 5 (2026-11-13): **the transition class carries the rule that decided it.**
   §2.6 declares `rule` and `field` on `InvalidTransition`, the two attributes the edges map to
   an exit code and a field name, so a write refused because the issue is archived names the
