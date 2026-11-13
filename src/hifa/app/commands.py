@@ -41,6 +41,14 @@ def _command_field(field_name: str, value: object) -> Validation:
     )
 
 
+def _require_ref(cmd: object, field_name: str) -> None:
+    """Rejects an empty or non-string reference (`issue`, `team`, `state`)."""
+    value = getattr(cmd, field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise _command_field(field_name, value)
+    object.__setattr__(cmd, field_name, value.strip())
+
+
 @dataclass(frozen=True, slots=True)
 class Actor:
     """Identity of whoever performs the write; never persisted on `issue`."""
@@ -105,6 +113,150 @@ class CreateIssue:
             isinstance(self.estimate, bool) or not isinstance(self.estimate, (int, float))
         ):
             raise _command_field("estimate", self.estimate)
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateIssue:
+    """Field edit of one issue.
+
+    Every optional field uses the `UNSET` sentinel: `UNSET` keeps the stored value and `None`
+    writes NULL, so the two operations stay distinguishable in the history. `state` travels the
+    same path as `move_issue` (append to the target column); this command carries no position.
+    `branch_name` is not a field: it is derived from the title when it was never edited by hand.
+    """
+
+    issue: str
+    title: str | Unset = UNSET
+    description: str | None | Unset = UNSET
+    priority: Priority | int | Unset = UNSET
+    state: str | Unset = UNSET
+    assignee_id: str | None | Unset = UNSET
+    project_id: str | None | Unset = UNSET
+    milestone_id: str | None | Unset = UNSET
+    cycle_id: str | None | Unset = UNSET
+    parent: str | None | Unset = UNSET
+    estimate: float | None | Unset = UNSET
+    due_date: date | str | None | Unset = UNSET
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+        if self.title is not UNSET and not isinstance(self.title, str):
+            raise _command_field("title", self.title)
+        if (
+            self.description is not UNSET
+            and self.description is not None
+            and not isinstance(self.description, str)
+        ):
+            raise _command_field("description", self.description)
+        if self.priority is not UNSET:
+            priority = self.priority
+            if isinstance(priority, bool) or not isinstance(priority, int):
+                raise _command_field("priority", priority)
+        state = self.state
+        if state is not UNSET:
+            if not isinstance(state, str) or not state.strip():
+                raise _command_field("state", state)
+            object.__setattr__(self, "state", state.strip())
+        for field_name in (
+            "assignee_id",
+            "project_id",
+            "milestone_id",
+            "cycle_id",
+            "parent",
+        ):
+            value = getattr(self, field_name)
+            if value is UNSET or value is None:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise _command_field(field_name, value)
+            object.__setattr__(self, field_name, value.strip())
+        estimate = self.estimate
+        if estimate is not UNSET and estimate is not None:
+            if isinstance(estimate, bool) or not isinstance(estimate, (int, float)):
+                raise _command_field("estimate", estimate)
+            object.__setattr__(self, "estimate", float(estimate))
+        due = self.due_date
+        if due is not UNSET and due is not None and not isinstance(due, (str, date)):
+            raise _command_field("due_date", due)
+
+
+@dataclass(frozen=True, slots=True)
+class MoveIssue:
+    """Move an issue inside a board column or into another column of the same team.
+
+    `target_state=None` reorders inside the current column. The anchors are references
+    (`ENG-123` or a ULID), never indexes nor positions; `sort_order` is accepted only as a
+    shortcut that is validated against the neighbors.
+    """
+
+    issue: str
+    target_state: str | None = None
+    position: Literal["first", "last", "before", "after"] = "last"
+    before_id: str | None = None
+    after_id: str | None = None
+    sort_order: float | None = None
+    rebalance: bool = False
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+        if self.target_state is not None:
+            if not isinstance(self.target_state, str) or not self.target_state.strip():
+                raise _command_field("target_state", self.target_state)
+            object.__setattr__(self, "target_state", self.target_state.strip())
+        if self.position not in ("first", "last", "before", "after"):
+            raise _command_field("position", self.position)
+        if self.position == "before" and not self.before_id:
+            raise _command_field("before_id", self.before_id)
+        if self.position == "after" and not self.after_id:
+            raise _command_field("after_id", self.after_id)
+        if self.position != "before" and self.before_id is not None:
+            raise _command_field("before_id", self.before_id)
+        if self.position != "after" and self.after_id is not None:
+            raise _command_field("after_id", self.after_id)
+        for field_name in ("before_id", "after_id"):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise _command_field(field_name, value)
+            object.__setattr__(self, field_name, value.strip())
+        if self.sort_order is not None:
+            order = self.sort_order
+            if isinstance(order, bool) or not isinstance(order, (int, float)):
+                raise _command_field("sort_order", order)
+            object.__setattr__(self, "sort_order", float(order))
+        if not isinstance(self.rebalance, bool):
+            raise _command_field("rebalance", self.rebalance)
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveIssue:
+    """Archive one issue; the layer is reversible and never deletes the row."""
+
+    issue: str
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+
+
+@dataclass(frozen=True, slots=True)
+class TrashIssue:
+    """Send one issue to the trash; the row is kept and the layer is reversible."""
+
+    issue: str
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreIssue:
+    """Clear the archive and trash layers of one issue."""
+
+    issue: str
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,10 +402,15 @@ def _validate_state_fields(cmd: CreateState) -> None:
 __all__ = [
     "UNSET",
     "Actor",
+    "ArchiveIssue",
     "CreateIssue",
     "CreateState",
     "CreateTeam",
     "Maybe",
+    "MoveIssue",
+    "RestoreIssue",
+    "TrashIssue",
     "Unset",
+    "UpdateIssue",
     "UpdateState",
 ]

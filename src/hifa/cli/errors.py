@@ -57,7 +57,9 @@ _JSON_CODES: dict[str, str] = {
 
 #: CLI codes whose message is already the whole sentence: the code is not repeated on
 #: `stderr` (it stays in the `--json` envelope and in the exit code).
-_UNPREFIXED_CLI_CODES: frozenset[str] = frozenset({"invalid_option", "database_not_found"})
+_UNPREFIXED_CLI_CODES: frozenset[str] = frozenset(
+    {"invalid_option", "database_not_found", "no_changes", "confirmation_required"}
+)
 
 
 class CliError(Exception):
@@ -92,13 +94,24 @@ def exit_code_for(exc: BaseException) -> int:
 
 
 def error_code_for(exc: BaseException) -> str:
-    """Stable code for the `--json` envelope."""
+    """Stable code for the `--json` envelope.
+
+    A domain code is either an envelope code already (`invalid_config`, `corrupt_database`) or
+    the name of a rule (`TITLE_EMPTY`, `STATE_TEAM_MISMATCH`). A rule that the map does not
+    know is not an envelope code: the exception class decides and the rule stays in `details`.
+    """
     if isinstance(exc, (ConfigError, CliError)):
         return exc.code
-    if isinstance(exc, HifaError):
-        code = getattr(exc, "code", "internal_error")
-        return code if code != code.upper() else _JSON_CODES.get(code, "internal_error")
-    return "internal_error"
+    if not isinstance(exc, HifaError):
+        return "internal_error"
+    code = getattr(exc, "code", "")
+    if code and code != code.upper():
+        return code
+    mapped = _JSON_CODES.get(code)
+    if mapped is not None:
+        return mapped
+    class_code = getattr(type(exc), "code", "HIFA_ERROR")
+    return _JSON_CODES.get(class_code, "internal_error")
 
 
 def error_message_for(exc: BaseException) -> str:

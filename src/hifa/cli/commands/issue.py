@@ -1,9 +1,12 @@
 """`hifa issue` — issue subcommands.
 
-T-05 implements `issue create`. The command only orchestrates the edge: it normalizes
-flags, resolves context (database, team, member), builds `CreateIssue` and calls
-`create_issue`. No business rule lives here: titles, priorities, dates and labels are
-validated by `app/` through `domain.rules`.
+The commands only orchestrate the edge: they normalize flags, resolve context (database,
+team, member), build the command object and call the use case. No business rule lives here:
+titles, priorities, dates, states, transitions and the archive layer are validated by `app/`
+through `domain.rules`.
+
+`edit`, `move`, `archive`, `delete` and `restore` are one write each against the resolved
+SQLite file: none opens a socket and none needs `hifa serve` running.
 
 The canonical `Issue` JSON object is assembled in `_canonical`: it is
 a presentation helper (it resolves names for the envelope), not a use case.
@@ -22,8 +25,24 @@ import typer
 from hifa.adapters.clock import SystemClock
 from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
-from hifa.app.commands import Actor, CreateIssue
-from hifa.app.issues import create_issue
+from hifa.app.commands import (
+    UNSET,
+    Actor,
+    ArchiveIssue,
+    CreateIssue,
+    MoveIssue,
+    RestoreIssue,
+    TrashIssue,
+    UpdateIssue,
+)
+from hifa.app.issues import (
+    archive_issue,
+    create_issue,
+    move_issue,
+    restore_issue,
+    trash_issue,
+    update_issue,
+)
 from hifa.cli import output
 from hifa.cli.context import CliContext
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
@@ -77,6 +96,7 @@ def create_command(
     priority: str | None = typer.Option(
         None, "-p", "--priority", help="0..4, P0..P4, none|urgent|high|medium|low."
     ),
+    estimate: float | None = typer.Option(None, "-e", "--estimate", help="Estimate (a number)."),
     assignee: str | None = typer.Option(None, "-a", "--assignee", help="ME, email or member ULID."),
     labels: list[str] | None = typer.Option(
         None, "-l", "--label", help="Label (repeatable or comma-separated)."
@@ -112,6 +132,7 @@ def create_command(
             team=team,
             state=state,
             priority=priority,
+            estimate=estimate,
             assignee=assignee,
             labels=labels,
             due=due,
@@ -127,6 +148,210 @@ def create_command(
     output.emit(row, table_cols=ISSUE_TABLE_COLUMNS, json_obj=payload)
 
 
+@issue_app.command("edit")
+def edit_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    title: str | None = typer.Option(None, "-t", "--title", help="New title."),
+    description: str | None = typer.Option(None, "-d", "--description", help="New description."),
+    description_file: str | None = typer.Option(
+        None, "--description-file", help="File with the new description ('-' = stdin)."
+    ),
+    clear_description: bool = typer.Option(
+        False, "--clear-description", help="Write NULL in the description."
+    ),
+    priority: str | None = typer.Option(
+        None, "-p", "--priority", help="0..4, P0..P4, none|urgent|high|medium|low."
+    ),
+    state: str | None = typer.Option(
+        None, "-s", "--state", help="Target state name or ULID (appends to its column)."
+    ),
+    assignee: str | None = typer.Option(None, "-a", "--assignee", help="ME, email or member ULID."),
+    clear_assignee: bool = typer.Option(False, "--clear-assignee", help="Unassign the issue."),
+    project: str | None = typer.Option(None, "--project", help="Project reference."),
+    clear_project: bool = typer.Option(False, "--clear-project", help="Detach the project."),
+    milestone: str | None = typer.Option(None, "--milestone", help="Milestone reference."),
+    clear_milestone: bool = typer.Option(False, "--clear-milestone", help="Detach the milestone."),
+    cycle: str | None = typer.Option(None, "--cycle", help="Cycle reference."),
+    clear_cycle: bool = typer.Option(False, "--clear-cycle", help="Detach the cycle."),
+    parent: str | None = typer.Option(None, "--parent", help="Parent issue (ENG-1 or ULID)."),
+    clear_parent: bool = typer.Option(False, "--clear-parent", help="Unparent the issue."),
+    estimate: str | None = typer.Option(None, "-e", "--estimate", help="Estimate (a number)."),
+    clear_estimate: bool = typer.Option(False, "--clear-estimate", help="Write NULL in estimate."),
+    due: str | None = typer.Option(None, "--due", help="Due date YYYY-MM-DD."),
+    clear_due: bool = typer.Option(False, "--clear-due", help="Write NULL in the due date."),
+    before: str | None = typer.Option(None, "--before", hidden=True),
+    after: str | None = typer.Option(None, "--after", hidden=True),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Change the fields of one issue and print the saved entity."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        _reject_board_anchor(before, after)
+        row, payload = _run_edit(
+            db_flag=db if db is not None else root.db,
+            ref=ref,
+            title=title,
+            description=description,
+            description_file=description_file,
+            clear_description=clear_description,
+            priority=priority,
+            state=state,
+            assignee=assignee,
+            clear_assignee=clear_assignee,
+            project=project,
+            clear_project=clear_project,
+            milestone=milestone,
+            clear_milestone=clear_milestone,
+            cycle=cycle,
+            clear_cycle=clear_cycle,
+            parent=parent,
+            clear_parent=clear_parent,
+            estimate=estimate,
+            clear_estimate=clear_estimate,
+            due=due,
+            clear_due=clear_due,
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_issue(row, payload)
+
+
+@issue_app.command("move")
+def move_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    state: str = typer.Option(
+        ..., "-s", "--state", help="State name (case-insensitive) or ULID of the issue's team."
+    ),
+    before: str | None = typer.Option(None, "--before", help="Place the issue before this one."),
+    after: str | None = typer.Option(None, "--after", help="Place the issue after this one."),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Move one issue into a state of its team and print the saved entity."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        row, payload = _run_move(
+            db_flag=db if db is not None else root.db,
+            ref=ref,
+            state=state,
+            before=before,
+            after=after,
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_issue(row, payload)
+
+
+@issue_app.command("archive")
+def archive_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    undo: bool = typer.Option(False, "--undo", help="Undo the archive (restore the issue)."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
+    no_input: bool = typer.Option(False, "--no-input", help="Never prompt; requires --yes."),
+    hard: bool = typer.Option(False, "--hard", hidden=True),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Take one issue out of every listing, or undo that with `--undo`."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        _reject_hard_delete(hard)
+        if not undo:
+            _confirm_archive(ref, yes=yes, no_input=no_input)
+        row, payload = _run_archive(db_flag=db if db is not None else root.db, ref=ref, undo=undo)
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_issue(row, payload)
+
+
+@issue_app.command("delete")
+def delete_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
+    no_input: bool = typer.Option(False, "--no-input", help="Never prompt; requires --yes."),
+    hard: bool = typer.Option(False, "--hard", hidden=True),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Send one issue to the trash: the row is kept and `restore` brings it back."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        _reject_hard_delete(hard)
+        _confirm_delete(ref, yes=yes, no_input=no_input)
+        row, payload = _run_delete(db_flag=db if db is not None else root.db, ref=ref)
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_issue(row, payload)
+
+
+@issue_app.command("restore")
+def restore_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    hard: bool = typer.Option(False, "--hard", hidden=True),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Clear the archive and the trash of one issue (never prompts)."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        _reject_hard_delete(hard)
+        row, payload = _run_restore(db_flag=db if db is not None else root.db, ref=ref)
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_issue(row, payload)
+
+
 # --- orchestration ----------------------------------------------------------------------
 
 
@@ -140,6 +365,7 @@ def _run_create(
     team: str | None,
     state: str | None,
     priority: str | None,
+    estimate: float | None,
     assignee: str | None,
     labels: list[str] | None,
     due: str | None,
@@ -175,6 +401,7 @@ def _run_create(
             assignee_id=assignee_id,
             parent=parent,
             labels=label_refs,
+            estimate=estimate,
             due_date=due,
         )
         issue = create_issue(uow, cmd, actor)
@@ -290,6 +517,340 @@ def _active_members(repos: Repos) -> list[Member]:
     if workspace is None:
         return []
     return [member for member in repos.members.list(workspace.id) if member.is_active]
+
+
+# --- writes -----------------------------------------------------------------------------
+
+
+def _start_output(root: CliContext, *, json_output: bool, quiet: bool, no_color: bool) -> None:
+    """Resolve the format of the invocation: the global flags plus the leaf ones."""
+    json_mode = bool(json_output or root.json)
+    quiet_mode = bool(quiet or root.quiet)
+    output.configure(json_mode=json_mode, quiet=quiet_mode, color=not no_color)
+    if json_mode and quiet_mode:
+        raise fail(
+            CliError(
+                "--json and --quiet are mutually exclusive",
+                code="invalid_option",
+                field="output",
+            )
+        )
+
+
+def _emit_issue(row: dict[str, Any], payload: dict[str, Any]) -> None:
+    """One issue: the table row, the canonical object or the identifier."""
+    output.emit(
+        row,
+        table_cols=ISSUE_TABLE_COLUMNS,
+        json_obj=payload,
+        quiet_obj=payload["identifier"],
+    )
+
+
+def _open_uow(db_flag: str | None) -> UnitOfWork:
+    """Unit of work over the resolved SQLite file; a missing file is exit 3."""
+    cfg = resolve_config(db_flag=db_flag)
+    db_path = Path(cfg.db_path)
+    if str(db_path) == ":memory:" or not db_path.is_file():
+        raise CliError(
+            f"database not found: {db_path}",
+            code="database_not_found",
+            field="db",
+            exit_code=EXIT_NOT_FOUND,
+        )
+    return UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())
+
+
+def _actor(repos: Repos) -> Actor:
+    """Who writes: the local member, when the workspace has exactly one."""
+    return Actor(member_id=_local_member(repos), source="cli", label="cli")
+
+
+def _pair(value: str | None, clear: bool, *, flag: str, field: str, clear_flag: str) -> Any:
+    """`UNSET` when the flag is absent, `None` when it is cleared, else the value.
+
+    `flag` is the option the user typed and `field` the column the error envelope names: they
+    differ whenever the flag and the column are spelled differently (`--project`/`project_id`).
+    """
+    if value is not None and clear:
+        raise CliError(f"use {flag} or {clear_flag}, not both", code="invalid_option", field=field)
+    if clear:
+        return None
+    return UNSET if value is None else value
+
+
+def _parse_estimate(raw: str) -> float:
+    try:
+        return float(raw)
+    except ValueError:
+        raise CliError(f"invalid estimate: {raw!r} (a number)", field="estimate") from None
+
+
+def _update_fields(
+    *,
+    title: str | None,
+    description: str | None,
+    description_file: str | None,
+    clear_description: bool,
+    priority: str | None,
+    state: str | None,
+    assignee: str | None,
+    clear_assignee: bool,
+    project: str | None,
+    clear_project: bool,
+    milestone: str | None,
+    clear_milestone: bool,
+    cycle: str | None,
+    clear_cycle: bool,
+    parent: str | None,
+    clear_parent: bool,
+    estimate: str | None,
+    clear_estimate: bool,
+    due: str | None,
+    clear_due: bool,
+) -> tuple[dict[str, Any], str | None]:
+    """Fields that carry a literal value, plus the assignee reference to resolve in the database.
+
+    An absent flag leaves the field out of the mapping, which `UpdateIssue` reads as "keep the
+    stored value"; a clear flag sends `None`, which writes NULL.
+    """
+    fields: dict[str, Any] = {}
+    if title is not None:
+        fields["title"] = title
+    body = _pair(
+        _resolve_description(description, description_file),
+        clear_description,
+        flag="--description",
+        field="description",
+        clear_flag="--clear-description",
+    )
+    if body is not UNSET:
+        fields["description"] = body
+    if priority is not None:
+        fields["priority"] = _parse_priority(priority)
+    if state is not None:
+        fields["state"] = state
+    assignee_ref: str | None = None
+    if clear_assignee:
+        fields["assignee_id"] = None
+    elif assignee is not None:
+        assignee_ref = assignee
+    for name, flag, value, clear, clear_flag in (
+        ("project_id", "--project", project, clear_project, "--clear-project"),
+        ("milestone_id", "--milestone", milestone, clear_milestone, "--clear-milestone"),
+        ("cycle_id", "--cycle", cycle, clear_cycle, "--clear-cycle"),
+        ("parent", "--parent", parent, clear_parent, "--clear-parent"),
+    ):
+        resolved = _pair(value, clear, flag=flag, field=name, clear_flag=clear_flag)
+        if resolved is not UNSET:
+            fields[name] = resolved
+    estimate_value = _pair(
+        estimate,
+        clear_estimate,
+        flag="--estimate",
+        field="estimate",
+        clear_flag="--clear-estimate",
+    )
+    if estimate_value is not UNSET:
+        fields["estimate"] = None if estimate_value is None else _parse_estimate(estimate_value)
+    due_value = _pair(due, clear_due, flag="--due", field="due", clear_flag="--clear-due")
+    if due_value is not UNSET:
+        fields["due_date"] = due_value
+    return fields, assignee_ref
+
+
+def _run_edit(
+    *,
+    db_flag: str | None,
+    ref: str,
+    title: str | None,
+    description: str | None,
+    description_file: str | None,
+    clear_description: bool,
+    priority: str | None,
+    state: str | None,
+    assignee: str | None,
+    clear_assignee: bool,
+    project: str | None,
+    clear_project: bool,
+    milestone: str | None,
+    clear_milestone: bool,
+    cycle: str | None,
+    clear_cycle: bool,
+    parent: str | None,
+    clear_parent: bool,
+    estimate: str | None,
+    clear_estimate: bool,
+    due: str | None,
+    clear_due: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    fields, assignee_ref = _update_fields(
+        title=title,
+        description=description,
+        description_file=description_file,
+        clear_description=clear_description,
+        priority=priority,
+        state=state,
+        assignee=assignee,
+        clear_assignee=clear_assignee,
+        project=project,
+        clear_project=clear_project,
+        milestone=milestone,
+        clear_milestone=clear_milestone,
+        cycle=cycle,
+        clear_cycle=clear_cycle,
+        parent=parent,
+        clear_parent=clear_parent,
+        estimate=estimate,
+        clear_estimate=clear_estimate,
+        due=due,
+        clear_due=clear_due,
+    )
+    if not fields and assignee_ref is None:
+        raise CliError("nothing to change", code="no_changes")
+
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+            if assignee_ref is not None:
+                fields["assignee_id"] = _resolve_assignee(repos, assignee_ref)
+        issue = update_issue(uow, UpdateIssue(issue=ref, **fields), actor)
+        with uow.read() as repos:
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+    return _table_row(payload), payload
+
+
+def _run_move(
+    *, db_flag: str | None, ref: str, state: str, before: str | None, after: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if before is not None and after is not None:
+        raise CliError(
+            "use --before or --after, not both", code="invalid_option", field="before_id"
+        )
+    position = "before" if before is not None else "after" if after is not None else "last"
+
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        issue = move_issue(
+            uow,
+            MoveIssue(
+                issue=ref,
+                target_state=state,
+                position=position,
+                before_id=before,
+                after_id=after,
+            ),
+            actor,
+        )
+        with uow.read() as repos:
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+    return _table_row(payload), payload
+
+
+def _run_archive(
+    *, db_flag: str | None, ref: str, undo: bool
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        issue = (
+            restore_issue(uow, RestoreIssue(issue=ref), actor)
+            if undo
+            else archive_issue(uow, ArchiveIssue(issue=ref), actor)
+        )
+        with uow.read() as repos:
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+    return _table_row(payload), payload
+
+
+def _run_delete(*, db_flag: str | None, ref: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        issue = trash_issue(uow, TrashIssue(issue=ref), actor)
+        with uow.read() as repos:
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+    return _table_row(payload), payload
+
+
+def _run_restore(*, db_flag: str | None, ref: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        issue = restore_issue(uow, RestoreIssue(issue=ref), actor)
+        with uow.read() as repos:
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+    return _table_row(payload), payload
+
+
+def _reject_board_anchor(before: str | None, after: str | None) -> None:
+    """A field edit carries no position: a board anchor is not one of its flags."""
+    if before is not None or after is not None:
+        raise CliError(
+            "edit takes no board anchor: use `hifa issue move` when the position matters",
+            code="invalid_option",
+            field="before",
+        )
+
+
+def _reject_hard_delete(hard: bool) -> None:
+    """Hifa has no physical deletion: the flag is rejected, never ignored."""
+    if hard:
+        raise CliError(
+            "--hard is not supported: there is no physical deletion",
+            code="invalid_option",
+            field="hard",
+        )
+
+
+def _confirm_archive(ref: str, *, yes: bool, no_input: bool) -> None:
+    """Ask `Archive ENG-1?` before the use case runs."""
+    _confirm_destructive(f"Archive {ref}?", yes=yes, no_input=no_input)
+
+
+def _confirm_delete(ref: str, *, yes: bool, no_input: bool) -> None:
+    """Ask `Send ENG-1 to trash?` before the use case runs."""
+    _confirm_destructive(f"Send {ref} to trash?", yes=yes, no_input=no_input)
+
+
+def _confirm_destructive(prompt: str, *, yes: bool, no_input: bool) -> None:
+    """Ask on `stderr` before the use case runs.
+
+    A session without a terminal (or `--no-input`) never prompts and refuses straight away;
+    a `no` answer refuses the same way. Only `--yes` skips the question.
+    """
+    if yes:
+        return
+    if not no_input and sys.stdin.isatty() and _ask(prompt):
+        return
+    raise CliError("operation canceled", code="confirmation_required")
+
+
+def _ask(prompt: str) -> bool:
+    """Write one yes/no question to `stderr` and read one answer from `stdin`.
+
+    The question is a diagnostic, so it never shares the stream that carries data: a refused
+    or aborted confirmation leaves `stdout` byte-empty in every format. An empty line (the
+    default answer) and end of input are both a `no`.
+    """
+    typer.echo(f"{prompt} [y/N]: ", err=True, nl=False)
+    return sys.stdin.readline().strip().lower() in {"y", "yes"}
 
 
 # --- presentation -----------------------------------------------------------------------

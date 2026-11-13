@@ -102,11 +102,41 @@ def test_conflict_exposes_rule_field_value() -> None:
 
 
 def test_invalid_transition_exposes_current_target_allowed() -> None:
-    err = InvalidTransition(current="started", target="done", allowed=("completed", "canceled"))
+    err = InvalidTransition(
+        rule="STATE_TRANSITION",
+        current="started",
+        target="done",
+        allowed=("completed", "canceled"),
+    )
     assert err.current == "started"
     assert err.target == "done"
     assert err.allowed == ("completed", "canceled")
     assert err.details["allowed"] == ["completed", "canceled"]
+    assert err.details["rule"] == "STATE_TRANSITION"
+
+
+def test_invalid_transition_carries_the_broken_rule_and_field() -> None:
+    """The use-case layer rejects a write of an archived issue with a rule and a field."""
+    err = InvalidTransition(
+        "issue is archived",
+        rule="ISSUE_ARCHIVED",
+        field="ref",
+        current="S-BACKLOG",
+        target="S-BACKLOG",
+    )
+    assert err.rule == "ISSUE_ARCHIVED"
+    assert err.field == "ref"
+    assert err.code == "INVALID_TRANSITION"
+    assert err.exit_code == 5
+    assert err.details["rule"] == "ISSUE_ARCHIVED"
+    assert err.details["field"] == "ref"
+    assert err.message == "issue is archived"
+
+
+def test_validation_still_exposes_its_own_rule_and_field() -> None:
+    err = Validation(rule="TITLE_EMPTY", field="title")
+    assert (err.rule, err.field) == ("TITLE_EMPTY", "title")
+    assert err.code == "VALIDATION"
 
 
 def test_attributes_are_read_only() -> None:

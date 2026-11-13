@@ -189,9 +189,11 @@ class Validation(HifaError):
 
 
 class InvalidTransition(HifaError):
-    """Invalid state transition. **Reserved**: no rule in the domain raises it.
+    """A write the resource's current layer does not allow. CLI exit 5, HTTP 409.
 
-    It exists so an edge with its own constraints can map to exit 5.
+    Carries the `rule` that was broken and the `field` that carried the reference, like
+    `Validation`, plus the `current`/`target` pair when the rejection is about a transition.
+    The producer is the use-case layer: domain rules never raise it.
     """
 
     code = "INVALID_TRANSITION"
@@ -201,22 +203,45 @@ class InvalidTransition(HifaError):
         self,
         message: str | None = None,
         *,
-        current: str,
-        target: str,
+        rule: str,
+        field: str | None = None,
+        current: str = "",
+        target: str = "",
         allowed: tuple[str, ...] = (),
+        value: Any | None = None,
         details: Mapping[str, Any] | None = None,
+        code: str | None = None,
     ) -> None:
+        self._rule = rule
+        self._field = field
         self._current = current
         self._target = target
         self._allowed = tuple(allowed)
+        self._value = value
         merged: dict[str, Any] = dict(details or {})
-        merged["current"] = current
-        merged["target"] = target
-        merged["allowed"] = list(self._allowed)
+        merged["rule"] = rule
+        if field is not None:
+            merged["field"] = field
+        if current or target:
+            merged["current"] = current
+            merged["target"] = target
+            merged["allowed"] = list(self._allowed)
+        if value is not None:
+            merged["value"] = value
         super().__init__(
-            f"invalid transition: {current} -> {target}" if message is None else message,
+            f"invalid transition: {rule}" if message is None else message,
+            code=code,
             details=merged,
+            field=field,
         )
+
+    @property
+    def rule(self) -> str:
+        return self._rule
+
+    @property
+    def value(self) -> Any | None:
+        return self._value
 
     @property
     def current(self) -> str:
