@@ -209,6 +209,10 @@
       animation: 120,
       draggable: ".column",
       filter: ".card",
+      // A card is not a drag target, so the browser keeps the gesture: with the default
+      // (`preventOnFilter: true`) Sortable cancels the `touchstart` of every touch that lands on a
+      // card, and a phone can no longer scroll from there.
+      preventOnFilter: false,
       ghostClass: "column-ghost",
       // A finger that swipes must scroll. Dragging a column starts only after a long press, and
       // only once the finger has moved past a few pixels, so the gesture is never ambiguous.

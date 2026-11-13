@@ -636,6 +636,16 @@ def test_served_html_has_no_inline_script_nor_on_attributes(
         assert re.search(r'\bsrc="/static/', tag), tag
 
 
+def test_the_board_instance_does_not_eat_the_touch_of_a_card() -> None:
+    """`filter` names what cannot be dragged; with the default the instance also cancels the
+    gesture there, and a phone cannot scroll from a card at all."""
+    js = (STATIC / "js" / "app.js").read_text()
+    board = js[js.index('draggable: ".column"') :]
+    board = board[: board.index("onEnd:")]
+    assert 'filter: ".card"' in board
+    assert "preventOnFilter: false" in board
+
+
 def test_asset_budget_is_under_75_kb_gzip() -> None:
     total = 0
     for path in STATIC.rglob("*"):
