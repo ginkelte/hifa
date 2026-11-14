@@ -1,0 +1,53 @@
+{#- One control per editable field of the issue, shared by the panel's htmx form and the detail
+    page's plain form. Every value is the server's current one — the read model re-reads the
+    element before rendering it — and every message is placed beside the control it refused.
+    The names are the controls of the edit use case; the values are the keys of the view model. -#}
+<label class="field">
+  <span class="field-label">Title</span>
+  <input type="text" name="title" value="{{ vm.title }}" autocomplete="off"
+         class="field-input{% if vm.form_errors['title'] %} is-invalid{% endif %}"{% if vm.form_errors['title'] %} aria-invalid="true"{% endif %}>
+</label>
+{% if vm.form_errors['title'] %}<p class="form-error" role="alert">{{ vm.form_errors['title'] }}</p>{% endif %}
+
+<label class="field">
+  <span class="field-label">Description</span>
+  <textarea name="description" rows="6" autocomplete="off" class="field-input{% if vm.form_errors['description'] %} is-invalid{% endif %}"{% if vm.form_errors['description'] %} aria-invalid="true"{% endif %}>{{ vm.description_raw }}</textarea>
+</label>
+{% if vm.form_errors['description'] %}<p class="form-error" role="alert">{{ vm.form_errors['description'] }}</p>{% endif %}
+
+<label class="field">
+  <span class="field-label">Priority</span>
+  <select name="priority" class="field-input{% if vm.form_errors['priority'] %} is-invalid{% endif %}"{% if vm.form_errors['priority'] %} aria-invalid="true"{% endif %}>
+    {% for option in vm.priority_options %}<option value="{{ option.value }}"{% if option.is_current %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+  </select>
+</label>
+{% if vm.form_errors['priority'] %}<p class="form-error" role="alert">{{ vm.form_errors['priority'] }}</p>{% endif %}
+
+<label class="field">
+  <span class="field-label">State</span>
+  <select name="state" class="field-input{% if vm.form_errors['state'] %} is-invalid{% endif %}"{% if vm.form_errors['state'] %} aria-invalid="true"{% endif %}>
+    {% for state in vm.states %}<option value="{{ state.id }}"{% if state.is_current %} selected{% endif %}>{{ state.name }}</option>{% endfor %}
+  </select>
+</label>
+{% if vm.form_errors['state'] %}<p class="form-error" role="alert">{{ vm.form_errors['state'] }}</p>{% endif %}
+
+<label class="field">
+  <span class="field-label">Assignee{% if vm.has_assignee %} · {{ vm.assignee_name }}{% endif %}</span>
+  <input type="text" name="assignee" value="{{ vm.assignee_id }}" autocomplete="off"
+         class="field-input{% if vm.form_errors['assignee'] %} is-invalid{% endif %}"{% if vm.form_errors['assignee'] %} aria-invalid="true"{% endif %}>
+</label>
+{% if vm.form_errors['assignee'] %}<p class="form-error" role="alert">{{ vm.form_errors['assignee'] }}</p>{% endif %}
+
+<label class="field">
+  <span class="field-label">Due</span>
+  <input type="date" name="due_date" value="{{ vm.due_value }}"
+         class="field-input{% if vm.form_errors['due_date'] %} is-invalid{% endif %}"{% if vm.form_errors['due_date'] %} aria-invalid="true"{% endif %}>
+</label>
+{% if vm.form_errors['due_date'] %}<p class="form-error" role="alert">{{ vm.form_errors['due_date'] }}</p>{% endif %}
+
+<label class="field">
+  <span class="field-label">Estimate</span>
+  <input type="number" name="estimate" value="{{ vm.estimate_value }}" step="any" autocomplete="off"
+         class="field-input{% if vm.form_errors['estimate'] %} is-invalid{% endif %}"{% if vm.form_errors['estimate'] %} aria-invalid="true"{% endif %}>
+</label>
+{% if vm.form_errors['estimate'] %}<p class="form-error" role="alert">{{ vm.form_errors['estimate'] }}</p>{% endif %}

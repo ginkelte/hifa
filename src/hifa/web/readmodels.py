@@ -6,11 +6,12 @@ is resolved here: the templates only read keys, loop and compare booleans.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from urllib.parse import urlencode
 
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage
+from hifa.domain.entities import WorkflowState
 from hifa.domain.identifier import parse as parse_identifier
 from hifa.web.markdown import render_markdown
 
@@ -46,6 +47,20 @@ MONTHS: tuple[str, ...] = (
     "Dec",
 )
 ATTACHMENT_SCHEMES: frozenset[str] = frozenset({"http", "https", "file"})
+#: Fallback for a state without a stored colour (`workflow_state.color` is nullable).
+DEFAULT_STATE_COLOR = "#6B6F76"
+#: The fields the edit form and the `PATCH` of an issue accept, in the order they are rendered.
+#: The key is the name of the form control; the read model uses the same tuple to build the
+#: per-field error slot, so a field without an error and a field that failed differ only in value.
+EDIT_FORM_FIELDS: tuple[str, ...] = (
+    "title",
+    "description",
+    "priority",
+    "state",
+    "assignee",
+    "due_date",
+    "estimate",
+)
 
 
 # --- small pure helpers ---------------------------------------------------------------
@@ -142,8 +157,25 @@ def chips(
 # --- rows and cards -------------------------------------------------------------------
 
 
-def build_row_vm(item: IssueListItem, *, today: date) -> dict[str, object]:
-    """Template row of one issue for the list table."""
+def build_row_vm(
+    item: IssueListItem,
+    *,
+    today: date,
+    can_write: bool = False,
+    form_error: str | None = None,
+    invalid_field: str | None = None,
+) -> dict[str, object]:
+    """Template row of one issue for the list table.
+
+    `can_write` is the only key the row uses to decide whether it carries its own edit
+    control: in read-only mode the row is text and links, never a form.
+
+    `form_error` and `invalid_field` are the answer of a refused write: the message the use
+    case raised and the control that carries it. Both default to `None`, so a row read from
+    the listing is the same dict as a row re-rendered after a refusal. Every value a control
+    prints is resolved here (`due_value`, `estimate_value`, `assignee_id`), so the template
+    only ever prints a key.
+    """
     labels = sorted(item.labels, key=lambda label: label.name.casefold())
     return {
         "identifier": item.identifier,
@@ -156,9 +188,12 @@ def build_row_vm(item: IssueListItem, *, today: date) -> dict[str, object]:
         "state_color": item.state_color,
         "assignee_name": item.assignee_name,
         "assignee_initials": initials(item.assignee_name),
+        "assignee_id": item.assignee_id or "",
         "labels": [{"name": label.name, "color": label.color} for label in labels],
         "due_date": None if item.due_date is None else item.due_date.isoformat(),
+        "due_value": "" if item.due_date is None else item.due_date.isoformat(),
         "due_label": due_label(item.due_date),
+        "estimate_value": "" if item.estimate is None else f"{item.estimate:g}",
         "is_overdue": is_overdue(item.due_date, today),
         "sort_order": item.sort_order,
         "is_archived": False,
@@ -169,15 +204,44 @@ def build_row_vm(item: IssueListItem, *, today: date) -> dict[str, object]:
         "has_labels": bool(labels),
         "url": f"/{item.team_key}/issue/{item.identifier}",
         "team_key": item.team_key,
+        "can_write": can_write,
+        "form_error": form_error,
+        "invalid_field": invalid_field,
+        "title_invalid": invalid_field == "title",
+        "description_invalid": invalid_field == "description",
     }
 
 
-def build_card_vm(item: IssueListItem, *, today: date) -> dict[str, object]:
+def build_card_vm(
+    item: IssueListItem,
+    *,
+    today: date,
+    can_write: bool = False,
+    form_error: str | None = None,
+    invalid_field: str | None = None,
+) -> dict[str, object]:
     """Template card of one issue for the board: the row keys plus its column."""
-    card = build_row_vm(item, today=today)
+    card = build_row_vm(
+        item,
+        today=today,
+        can_write=can_write,
+        form_error=form_error,
+        invalid_field=invalid_field,
+    )
     card["state_id"] = item.state_id
     card["board_order"] = item.board_order
     return card
+
+
+def _state_vm(state: WorkflowState, current_id: str) -> dict[str, object]:
+    """One option of the move `<select>`: the value is the state id, never its name."""
+    return {
+        "id": state.id,
+        "name": state.name,
+        "type": str(state.type),
+        "color": state.color or DEFAULT_STATE_COLOR,
+        "is_current": state.id == current_id,
+    }
 
 
 # --- list / board ---------------------------------------------------------------------
@@ -218,7 +282,7 @@ def build_list_vm(
     ]
     return {
         "team": team,
-        "rows": [build_row_vm(item, today=today) for item in page.items],
+        "rows": [build_row_vm(item, today=today, can_write=can_write) for item in page.items],
         "filters": {key: filters.get(key) for key in FILTER_KEYS},
         "chips": chips(filters, path=path, extra={"sort": sort_value or ""}),
         "sort": sort,
@@ -259,7 +323,9 @@ def build_board_vm(
                 "color": group.color,
                 "position": group.position,
                 "count": group.total,
-                "issues": [build_card_vm(item, today=today) for item in group.issues],
+                "issues": [
+                    build_card_vm(item, today=today, can_write=can_write) for item in group.issues
+                ],
                 "truncated": group.truncated,
                 "is_empty": not group.issues,
                 "more_url": f"/{team['key']}/list?state={group.key}" if group.truncated else None,
@@ -305,8 +371,24 @@ def build_issue_vm(
     today: date,
     now: datetime | None = None,
     can_write: bool = False,
+    states: Sequence[WorkflowState] = (),
+    is_archived: bool = False,
+    is_trashed: bool = False,
+    form_errors: Mapping[str, str] | None = None,
+    form_error: str | None = None,
 ) -> dict[str, object]:
-    """Template model of one issue detail: `row_vm` plus the detail collections."""
+    """Template model of one issue detail: `row_vm` plus the detail collections.
+
+    `states`, `is_archived` and `is_trashed` are the three facts the detail read does not
+    carry: the caller resolves them from the same database and hands them over, so this
+    function stays pure and the panel and the page render the same dict.
+
+    `form_errors` and `form_error` are the answer of a refused write: the message of the use
+    case, once per control and once for the element. The per-control dict is normalised to one
+    entry per `EDIT_FORM_FIELDS`, `None` where the field is fine, so the template can ask for a
+    key that is always there and still fail in CI on a real omission. `form_error` stands on
+    its own because a refusal is not always about a control (`ISSUE_ARCHIVED` names no field).
+    """
     item = detail.issue
     try:
         _, number = parse_identifier(item.identifier)
@@ -375,11 +457,20 @@ def build_issue_vm(
         for entry in detail.history
     ]
 
-    vm = build_row_vm(item, today=today)
+    errors = {name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS}
+    invalid_field = next((name for name, message in errors.items() if message), None)
+    vm = build_row_vm(
+        item,
+        today=today,
+        can_write=can_write,
+        form_error=errors.get(invalid_field) if invalid_field else None,
+        invalid_field=invalid_field,
+    )
     vm.update(
         {
             "number": number,
             "description_html": render_markdown(detail.description),
+            "description_raw": detail.description or "",
             "estimate": item.estimate,
             "project": None
             if detail.project is None
@@ -402,7 +493,7 @@ def build_issue_vm(
             "labels_all": [
                 {"id": label.id, "name": label.name, "color": label.color} for label in labels_all
             ],
-            "states": [],
+            "states": [_state_vm(state, item.state_id) for state in states],
             "assignees": [],
             "comments": comments,
             "relations": relations,
@@ -424,6 +515,16 @@ def build_issue_vm(
             "created_label": _stamp(item.created_at),
             "updated_label": _relative(item.updated_at, now),
             "can_write": can_write,
+            "is_archived": is_archived,
+            "is_trashed": is_trashed,
+            "form_errors": errors,
+            "form_error": form_error if form_error is not None else vm["form_error"],
+            "edit_action": f"/{item.team_key}/issue/{item.identifier}",
+            "edit_fragment": f"/_/issues/{item.identifier}",
+            "priority_options": [
+                {"value": value, "label": label, "is_current": value == item.priority}
+                for value, label in PRIORITY_LABELS.items()
+            ],
         }
     )
     return vm
@@ -496,6 +597,8 @@ def team_nav_vm(team: object, *, issues_count: int, active: bool) -> dict[str, o
 
 __all__ = [
     "ATTACHMENT_SCHEMES",
+    "DEFAULT_STATE_COLOR",
+    "EDIT_FORM_FIELDS",
     "FILTER_KEYS",
     "PRIORITY_GLYPHS",
     "PRIORITY_LABELS",

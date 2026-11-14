@@ -1,4 +1,4 @@
-/* hifa dashboard client (SPEC-070 §2.6). No build step, no eval: CSP script-src 'self'. */
+/* hifa dashboard client. No build step, no eval: CSP allows only same-origin scripts. */
 (function () {
   "use strict";
 
@@ -186,7 +186,7 @@
     flushRevision();
   });
 
-  // htmx does not swap 4xx: enable the swap for 422 so the invalid field comes back (R11).
+  // htmx does not swap a 4xx by default: enable the swap for 422 so the refused field comes back.
   document.body.addEventListener("htmx:beforeSwap", function (event) {
     if (event.detail.xhr && event.detail.xhr.status === 422) {
       event.detail.shouldSwap = true;
@@ -194,14 +194,9 @@
     }
   });
 
-  // json encoding for PATCH (replaces the json-enc extension: 6 lines, no extra vendor).
-  document.body.addEventListener("htmx:configRequest", function (event) {
-    if (event.detail.verb === "patch") {
-      event.detail.headers["Content-Type"] = "application/json";
-      event.detail.body = JSON.stringify(event.detail.parameters);
-    }
-  });
-
+  // No json-enc override: `htmx:configRequest` is not cancelable, so a header swapped to JSON
+  // left the body htmx had already encoded as form data — and the fragment route parses exactly
+  // that (`_parse_form`). htmx's own encoding is the contract here.
   document.body.addEventListener("htmx:responseError", function (event) {
     var status = event.detail.xhr.status;
     if (status === 409 || status === 500) toast("could not save: the server rejected the change", true);
@@ -318,7 +313,7 @@
   // board columns: the whole header strip drags and a drag that starts on a card belongs to
   // the card instance (filter). The drop sends the ULIDs of the neighbours to
   // POST /_/states/{id}/position and, when the write fails, the DOM goes back to the order the
-  // server still has (SPEC-070 §2.6.5, R25).
+  // server still has.
   var columnPositionUrl = function (stateId) {
     return "/_/states/" + encodeURIComponent(stateId) + "/position";
   };
@@ -332,7 +327,7 @@
     board.insertBefore(item, reference);
   }
 
-  // SPEC-070 §2.6.5: two ids and nothing else — `before` is the column on the left and `after`
+  // Two ids and nothing else — `before` is the column on the left and `after`
   // the one on the right, `null` at an edge. The server computes the float.
   function columnPayload(item) {
     var previous = item.previousElementSibling;
@@ -374,7 +369,7 @@
   function initBoardSortable() {
     var board = document.getElementById("board");
     if (!board || typeof window.Sortable === "undefined") return;
-    // R18: a read-only board offers no drag at all — the write would only answer 403.
+    // A read-only board offers no drag at all: the write would only be refused.
     if (board.getAttribute("data-can-write") !== "true") return;
     if (board.getAttribute("data-sortable") === "on") return;
     board.setAttribute("data-sortable", "on");
