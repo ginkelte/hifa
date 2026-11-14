@@ -1788,3 +1788,143 @@ and every extension turned into a defect that only a browser could see. The answ
 The common rule, and the reason these live together: **the refresh is a background task and may never
 be the reason something stops working.** Every one of these defects had the same shape — a page that
 looked correct, a suite that was green, and a feature that stopped answering.
+
+## D-051 — `issue move` answers the issue, not the rebalance: there is no `rebalanced` key
+
+**Date:** 2026-11-13 · **Wins:** SPEC-050 §2.5.3 · **Touches:** SPEC-001 §4.1 (REQ-F019), §4.5, §Notes;
+`specs/001-mvp-v1.tasks.md` §T-08; `specs/acceptance/001-mvp-v1/06-board-ranking.feature`
+
+Two contracts answered the same command with two different documents. REQ-F019 of the vertical says that
+a move whose resulting gap is smaller than the threshold "reports `rebalanced: true` in `--json`", §4.5
+repeats it as a rule of the strategy, and two scenarios of `06-board-ranking.feature` read that field
+(`false` in the average case, `true` in the rebalanced one) — so a third document depended on the first.
+SPEC-050 §2.5.3 says the opposite in one sentence: `--json` prints the canonical `Issue` of §2.4.2 after
+the write ("with the new `state`, `board_order` and the derived milestone") and "no key is added: there
+is no `rebalanced` field, because the rebalance happens inside `move_issue` and is not a visible outcome
+(SPEC-040 §5.2 R9)".
+
+**Resolution: SPEC-050 wins. The vertical loses the clause, and the two scenarios stop reading a key the
+contract does not have.**
+
+- **Why 050.** AGENTS.md §3 gives the component spec the last word over `001-mvp-v1.md`, and the vertical
+  says so itself in its header ("it does not define contracts", D-005). There is no reading under which a
+  scope document wins a normative envelope.
+- **Why not the other way round.** The `--json` answer of every write verb is one canonical object
+  (SPEC-050 §2.4.2, REQ-F032). A `rebalanced` key would make `issue move` the single verb whose object
+  carries a field no other object has, it would have to be declared in the key list of §2.4.2 — the list
+  `tests/e2e/cli/conftest.py::CANONICAL_KEYS` asserts as a tuple — and the API and the web would owe the
+  same field or an explanation of why they do not (P2). Granting it is not a one-line change in one edge.
+- **Why the caller does not need it.** The rebalance is a repair, not a request: the issue ends exactly
+  where the user asked, and R9 of SPEC-040 runs the repair inside the same transaction without error,
+  timeout or partial state. What a caller can actually observe — and the only thing that can differ — is
+  the numbering of the column afterwards: when the repair ran, every `board_order` of the column is a
+  multiple of `1024.0`; when it did not, the neighbours keep their values. Both are already readable,
+  because `board_order` is a field of `Issue` and the column can be queried. SPEC-070 R10 goes further
+  for the other edge: the client may not even know the 1024 multiple.
+- **What the vertical says now.** REQ-F019 keeps the arithmetic and the trigger and drops the reporting
+  clause: the rebalance is internal and adds no key. While it was open, the same requirement also
+  published a flag no spec declares (`--to-state`) and named a gap of `1e-4`; both are corrected here and
+  in D-052 — the verb is `hifa issue move REF --state S` (SPEC-050 §2.5.3). §4.5 keeps "a move that needs
+  rebalancing does it **before** computing the new order" and loses "and reports `rebalanced: true`".
+- **What the task file says now.** The T-08 bullet loses "reports `rebalanced` in `--json`" and points at
+  SPEC-050 §2.5.3 for the shape of the answer. The two bullets that are genuinely finished are ticked in
+  the same pass (the domain algebra and the `move` verb); the board read and the 200-move test stay open,
+  with what is missing written next to them.
+- **What the acceptance file says now.** The two scenarios keep their titles and their intent and stop
+  asserting the key. The average case asserts the order after the move (`ENG-1`, `ENG-3`, `ENG-2`) and
+  that the two neighbours kept their positions; the exhausted case asserts the new numbering of the
+  column (multiples of `1024.0`), the order after the move and the absence of a repeated `board_order`
+  inside the column. Nothing is deleted: the property the field was proxying is asserted directly.
+  The `When` of both scenarios also named `--after` **and** `--before` at once, which SPEC-050 §2.5.3
+  refuses with exit 2 `invalid_option`; each one now names the single anchor that expresses its intent
+  (`--after ENG-1`, i.e. immediately before the next issue of the column).
+
+**Verification.** `tests/e2e/cli/test_issue_move.py::test_move_changes_the_state_and_records_it` asserts
+`"rebalanced" not in payload` **and** `tuple(payload) == CANONICAL_KEYS`, which is SPEC-050 §2.4.2 as a
+tuple: the shipped CLI already matches 050, so this decision changes no code — it removes the last
+documents that promised the field. The re-pointed scenarios of `06-board-ranking.feature` are the spec
+side of the same check, and the 200-move scenario of D-052 asserts the numbering a rebalance produces
+without reading how it was produced. A caller that needs the repair to be visible would have to add the
+key to SPEC-050 §2.4.2 (a `version` bump), to the API and web objects and to both e2e suites; that is a
+different decision, and it is not this one.
+
+## D-052 — The numbers of the board column: `MIN_GAP = 1e-6`, order `(board_order, id)`, no sign constraint
+
+**Date:** 2026-11-13 · **Wins:** SPEC-020 §2.4 (the threshold) + SPEC-030 §2.6 SQL-6 (the order)
+**Touches:** SPEC-020 §2.4, §4.1 (R15), §9, §Notes; SPEC-001 §4.1 (REQ-F018, REQ-F019), §4.5, §Notes;
+`specs/001-mvp-v1.tasks.md` §T-08; SPEC-040 §5.2, §Notes;
+`specs/acceptance/001-mvp-v1/06-board-ranking.feature`
+
+Three documents described the same column and none of the three numbers agreed. The vertical (§4.5)
+declared `RANK_GAP = 1024.0` and `RANK_EPSILON = 1e-4` and claimed the values are "always finite and
+positive"; T-08 said "rebalances if the gap < `1e-4`"; SPEC-020 §2.4 declares `INITIAL_GAP = 1024.0` and
+`MIN_GAP = 1e-6` and SPEC-040 R9 uses `1e-6` in three places. On the order, REQ-F018 declared
+`board_order ASC` with `number ASC` as tie-breaker and §4.5 renumbered with
+`ROW_NUMBER() OVER (ORDER BY col, number)`, while SPEC-030 §2.6 SQL-6 — the query that produces the
+column — orders `s.position, i.board_order, i.id` and does not even select `number`.
+
+**(a) The threshold is `1e-6`, because it is the largest value the float can still honour.**
+SPEC-020 §2.4 wins: it is the component that owns `ranking`, its §2 is normative, and its value is the
+one the shipped `ranking.py` implements and the 20 unit tests assert.
+- A `float64` at the magnitudes a column uses (the first position is `1024.0`) has an ulp of **2.3e-13**.
+  A `1e-6` slot is still **4.4e6** representable steps wide, so `(prev + next) / 2` cannot land on a
+  neighbour while the slot is at least `2 * MIN_GAP`; a `1e-4` slot would be 4.4e8 steps, i.e. seven
+  decades of usable room thrown away.
+- A rebalance is not free: it rewrites every row of the column and one `issue_history` row per row, inside
+  the user's move (SPEC-040 R9). At `1e-4` a column would be rewritten while the float could still split
+  the slot exactly — the user pays N writes for a gap that is not exhausted. Under `MIN_GAP`, one slot
+  absorbs **29** successive insertions before the repair runs and the 30th is refused (measured on this
+  host: `1024 → 1.907e-6` after 29 splits, below the `2 * MIN_GAP` floor).
+- The two values are not interchangeable in the acceptance file either: a gap of `5e-5` — the number the
+  feature file used to carry — is **not** exhausted. `between(1024.0, 1024.00005)` returns `1024.000025`
+  and no rebalance happens, which is exactly what the shipped code does. A scenario that expects a
+  rebalance at `5e-5` is asserting a threshold that does not exist; it now uses `5e-7`.
+- The contract, stated once: `MIN_GAP = 1e-6`; `between` refuses a slot narrower than `2 * MIN_GAP`
+  (`RANKING_EXHAUSTED`); a column with two neighbours closer than `MIN_GAP` is degraded
+  (`needs_rebalance`) and the use case renumbers it with step `INITIAL_GAP` before computing, or after a
+  refusal; a second failure is `RANKING_DEGRADED` (SPEC-040 R9). `1e-4` does not exist in the specs.
+- The single `1e-4` left outside the vertical lived in SPEC-040 §5.2, in the row that describes the web
+  payload ("`rebalance=true` if the client's gap was `< 1e-4`"). It is removed because SPEC-070 R9/R10
+  forbid the client from sending `rebalance` at all and declare the payload `{state_id, before, after}`;
+  the row is wrong about the payload, not only about the number. `MoveIssue.rebalance` stays on the
+  command as the internal forcing switch of R9, with no edge setting it in v1.
+
+**(b) The order is `board_order`, then `id`; the rebalance preserves it.**
+SPEC-030 §2.6 SQL-6 wins: it owns the query, and the same `ORDER BY s.position, i.board_order, i.id` is
+what `reads.py::_BOARD_SQL` sends. `number` is not in that statement.
+- Consequence, stated in SPEC-020 §4.1 R15 so that every reader of a column quotes one rule: a column is
+  read ordered by `board_order` ascending and, between two rows with the same value, by `id` ascending.
+  The tie-break only decides for rows whose value was never made distinct — an import that leaves
+  `board_order` at its default `0` (SPEC-080 §1) — so it guarantees the read is total; it is not a second
+  ordering rule, and it never fires in a column the use case has written, because R9 never writes a
+  duplicated position.
+- Why the correction does not hurt: `number` and `id` agree for every issue this tool created. `number`
+  is `max + 1` per team at creation and the ULID generator is monotonic in the process, so within a team
+  the two orders coincide; they can disagree only for rows restored from another machine's JSON export,
+  which keeps the original ULIDs (SPEC-080). The read uses `id`, so `id` is what the specs declare.
+- `rebalance` preserves the relative order, and this is the property the feature file asserts instead of
+  the `rebalanced` key: the sequence arrives in read order (`IssueRepo.positions` orders `column, id`),
+  the i-th element becomes `i * INITIAL_GAP`, and a tie inside the input is broken by the order of the
+  sequence itself, never by the values (`test_rebalance_breaks_ties_by_sequence_order`). The
+  `ROW_NUMBER() OVER (ORDER BY col, number)` of the vertical describes the same outcome with a tie-break
+  the read does not use, and it is removed: the renumbering is not one SQL statement but a write per row
+  of the column (SPEC-040 §5.2), and that is a detail of 030/040, not of the vertical.
+
+**(c) A position has no constraint on its sign.** §4.5 claimed the values are "always finite and
+positive"; the arithmetic contradicts it — `between(None, 1024.0)` is `0.0` and one more insert at the
+beginning of that column is `-1024.0`. Nothing reads a position as a magnitude, no column has a `CHECK`
+on it (SPEC-010 §3, `board_order REAL NOT NULL DEFAULT 0`), and the order is the only thing that matters,
+so the sentence is corrected instead of the code. A negative `board_order` is a valid one.
+
+**Verification.** `tests/unit/domain/test_ranking.py` (20 tests: the exhausted gap, the slot of exactly
+`2 * MIN_GAP`, the sequence-order tie-break, the no-mutation and determinism cases);
+`tests/e2e/cli/test_issue_move.py` for the verb; the re-pointed scenario "a gap smaller than the
+threshold triggers the column rebalance" (`1024.0` and `1024.0000005`) and the new scenario "200 random
+moves keep every column in the implied order and its positions unique", both in
+`specs/acceptance/001-mvp-v1/06-board-ranking.feature`; and `tests/e2e/web/test_dashboard.py`, which
+renders every issue in the column of its state. The board read is not covered by a test that asserts the
+order for two rows sharing a `board_order` — there is none today, and it is the case the `id` tie-break
+exists for: `import --format csv` leaves every `board_order` at `0` (SPEC-080 §1), so a fresh import is
+the cheapest fixture for it. No code changed under this decision; if an implementer finds that the `id`
+tie-break and the `number` tie-break disagree on a real database, the answer is the `id` column of
+SPEC-030 SQL-6 and the code is already right.

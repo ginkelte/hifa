@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 20
+spec_revision: 21
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -168,7 +168,7 @@ class MoveIssue:
     position: Literal["first", "last", "before", "after"] = "last"
     before_id: str | None = None  # mandatory if position == "before"
     after_id: str | None = None  # mandatory if position == "after"
-    sort_order: float | None = None  # web edge shortcut: it is validated, not trusted (R8)
+    sort_order: float | None = None  # API edge shortcut (060): validated, not trusted (R8)
     rebalance: bool = False  # forces a column rebalance before positioning
 
 
@@ -1194,7 +1194,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   `between(last, None)`; `"before"` ⇒ `between(previous_to(before_id), position(before_id))`;
   `"after"` ⇒ `between(position(after_id), next_to(after_id))`. The anchor (`before_id`/`after_id`)
   must be in the same team and in the target state, otherwise `Validation(rule='POSITION_NEIGHBOR')`.
-  `cmd.sort_order` (web edge shortcut) is **not written as is**: it is accepted only if it is strictly
+  `cmd.sort_order` (API edge shortcut, 060 `IssueMove`) is **not written as is**: it is accepted only if it is strictly
   greater than the previous neighbor's position and strictly less than the next one's; otherwise,
   `Validation(rule='POSITION_OUT_OF_ORDER')`. `rebalance=True` forces R9 before computing the position.
   The `between` calculation belongs to `domain.ranking`; this layer only reads the neighbors and decides.
@@ -1207,7 +1207,8 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
      rebalance, without error: the scope's positions are read, `ranking.rebalance` rewrites them
      with multiples of 1024 (1024, 2048, …) in the **same** transaction and `between` is recomputed.
   2. `between` raises `RANKING_EXHAUSTED` ⇒ same rebalance and one retry.
-  3. `cmd.rebalance=True` (web edge, REQ-F070-06) ⇒ rebalance before computing the position.
+  3. `cmd.rebalance=True` ⇒ rebalance before computing the position. It is the internal forcing
+     switch of this rule; no edge sets it in v1 (SPEC-070 R9/R10, D-052).
   If after the rebalance the gap is still `< 1e-6`, or the second `between` fails again, it is
   `HifaError(code='RANKING_DEGRADED')`: a column with more than ~2²⁰ elements is not a use case, it is
   a caller bug (D-014 ⇒ 6/500). A duplicated or `NULL` position is never written.
@@ -1422,7 +1423,7 @@ Payload that each edge builds, translated into the single command:
 |---|---|---|
 | CLI `issue move` | `--before ENG-2` / `--after ENG-2` / neither | `position="before"\|"after"\|"last"` + `before_id`/`after_id` (SPEC-050 §2.5.3) |
 | API `POST /issues/{ref}/move` | `{state, after?, before?, sort_order?}` (060 `IssueMove`) | `target_state=state`, `position="after"/"before"` according to the anchor, `sort_order` as is |
-| Web `POST …/move` | `{state_id, sort_order, rebalance?}` (070 R9/R10) | `position="last"` + `sort_order`, `rebalance=true` if the client's gap was `< 1e-4` |
+| Web `POST …/move` | `{state_id, before, after}` (070 R9/R10) | `target_state=state_id`, `position="before"/"after"` according to the single anchor sent with `before_id`/`after_id`, and `"last"` when the client sends **neither** anchor (SPEC-050 §2.5.3, `MoveIssue.position` default); the client sends no position and no `rebalance`, which stays the internal switch of R9 (D-052) |
 
 `before_id` and `after_id` are **reference anchors** (`ENG-123` or ULID), never indexes nor
 numeric positions: the client does not send the whole column (070 R9) and the server does not trust a
@@ -1461,7 +1462,7 @@ numeric positions: the client does not send the whole column (070 R9) and the se
         # source: R8 idempotency, which applies only when the issue already lives in the target column
         # (target.id == issue.state_id) and is already its first (resp. last) element — nothing is written.
         # In a column where the issue does not live, `last` always appends.
- 8.     if cmd.sort_order is not None:                     # web edge shortcut: it is validated (R8)
+ 8.     if cmd.sort_order is not None:      # API edge shortcut (060 IssueMove): validated, not trusted (R8)
             prev, nxt = neighbors_of(column, cmd.sort_order)
             not (prev.board_order < cmd.sort_order < nxt.board_order)
                     => Validation(rule='POSITION_OUT_OF_ORDER')
@@ -2218,6 +2219,19 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 21 (2026-11-13): **the web edge does not send `rebalance`, and it was never able to
+  (D-052).** The third row of §5.2 described the payload as `{state_id, sort_order, rebalance?}` and
+  built `rebalance=true` "if the client's gap was `< 1e-4`": SPEC-070 R9/R10 declare
+  `{state_id, before, after}` and forbid the client from sending `rebalance` or a position, so the row
+  was wrong about the payload and about the number. It now names the two anchors and the single
+  anchor the client sends. The two remaining attributions of `sort_order` to the web edge (R8 and step 8
+  of §5.2) now name the edge that really sends it, the API (`IssueMove`, 060), and the corrected web row
+  keeps the mapping it had lost: a drop with **neither** anchor is `position="last"` (SPEC-050 §2.5.3,
+  `MoveIssue.position` default). R9 trigger 3 stops citing the web edge as the setter of
+  `cmd.rebalance`: it is the internal forcing switch, with no edge setting it in v1. The threshold is
+  the `MIN_GAP = 1e-6` of SPEC-020 §2.4 throughout; no other threshold is quoted anywhere else in this
+  spec. No command field, signature or exit code changed — `MoveIssue.rebalance` stays — so `version`
+  stays at 3.
 - spec_revision 20 (2026-11-13): **the blocked read is declared, and its predicate is cited (D-048).**
   §2.2 gains `list_blocked(db, *, team=None) -> tuple[IssueListItem, ...]` — the read behind
   `hifa issue blocked` (SPEC-050 §2.5.3) — with `NotFound(team)` as its only refusal, `identifier` ASC

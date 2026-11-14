@@ -4,7 +4,7 @@ title: Domain core
 component: domain
 status: review
 version: 2
-spec_revision: 7
+spec_revision: 8
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -569,6 +569,10 @@ def rebalance(values: Sequence[float], *, gap: float = INITIAL_GAP) -> list[floa
 `between` does **not** renumber nor write: it only computes. If it returns `Validation(RANKING_EXHAUSTED)`,
 `app/` calls `rebalance` and retries once (SPEC-040 §5).
 
+`MIN_GAP = 1e-6` is the **only** threshold a board column has, and this subsection is where it is
+declared: `between` refuses a slot narrower than `2 * MIN_GAP`, `needs_rebalance` flags a pair closer
+than `MIN_GAP`, and every other document that quotes a number for a position quotes this one (D-052).
+
 ### 2.5 `domain/rules.py`
 
 All functions are pure, do not mutate their arguments and return the normalized value (or `None`
@@ -887,6 +891,12 @@ Mapping invariants (mandatory for SPEC-030 and SPEC-040):
   toward the caller: it wraps them in `Validation` with `rule` and `field`.
 - **R14 — No human-facing text in the message.** `message` is a short phrase in technical English
   (`"priority must be between 0 and 4"`); the UI text is assembled by the edge.
+- **R15 — Column order.** A column is read ordered by `board_order` ascending and, between two rows
+  with the same value, by `id` ascending — the order SPEC-030 §2.6 SQL-6 sends (D-052). The tie-break
+  only decides for rows whose value was never made distinct — an import that leaves `board_order` at
+  its default `0` (SPEC-080 §1) — so it guarantees the read is total; it is not a second ordering
+  rule, and it never fires in a column the use case has written, because `move_issue` never writes a
+  duplicated position (SPEC-040 R9). `number` is not part of the order: the query does not select it.
 
 ### 4.2 Functional requirements (REQ-F)
 
@@ -1309,8 +1319,9 @@ Executable from top to bottom; every step has a verification command.
   the enums of SPEC-010 §3 (`issue_label.group_type`, `project_status.type`,
   `team.issue_estimation_type`, `team.visibility`, `project_milestone.status`).
 - **Fractional ranking with floats (`INITIAL_GAP=1024`, average on insert)**: the concrete values
-  (1024 / `1e-6`) are the author's decision, 2026-11-08, so that ~20 successive insertions fit
-  between two neighbours before any rebalancing.
+  (1024 / `1e-6`) are the author's decision, 2026-11-08, so that 29 successive insertions fit
+  between two neighbours before any rebalancing (the 30th split would leave a gap under
+  `2 * MIN_GAP`, so `between` refuses it with `RANKING_EXHAUSTED`; measured in D-052).
 - **Rule "do not close with open children"**: completing a parent that still has open sub-issues
   is refused; the author's decision to make it a hard validation instead of a warning, 2026-11-08.
 - **Estimation scales** (`fibonacci` 0,1,2,3,5,8,13,21; `exponential` 1,2,4,8,16; `linear`
@@ -1335,6 +1346,13 @@ Executable from top to bottom; every step has a verification command.
 
 ## Notes
 
+- spec_revision 8 (2026-11-13): **the column has one order, and the threshold is this spec's
+  (D-052).** §4.1 gains R15: a column is read by `board_order` and then by `id`, the order SPEC-030
+  §2.6 SQL-6 sends, so every reader quotes one rule instead of the `number` tie-break the vertical
+  carried. §2.4 says in prose what its code block already declared: `MIN_GAP = 1e-6` is the only
+  threshold of the corpus, `between` refuses a slot narrower than `2 * MIN_GAP`, and no other
+  document declares a different one. No symbol, signature or requirement of §2 changed, so `version`
+  stays at 2.
 - spec_revision 7 (2026-11-13): **the pointers of the relation and hierarchy rules name the specs
   that own them.** The two citations that named a `SPEC-030` symbol the adapter does not declare
   (`RelationEdge`, and a repo `subtree_height`) now cite the ones it does: `IssueRepo.relations`,
