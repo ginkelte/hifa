@@ -1998,7 +1998,7 @@ with the confirmation takes the issue out of the list and keeps its state", "del
 confirmation is refused", "an archived issue can be deleted", "restore clears both layers and writes one
 history row each" and "the panel of an archived issue offers Restore and no other write" in
 `specs/acceptance/001-mvp-v1/16-dashboard.feature`, written as
-`tests/e2e/web/test_issue_layers.py`. `tests/e2e/cli/test_issue_archive_restore.py` already pins the CLI
+`tests/e2e/web/test_dashboard_layers.py`. `tests/e2e/cli/test_issue_archive_restore.py` already pins the CLI
 side of the same two layers, which is what makes this a parity change rather than a second contract.
 
 ## D-054 — After a write the answer is the element, or nothing at all and the collection is re-read
@@ -2059,7 +2059,7 @@ float, whether the neighbours are present or absent, and with none of them the p
 (R9/R10). Nothing in this decision relaxes that: it is restated in R27 so that it binds the edit and the
 layer writes too, which are the routes a reader would assume are "just a form".
 
-**Verification.** Four tests of `tests/e2e/web/test_issue_writes.py` — a file **T-20.1 writes** (the tree
+**Verification.** Four tests of `tests/e2e/web/test_dashboard_writes.py` — a file **T-20.1 writes** (the tree
 has `test_board_reorder`, `test_dashboard`, `test_revision` and `test_teams_dashboard` under
 `tests/e2e/web/` today), so the names below are the contract that phase implements, not tests that exist:
 `::test_the_drop_answers_204_with_no_body` (status,
@@ -2132,10 +2132,96 @@ the issue out of the list and keeps its state"* posts `confirm=1` and asserts th
 refused render, where it is produced: both refusal scenarios contain `<details class="confirm" open>`, the
 `name="confirm"` field and `is-invalid` on the checkbox — the `open` attribute and the marked field are
 pinned by a scenario, not only by this paragraph. That the same block reaches the **panel footer** is the
-shared-template assertion of T-20.1 (`tests/e2e/web/test_issue_writes.py`, the file that phase writes).
+shared-template assertion of T-20.1 (`tests/e2e/web/test_dashboard_writes.py`, the file that phase writes).
 These are assertions on the response body, i.e. a client that parses
 HTML and posts a form can execute every one of them, and **a browser with no JavaScript executes the whole
 flow**: it opens the block with `Enter` on the summary, ticks the box because the browser will not submit
 otherwise, and the server either closes the panel or hands back the open, marked block. The client-only
 half — `Esc` closing the block before the panel, focus landing on the checkbox after a refusal — is
 verified by hand in a browser, for the reason §2.6.8 records (no Playwright on this host).
+
+## D-056 — The inline edit posts a form, not JSON: htmx's own encoding, and the hidden form inside the cell
+
+**Date:** 2026-11-14 · **Wins:** SPEC-070 §2.6.3 · **Touches:** SPEC-070 §2.6.3, §5.3, §11;
+`src/hifa/web/static/js/app.js` (the deleted override), `src/hifa/web/templates/partials/issue_row.html`
+
+§2.6.3 prescribed a wire format no route of the layer can accept, and the prescription — not the code —
+is what produced a real bug. It said three things: the `PATCH` body is JSON
+(`body JSON: {"title": "…"}`); a `htmx:configRequest` shim in `app.js` in place of `json-enc`; and the
+hidden `<form method="post">` outside the `<td>`, reached by `hx-include="closest form"`. T-20.1
+implemented the section as written and the first request that reached a browser failed. The three
+clauses fail for three different reasons, and each one is checkable without reading the implementation
+as an intention:
+
+- **No fragment route parses JSON, and that is by design.** Every `/_/` write of the corpus is parsed by
+  `_parse_form` in `src/hifa/web/app.py`, which decodes the body as UTF-8 and hands it to `parse_qs` —
+  urlencoded. The single JSON body under `/_/` is `GET /_/revision`, declared as an exception in
+  §2.1.3.1 and resolved by D-049, and it is a **read**: nothing in the family *accepts* JSON, so a JSON
+  `PATCH` is not a format the layer chose against, it is a format it never had. The declaration is not
+  even reachable as a route signature — the handler takes `body: bytes = Body(default=b"")`, so a
+  `Content-Type: application/json` body is validated as JSON by the framework and the request dies in
+  `RequestValidationError` ⇒ `422 invalid request`, an error page about the envelope rather than about
+  the title. Making JSON work would mean a second body parser for exactly one route, in a layer whose
+  whole write surface — the five fragments of §2.1.3 and the seven page forms of §2.1.2 — already speaks
+  urlencoded, and whose no-JS path (§2.6.6) can only ever speak it.
+- **The shim cannot work, because the body is already encoded when it runs.** The event it hooks is a
+  notification: htmx fires it *after* serializing the form and does not honour `preventDefault()` on it.
+  A listener that sets `Content-Type: application/json` therefore does not change what is on the wire —
+  it only relabels a `title=Fix+SSO+login` body as JSON. The server sees a header it parses as JSON and
+  a body that is not JSON — neither format — and answers `422 invalid request`, the same refusal,
+  reached through the shim instead of through the declaration. That is exactly the failure the first
+  browser run produced, and it is why the override was deleted instead of repaired: there is no version
+  of the shim that can work, since the one thing it would have to change is the thing the event no
+  longer controls. The client's own note in `app.js` now says so where the next reader will look for the
+  missing code.
+- **A `<form>` child of `<tr>` is foster-parented out of the table.** The HTML parser does not allow a
+  form between `<tbody>` and `<tr>`, so it lifts it above the table and leaves it where a table may not
+  have content — the exact hazard the docstring of `tests/e2e/web/test_revision.py` names for the quick
+  add, and the reason that test asserts what the fragment ships rather than that it ships no form. The
+  declared markup therefore could not be the markup a browser builds: the form ended up detached from the
+  row it belongs to, and `hx-include="closest form"` had no ancestor form left to find. The working shape
+  is the same form **inside the `<td>`** that holds the field, `hidden`, carrying an `id` of its own, with
+  the control naming it twice — `form="edit-{identifier}"` for ownership (and the no-JS submit) and
+  `hx-include="#edit-{identifier}"` for what htmx serializes. Inside the cell it is not foster-parented,
+  it travels with the row it is rendered into, and it is replaced together with it (§2.6.3).
+
+- **Rejected: vendoring the JSON extension and keeping the JSON body.** It is the one alternative that
+  would make the declaration executable, and it loses on two counts the corpus treats as binding. It adds
+  a vendored asset to the §2.4 budget — seven files with a `≤ 75 KB` total and per-file ceilings
+  enforced by `test_asset_budget_is_under_75_kb_gzip`, where every new file is a new licence row, a new
+  `sha256` in `static/vendor/README.md` and a new number in a total with ~9 KB of room left — to buy a
+  wire format the server does not want. And it would give **one** route of the layer a second
+  serialization while its seven page forms, its four other fragments and its no-JS fallback stay
+  urlencoded: two formats for one write, distinguished per element, with the difference invisible at the
+  route. The form the browser already encodes is the contract; the extension is a cost with no reader on
+  the other side.
+
+- **What the contract is now.** §2.6.3's exchange block states `Content-Type:
+  application/x-www-form-urlencoded` and a `title=…` body; its markup block shows the hidden form inside
+  the `<td>` and the control naming it by `id`; its rule states that `app.js` keeps **no**
+  request-rewriting hook for `PATCH`es and why. `Enter` is declared as the implicit submission of the form
+  owner — the same `hx-patch` the form carries — rather than as a `keyup[key=='Enter']` trigger, which
+  the shipped markup does not have and which would have sent the request twice. §5.3 step 1 stops
+  drawing the payload as an object. No route, field, enum or `Content-Type` of a **response** changes,
+  so `version` stays 4 and only `spec_revision` moves (19 → 20).
+
+**Verification.** The contract is executable in two places, and the browser one is the reason this
+decision exists. `/var/tmp/t03/probe_browser.py` is a Playwright run against a real `hifa serve` and a
+real Chromium: it reads the row's ownership off the parsed DOM and requires `formThere`, `hidden`,
+`method=post`, `action=/ENG/issue/ENG-1`, `hx-patch` on the form, `ownerIsForm`, `ownFields ==
+["title"]`, `insideTr` **and** `formInCell` — i.e. the parser did not move the form; then it types a
+title, presses `Tab`, and asserts the one exchange it captured has
+`content_type=application/x-www-form-urlencoded`, `body=title=Renamed%20in%20a%20real%20browser` and
+`status 200`, and that the swapped row comes back carrying the new title; then it does the same with
+`Enter`, which reaches the same `PATCH` through the form owner and answers `200`; then it clears the
+field, leaves it, and asserts the exchange is `422` while the returned control carries
+`aria-invalid="true"`, `.is-invalid` and the **stored** title — the field marked and the server's value
+in it (R7), not the empty one the reader typed; finally it fails the run on any CSP violation or page
+error in the console. The pytest half is `tests/e2e/web/test_dashboard_writes.py` (the edit across
+`?view=list|board|panel`, the `200` with the row, the `422` with the field marked and the stored value);
+until that file lands with the rest of the phase, the property already asserted in the tree is the one
+`tests/e2e/web/test_revision.py` carries — every form the row fragment ships writes its row through
+`hx-patch="/_/issues/…"`, keeps `method="post"` and `action="/ENG/issue/…"` as the no-JS fallback, and is
+`hidden`, which is the shape §2.6.3 now declares. A `Content-Type: application/json` on that route is
+not covered by a test because it is not a behaviour to preserve: it answers `422 invalid request`, and if
+a future reader wants it they have to reopen this decision rather than find an unasserted path.

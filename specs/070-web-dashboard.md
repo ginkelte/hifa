@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 4
-spec_revision: 19
+spec_revision: 20
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -13,7 +13,7 @@ implements:
 acceptance: specs/acceptance/001-mvp-v1/16-dashboard.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-13
+updated: 2026-11-14
 ---
 
 # SPEC-070 — Web dashboard
@@ -915,7 +915,8 @@ click on the title
 Enter or blur
   → PATCH /_/issues/ENG-13?view=list
     HX-Request: true
-    body JSON: {"title": "Fix SSO login (Okta)"}
+    Content-Type: application/x-www-form-urlencoded
+    body: title=Fix+SSO+login+%28Okta%29
   → hx-target="closest tr", hx-swap="outerHTML", hx-sync="closest tr:replace"
   → 200: the server returns the authoritative <tr> and replaces it
   → 422: beforeSwap enables the swap, the <tr> comes back with .is-invalid and data-original
@@ -931,36 +932,43 @@ Rules:
   a normal `POST`, with htmx the same `form` does `PATCH`):
 
 ```html
-<form class="inline-edit" method="post" action="/ENG/issue/ENG-13"
-      hx-patch="/_/issues/ENG-13?view=list"
-      hx-target="closest tr" hx-swap="outerHTML"
-      hx-sync="closest tr:replace" hx-disabled-elt="find button">
-  <input name="title" value="Fix SSO login" data-original="Fix SSO login"
+<td class="cell-title">
+  <form id="edit-ENG-13" class="inline-edit" method="post" action="/ENG/issue/ENG-13"
+        hx-patch="/_/issues/ENG-13?view=list"
+        hx-target="closest tr" hx-swap="outerHTML"
+        hx-sync="closest tr:replace" hidden></form>
+  <input name="title" form="edit-ENG-13" value="Fix SSO login" data-original="Fix SSO login"
          hx-patch="/_/issues/ENG-13?view=list"
-         hx-trigger="blur changed, keyup[key=='Enter']"
-         hx-include="closest form" hx-target="closest tr" hx-swap="outerHTML"
+         hx-trigger="blur changed"
+         hx-include="#edit-ENG-13" hx-target="closest tr" hx-swap="outerHTML"
          hx-sync="closest tr:replace">
-</form>
+</td>
 ```
 
-- `hx-patch` on the `<form>` is what turns the submit into a `PATCH`; `action`/`method` stay as the
-  no-JS fallback (2.6.6). `hx-include="closest form"` sends every field of the row form, not just
-  the edited one: a `PATCH` with an absent field deletes nothing (R5 of SPEC-060), so the payload
-  can be generous.
+- **The form sits inside the cell, and the control reaches it by id.** A `<form>` as a child of
+  `<tr>` is foster-parented out of the table by the HTML parser — the hazard the docstring of
+  `tests/e2e/web/test_revision.py` names — so the hidden form is the first child of the `<td>` that
+  holds the field, it carries the `id` its control names, and the control names it twice:
+  `form="edit-{identifier}"` (ownership, and the no-JS submit target) and
+  `hx-include="#edit-{identifier}"` (what htmx serializes). `hidden` keeps it out of the layout, not
+  out of the document, and `method`/`action` stay as the no-JS fallback (2.6.6).
+- `hx-patch` on the `<form>` is what turns a submit into a `PATCH`. `Enter` in the control is the
+  implicit submission of its form owner — the same `hx-patch` — so there is no second `hx-trigger`.
+- `hx-include="#edit-{identifier}"` sends every field of that row's form, not just the edited one: a
+  `PATCH` with an absent field deletes nothing (R5 of SPEC-060), so the payload can be generous.
 - `blur changed` (not a bare `blur`) avoids the `PATCH` when the user entered and left without
   touching anything.
 - A single `PATCH` in flight per row: `hx-sync="closest tr:replace"` (discards the previous one,
-  does not queue). `hx-disabled-elt="this"` while the request is in flight.
+  does not queue).
 - Fields editable inline: `title` (text), `state` (`<select>`), `assignee` (`<select>`),
   `priority` (`<select>` with glyphs), `due_date` (`<input type="date">`), `estimate` (number),
   `labels` (chips + menu). `description` is **not** inline: it is edited in the panel with a
   `<textarea>` and a Save button (it needs markdown and is multi-line).
-- Each control has `name` and `form` pointing to a hidden `<form method="post" action="/{team}/issue/{id}">`,
-  so that without JS the same control works as a normal form (2.6.4).
-- The `PATCH` body goes as JSON (`hx-ext` is not needed: htmx serializes JSON if `hx-vals='js:{...}'`
-  or `json-enc` is used). Only `htmx.min.js` is vendored: `json-enc` is replaced by a 6-line
-  `htmx:configRequest` in `app.js` that sets `Content-Type: application/json` and
-  `JSON.stringify` of the `parameters` for `PATCH`es.
+- **The `PATCH` body is form-urlencoded — htmx's own encoding of the form.** No extension and no
+  request-rewriting hook in `app.js`: the layer parses urlencoded only, every `/_/` write goes through
+  `_parse_form`, and the single JSON body under `/_/` is the revision probe of §2.1.3.1 (D-049). A body
+  relabelled `application/json` describes neither format and is refused `422 invalid request`, which is
+  what the shim this section used to prescribe produced in a browser — and why it is gone (D-056).
 
 #### 2.6.4 Drag & drop (position computed on the server)
 
@@ -1457,7 +1465,8 @@ Component-specific requirements:
 ### 5.3 Inline editing (PATCH)
 
 ```
-1. blur/Enter on the control ⇒ htmx serializes {"title": "..."} and does PATCH /_/issues/ENG-13?view=list.
+1. blur/Enter on the control ⇒ htmx serializes the hidden form (urlencoded, `title=...`) and does
+   PATCH /_/issues/ENG-13?view=list (§2.6.3, D-056).
 2. Router: resolve ref (404), validate body (422 with the <tr> in .is-invalid state).
 3. `app.issues.update_issue(uow, UpdateIssue(issue=ref, title=...), actor)` → UPDATE issue +
    INSERT issue_history (one transaction).
@@ -2013,6 +2022,24 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 20 (2026-11-14): **the inline edit declares the body the browser really sends —
+  form-urlencoded, no JSON, and the hidden form inside the cell (D-056).**
+  T-20.1 implemented §2.6.3 and the first run that reached the wire proved the prescription wrong:
+  §2.6.3 said the `PATCH` body was JSON, carried a JSON request shim in `app.js` and put the
+  hidden `<form>` outside the `<td>` with `hx-include="closest form"`. Three failures, all verifiable.
+  (1) No fragment route parses JSON: every `/_/` write goes through `_parse_form` (urlencoded), and
+  the only JSON body under `/_/` is the revision probe of §2.1.3.1 (D-049), so a JSON body is
+  `422 invalid request`. (2) The shim cannot exist: the event it hooks is not cancelable, so htmx
+  has already encoded the body as form data when the listener runs and a header swapped to
+  `application/json` over that body is a request that is neither — which is the `422` a browser
+  produced before the override was deleted. (3) A `<form>` as a child of `<tr>` is foster-parented
+  out of the table, so the declared position cannot work; the form lives inside the `<td>`, is
+  `hidden`, and the control reaches it by `id` (`form="edit-{identifier}"`,
+  `hx-include="#edit-{identifier}"`). §2.6.3 is corrected in its three places — the exchange block,
+  the markup, and the rule under it — `Enter` is declared as the implicit submission of the form
+  owner instead of a second `hx-trigger`, and §5.3 step 1 stops describing the payload as an object.
+  **Nothing in `src/` was changed to fit this revision**: the working behaviour is what the section
+  now describes, and the browser probe that proved it is named in D-056.
 - spec_revision 19 (2026-11-13): **the dashboard's write paths are contracted — five capabilities,
   seven page forms, five fragments — and `version` 4 because §2 gains routes (T-20, D-053, D-054,
   D-055).**
