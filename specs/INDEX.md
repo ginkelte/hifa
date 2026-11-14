@@ -6,7 +6,7 @@ regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Tem
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
 **11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 3` / `spec_revision: 6`
 after the engine change of D-039 and the governed outcome classifier of D-040). Accepted debt P-01…P-09 in
-[`DECISIONS.md`](./DECISIONS.md) (**49 decisions: D-001 … D-049**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
+[`DECISIONS.md`](./DECISIONS.md) (**52 decisions: D-001 … D-052**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035):** the canonical seed is
 `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · Done(5.0) ·
@@ -79,7 +79,8 @@ enforced for every other actor (D-036).
 
 ## Acceptance criteria
 
-`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 106 scenarios**,
+`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 165 scenarios**
+(153 `Scenario` + 12 `Scenario Outline`, each outline counted once),
 all with exactly one `When` (verified with `gherkin-official 42.0.1`).
 The per-component Gherkin lives **inline** in each spec (§7); the individual `.feature` files are
 debt P-01 in `DECISIONS.md`.
