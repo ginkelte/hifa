@@ -12,6 +12,16 @@
     <dt>Due</dt><dd>{% if vm.has_due %}<span class="due{% if vm.is_overdue %} is-overdue{% endif %}">{{ vm.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</dd>
   </dl>
   <div class="description">{{ vm.description_html | safe }}</div>
+  {% if vm.form_error %}{% if not vm.invalid_field %}<p class="form-error" role="alert">{{ vm.form_error }}</p>{% endif %}{% endif %}
+  {% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
+  <form class="issue-edit" method="post" action="{{ vm.edit_action }}"
+        hx-patch="{{ vm.edit_fragment }}?view=panel" hx-target="#panel" hx-swap="innerHTML"
+        hx-disabled-elt="find button">
+    <h3 class="form-title">Edit</h3>
+    {% include "partials/issue_form_fields.html" %}
+    <div class="form-actions"><button type="submit" class="btn">Save</button></div>
+  </form>
+  {% endif %}
   {% if vm.comments %}
   <section class="comments">
     <h3>Comments</h3>

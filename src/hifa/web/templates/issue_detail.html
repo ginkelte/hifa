@@ -15,6 +15,14 @@
   <div class="detail-body">
     <section class="detail-main">
       <div class="description">{{ vm.description_html | safe }}</div>
+      {% if vm.form_error %}{% if not vm.invalid_field %}<p class="form-error" role="alert">{{ vm.form_error }}</p>{% endif %}{% endif %}
+      {% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
+      <form class="issue-edit" method="post" action="{{ vm.edit_action }}">
+        <h2 class="form-title">Edit</h2>
+        {% include "partials/issue_form_fields.html" %}
+        <div class="form-actions"><button type="submit" class="btn">Save</button></div>
+      </form>
+      {% endif %}
       {% if vm.children %}
       <section class="children">
         <h2>Sub-issues</h2>
