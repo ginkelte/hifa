@@ -6,7 +6,7 @@ regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Tem
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
 **11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 3` / `spec_revision: 6`
 after the engine change of D-039 and the governed outcome classifier of D-040). Accepted debt P-01…P-09 in
-[`DECISIONS.md`](./DECISIONS.md) (**52 decisions: D-001 … D-052**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
+[`DECISIONS.md`](./DECISIONS.md) (**55 decisions: D-001 … D-055**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035):** the canonical seed is
 `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · Done(5.0) ·
@@ -54,7 +54,7 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
 | 040 | Application services | [040-application-services.md](./040-application-services.md) | `app/**`, `tests/integration/app/**` | 020, 030 | approved |
 | 050 | CLI | [050-cli.md](./050-cli.md) | `cli/**`, `tests/e2e/cli/**` | 040 | approved |
 | 060 | REST API | [060-api-rest.md](./060-api-rest.md) | `api/**`, `tests/e2e/api/**` | 040 | approved |
-| 070 | Web dashboard | [070-web-dashboard.md](./070-web-dashboard.md) | `web/**`, `tests/e2e/web/**` | 040, 060 | **partial** (stage 1 delivered: read-only board/list/detail + quick add + `/healthz`; contract closed by D-025…D-028) |
+| 070 | Web dashboard | [070-web-dashboard.md](./070-web-dashboard.md) | `web/**`, `tests/e2e/web/**` | 040, 060 | **partial** (stage 1 delivered: read-only board/list/detail + quick add + `/healthz`; read contract closed by D-025…D-028, write paths contracted by D-053…D-055) |
 | 080 | Import / export | [080-transfer-csv-json.md](./080-transfer-csv-json.md) | `app/transfer.py`, `adapters/sqlite/transfer_sql.py` | 040 | approved |
 | 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | approved |
 | 100 | Config and bootstrap | [100-config-bootstrap.md](./100-config-bootstrap.md) | `config.py`, `app/teams.py::bootstrap`, `cli/commands/db.py` | 010, 040 | approved |
@@ -79,9 +79,9 @@ enforced for every other actor (D-036).
 
 ## Acceptance criteria
 
-`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 165 scenarios**
-(153 `Scenario` + 12 `Scenario Outline`, each outline counted once),
-all with exactly one `When` (verified with `gherkin-official 42.0.1`).
+`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 187 scenarios**
+(175 `Scenario` + 12 `Scenario Outline`, each outline counted once),
+all with exactly one `When` (verified by parsing every file with `gherkin-official`).
 The per-component Gherkin lives **inline** in each spec (§7); the individual `.feature` files are
 debt P-01 in `DECISIONS.md`.
 
