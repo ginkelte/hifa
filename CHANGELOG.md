@@ -1,3 +1,10 @@
+# [0.7.0](https://github.com/ginkelte/hifa/compare/v0.6.0...v0.7.0) (2026-11-16)
+
+
+### Features
+
+* **web:** the dashboard edits an issue's fields inline ([#22](https://github.com/ginkelte/hifa/issues/22)) ([ff01ec5](https://github.com/ginkelte/hifa/commit/ff01ec5da9ce96fa245f584c54b8cf3bbf3e5034))
+
 # [0.6.0](https://github.com/ginkelte/hifa/compare/v0.5.0...v0.6.0) (2026-11-13)
 
 
