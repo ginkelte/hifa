@@ -69,10 +69,10 @@ want to query it in a shell, this is that.
 ## Screenshot
 
 <p align="center">
-  <img src="docs/assets/board.png" alt="The hifa board: six workflow columns, cards with identifiers, priorities and labels" width="100%">
+  <img src="docs/assets/board.png" alt="The hifa board: seven workflow columns, cards with identifiers, priorities and labels" width="100%">
 </p>
 
-<p align="center"><em>Real output, demo data: <code>hifa serve</code> on the seeded workspace. Six states, drag-and-drop columns, keyboard-driven.</em></p>
+<p align="center"><em>Real output, demo data: <code>hifa serve</code> on the seeded workspace. Seven states, drag-and-drop columns, keyboard-driven.</em></p>
 
 ## Install
 
@@ -96,7 +96,7 @@ hifa issue create "Wire the command palette" -q          # prints ENG-2
 hifa serve                                              # http://127.0.0.1:7777/
 ```
 
-`hifa init` creates the database and seeds a workspace, one team, its six workflow states, four
+`hifa init` creates the database and seeds a workspace, one team, its seven workflow states, four
 labels and your local member. It is idempotent, and inside a git work tree it writes `.hifa.toml`
 next to the database:
 
@@ -105,7 +105,7 @@ $ cd ~/proj && hifa init --team-key ENG --team-name "Engineering"
 initialized hifa at ~/proj/.hifa/hifa.db
   workspace  Proj (proj)
   team       ENG — Engineering 🚀
-  states     Triage, Todo, Backlog, In Progress, Done, Canceled
+  states     Triage, Todo, Backlog, In Progress, In Review, Done, Canceled
   labels     Bug, Feature, Improvement, Docs
   member     administrator
   config     /home/administrator/proj/.hifa.toml (created)
@@ -160,7 +160,7 @@ Shipped and covered by tests:
 
 | Command | What it does |
 |---|---|
-| `hifa init` | workspace, team, six states, four labels, local member |
+| `hifa init` | workspace, team, seven states, four labels, local member |
 | `hifa issue create` | one issue in one transaction (row + label links + `created` history row) |
 | `hifa team create\|list\|show` | multi-team; `show --states` prints the team's workflow |
 | `hifa state list\|create\|update` | custom states per team, reorder with `--before` / `--after` |
@@ -180,15 +180,17 @@ hifa team list                  # KEY NAME ISSUES ARCHIVED
 hifa team show HIFA --states
 ```
 
-Each team owns its workflow. The canonical order is **Triage · Todo · Backlog · In Progress · Done ·
-Canceled** (D-034: `Todo` sits left of `Backlog` so the next thing you touch is never last), and
+Each team owns its workflow. The canonical order is **Triage · Todo · Backlog · In Progress · In
+Review · Done · Canceled** (D-034: `Todo` sits left of `Backlog` so the next thing you touch is never
+last; D-058: `In Review` sits at `4.5`, between `In Progress` and `Done`, so no neighbour moved, and
+it is of type `started` — the card waiting on a review is still open work), and
 `Todo` is the state a new issue lands in.
 
 ```bash
 hifa state list                                   # POSITION NAME TYPE COLOR DEFAULT ISSUES
 hifa state update Todo --before Backlog           # move a column; never write floats by hand
-hifa state create "In Review" --type started --after "In Progress"
-hifa state update "In Review" --color "#F2994A"
+hifa state create "Blocked" --type started --after "In Progress"
+hifa state update "Blocked" --color "#F2994A"
 ```
 
 `--before` / `--after` are the human way to reorder: the CLI computes the fractional position
