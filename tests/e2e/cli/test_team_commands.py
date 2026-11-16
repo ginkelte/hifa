@@ -412,9 +412,7 @@ def test_show_states_human_lists_the_names(sandbox: SimpleNamespace) -> None:
     result = run("team", "show", "ENG", "--states")
 
     assert result.exit_code == 0, out(result)
-    assert (
-        "7 (Triage, Todo*, Backlog, In Progress, In Review, Done, Canceled)" in result.stdout
-    )
+    assert "7 (Triage, Todo*, Backlog, In Progress, In Review, Done, Canceled)" in result.stdout
 
 
 def test_show_with_an_unknown_key_exits_three(sandbox: SimpleNamespace) -> None:

@@ -127,8 +127,7 @@ def test_init_seeds_seven_states_and_in_review_sits_at_four_point_five(
 
     assert len(rows) == 7
     assert [
-        (row["name"], row["type"], row["position"], row["color"], row["is_default"])
-        for row in rows
+        (row["name"], row["type"], row["position"], row["color"], row["is_default"]) for row in rows
     ] == [
         ("Triage", "triage", 1.0, "#6B6F76", 0),
         ("Todo", "unstarted", 2.0, "#E2E2E2", 1),
