@@ -4,7 +4,7 @@ title: System architecture
 component: support
 status: approved
 version: 3
-spec_revision: 9
+spec_revision: 10
 depends_on: []
 implements:
   - pyproject.toml
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/000-system-architecture.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # SPEC-000 — System architecture
@@ -188,8 +188,11 @@ Changing this structure is a contract change: `version` bump. Specs 010-100 and 
 - **REQ-S004** — File paths (import/export, attachments) are resolved and validated against the
   allowed directory; rejection of `..` and of symlinks that escape.
 - **REQ-S005** — `hifa serve` does not implement auth in v1: hence the local bind by default, the
-  warning when exposing and `--read-only` being available. There is also no CSRF token or `Bearer`: the only
-  guard on dashboard writes is `HX-Request` (SPEC-070 R5).
+  warning when exposing and `--read-only` being available. There is also no CSRF token or `Bearer`:
+  `HX-Request` keeps a fragment out of a browser navigation (SPEC-070 R5) and a state-changing request
+  from another origin is refused before the route runs by the write guard of SPEC-070 §2.1.7 (R28,
+  D-057). That guard is not a credential either: it allows a request that carries neither `Origin` nor
+  `Sec-Fetch-Site`, which is every non-browser client (D-057).
 
 ## 5. Flow
 
@@ -305,6 +308,16 @@ Multi-tenant, auth, sync, plugins, AI, binary attachments, notifications, webhoo
 
 ## Notes
 
+- spec_revision 10 (2026-11-16): **the write guard reaches REQ-S005 (D-057).** Its last clause said the
+  only guard on dashboard writes is `HX-Request`, and that sentence is now false: SPEC-070 §2.1.7
+  contracts a second guard — one HTTP middleware of `create_app`, keyed on the method, refusing a
+  state-changing request from another origin before the route runs (R28, REQ-F070-16). The clause is
+  corrected instead of left standing, because the mandatory reading order hands this requirement to an
+  implementer before the component spec, and a superseded clause there would contradict the contract it
+  points at. `HX-Request` keeps its place and its reason — it is what keeps a fragment out of a browser
+  navigation (SPEC-070 R5) — and the new clause says what the guard does *not* do, so the sentence
+  cannot be read as a credential: a request carrying neither header is allowed (D-057). No public
+  contract change: `version` stays at 3, no layer, rule A1-A8 or module changes.
 - spec_revision 9 (2026-11-11): **the CI gate of §8 step 5 now names the executable contracts it runs.**
   SPEC-110 `version: 3` moves the release component's two shell files from prose into governed,
   pytest-executed artefacts (`.github/release/tag-message.sh`, `.github/release/assert-outcome.sh`, D-040),

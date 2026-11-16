@@ -324,20 +324,21 @@ Feature: HTTP dashboard
     And the HTTP status of a POST to "/_/issues/ENG-12/delete" with the header "HX-Request: true" and the form {"confirm":"1"} is 403
     And the archived_at of "ENG-12" is null
 
-  # --- the write guard (HIFA-54; SPEC-070 §2.1.7, D-057) -----------------------------------------
+  # --- the write guard (HIFA-54; SPEC-070 §2.1.7, R28, D-057) ---------------------------------------
   #
   # The guard is a property of the caller, not of the instance (R18) and not of the payload
-  # (`confirm=1`, §2.1.2): a state-changing method whose `Sec-Fetch-Site` says `cross-site`, or whose
-  # `Origin` names another origin, is refused before the route is matched. A `When` that names
-  # neither header is the declared non-browser client, which is what every other scenario of this
-  # file already is — these six name it instead of relying on it.
+  # (`confirm=1`, §2.1.2): a state-changing method whose `Sec-Fetch-Site` says `cross-site` or
+  # `same-site`, or whose `Origin` — read only when the fetch metadata is absent — names another
+  # authority, is refused before the route is matched. A `When` that names neither header is the
+  # declared non-browser client, which is what every other scenario of this file already is — these
+  # eleven name it instead of relying on it.
 
   @REQ-S005 @REQ-F035
   Scenario: a cross-site write is refused and nothing is written
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the header "Origin: https://evil.example" and the header "Sec-Fetch-Site: cross-site" and the body {"title":"Fix SSO login"}
     Then the status is 403
-    And the response body is "cross-site write refused"
+    And the body mentions "cross-site write refused"
     And the title of "ENG-13" is "Fix login"
     And no row was added to "issue_history" for "ENG-13"
 
@@ -350,6 +351,17 @@ Feature: HTTP dashboard
     And there is exactly 1 row in "issue_history" for "ENG-13" with field "title"
 
   @REQ-S005 @REQ-F035
+  Scenario: a same-site write is refused
+    # One host and one port serve this edge, so no page of it can be `same-site` to another: the
+    # value is necessarily a sibling origin, which is the case the guard exists to deny.
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the header "Origin: https://hifa.example" and the header "Sec-Fetch-Site: same-site" and the body {"title":"Fix SSO login"}
+    Then the status is 403
+    And the body mentions "cross-site write refused"
+    And the title of "ENG-13" is "Fix login"
+    And no row was added to "issue_history" for "ENG-13"
+
+  @REQ-S005 @REQ-F035
   Scenario: a write from a client with no origin information is accepted
     # neither `Origin` nor `Sec-Fetch-Site`: the non-browser client of SPEC-070 §2.1.7, which is what
     # the test client, an agent and `curl` are. The absence is the contract, not a gap in the test.
@@ -357,6 +369,36 @@ Feature: HTTP dashboard
     When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
     Then the status is 200
     And the title of "ENG-13" is "Fix SSO login"
+
+  @REQ-S005 @REQ-F035
+  Scenario: an Origin that names the served authority is accepted without fetch metadata
+    # The fallback, and the tunnel case: the browser's `Origin` says `https` while the socket this
+    # process accepts is plain `http` behind cloudflared. Only the authority is compared
+    # (SPEC-070 §2.1.7), so the two agree and the write is served.
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the header "Origin: https://127.0.0.1:7777" and the body {"title":"Fix SSO login"}
+    Then the status is 200
+    And the title of "ENG-13" is "Fix SSO login"
+
+  @REQ-S005 @REQ-F035
+  Scenario: an Origin that names another authority is refused without fetch metadata
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the header "Origin: https://evil.example" and the body {"title":"Fix SSO login"}
+    Then the status is 403
+    And the body mentions "cross-site write refused"
+    And the title of "ENG-13" is "Fix login"
+    And no row was added to "issue_history" for "ENG-13"
+
+  @REQ-S005 @REQ-F035
+  Scenario: an opaque Origin is refused
+    # `Origin: null` is what a sandboxed frame, a `file://` document and a redirect that stripped the
+    # header send. It names no authority at all, so it is neither "another origin" nor absent, and
+    # the guard refuses it: no page of this application produces that value.
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the header "Origin: null" and the body {"title":"Fix SSO login"}
+    Then the status is 403
+    And the body mentions "cross-site write refused"
+    And the title of "ENG-13" is "Fix login"
 
   @REQ-S005 @REQ-F035
   Scenario: a cross-site read is still served
@@ -372,13 +414,26 @@ Feature: HTTP dashboard
     # identifier resolving — otherwise a 404 would prove the guard was not in the way.
     When I execute a POST to "/ENG/issue/ENG-999" with the header "Origin: https://evil.example" and the header "Sec-Fetch-Site: cross-site" and the form {"title":"ghost"}
     Then the status is 403
-    And the response body is "cross-site write refused"
+    And the body mentions "cross-site write refused"
     And no issue has the identifier "ENG-999"
 
   @REQ-S005 @REQ-F035
   Scenario: read-only mode keeps its own 403 for a same-origin write
+    # The same write route as the accepted case, on a read-only instance: the guard lets it through
+    # and the route answers with the instance's own refusal, whose text is not the guard's — the two
+    # 403s of SPEC-070 §6 are told apart by their message.
     Given a server started with "--read-only" and the issue "ENG-12" not archived
-    When I execute a POST to "/ENG/issue/ENG-12/archive" with the header "Sec-Fetch-Site: same-origin" and the form {"confirm":"1"}
+    When I execute a PATCH to "/_/issues/ENG-12?view=list" with the header "HX-Request: true" and the header "Sec-Fetch-Site: same-origin" and the body {"title":"Hijacked"}
     Then the status is 403
-    And the response body is "server in read-only mode"
-    And the archived_at of "ENG-12" is null
+    And the body mentions "read-only"
+    And no row was added to "issue_history" for "ENG-12"
+
+  @REQ-S005 @REQ-F035
+  Scenario: a cross-site write on a read-only instance is the guard's refusal
+    # The other side of the same order: the guard answers first, so a read-only instance answers a
+    # cross-site write with the caller's refusal and never with `server in read-only mode`.
+    Given a server started with "--read-only" and the issue "ENG-12" not archived
+    When I execute a PATCH to "/_/issues/ENG-12?view=list" with the header "HX-Request: true" and the header "Origin: https://evil.example" and the header "Sec-Fetch-Site: cross-site" and the body {"title":"Hijacked"}
+    Then the status is 403
+    And the body mentions "cross-site write refused"
+    And no row was added to "issue_history" for "ENG-12"
