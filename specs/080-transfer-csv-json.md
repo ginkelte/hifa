@@ -4,7 +4,7 @@ title: CSV and JSON transfer
 component: application
 status: review
 version: 1
-spec_revision: 5
+spec_revision: 6
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/transfer.py
@@ -14,7 +14,7 @@ implements:
 acceptance: specs/acceptance/080-transfer-csv-json.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # SPEC-080 — CSV and JSON transfer
@@ -731,7 +731,7 @@ the **record number**, not the physical line number; the human report adds `reco
 Feature: Issue import and export in CSV and JSON
 
   Background:
-    Given a migrated database with team "ENG" and its 6 default workflow_states
+    Given a migrated database with team "ENG" and its 7 default workflow_states
     And a workspace with member "ana@example.com" whose display_name is "Ana Pérez"
 
   Scenario: minimal import from a CSV
@@ -934,6 +934,13 @@ Feature: Issue import and export in CSV and JSON
 
 ## 11. Notes
 
+- spec_revision 6 (2026-11-16): **the fixture's team carries seven `workflow_state`s, not six (D-058).**
+  §7's `Background` built a team `ENG` with "its 6 default workflow_states",
+  which stopped being the seed when SPEC-100 §2.5 (rev 7) gained `In Review` at `4.5`: every scenario of
+  the file would have run against a board no team has. The line reads seven, the count `create_team`
+  writes (SPEC-040 REQ-F040-14, rev 22). Nothing of this layer's contract moves with it — a state is
+  resolved by name at import, `Status` stays the free-form column of §5.2 and no `position` is read or
+  written — so `version` stays at 1.
 - spec_revision 5 (2026-11-13): **the JSON import is a writer of `issue_relation`, so it normalises the
   pair (D-045).** §3 said `issue_relation` was "INSERT (JSON only)" validating nothing but the column
   names against `PRAGMA table_info`, which let `(A,B,related)` and `(B,A,related)` both be stored: two

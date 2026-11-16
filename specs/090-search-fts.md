@@ -4,7 +4,7 @@ title: FTS5 full-text search
 component: application
 status: draft
 version: 1
-spec_revision: 3
+spec_revision: 4
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/search.py
@@ -14,7 +14,7 @@ implements:
 acceptance: specs/acceptance/090-search-fts.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # SPEC-090 — FTS5 full-text search
@@ -554,7 +554,7 @@ The snippet of this path is computed after the fetch, in `SearchService`, follow
 Feature: Full-text search over issues
 
   Background:
-    Given a database with team "ENG" and the 6 default workflow_states
+    Given a database with team "ENG" and the 7 default workflow_states
     And 3 issues: "Deploy roto en producción", "Arreglar deploy de staging" and "Diseño del dashboard"
 
   Scenario: free text matches by title
@@ -725,6 +725,12 @@ Feature: Full-text search over issues
 
 ## 11. Notes
 
+- spec_revision 4 (2026-11-16): **the fixture's team carries seven `workflow_state`s, not six (D-058).**
+  §7's `Background` read a team `ENG` with "the 6 default workflow_states", a count that
+  stopped being the seed when SPEC-100 §2.5 (rev 7) gained `In Review` at `4.5`; the scenarios would
+  have measured a team `create_team` no longer produces. It reads seven, the count of SPEC-040
+  REQ-F040-14. The search contract is untouched — filters, envelope, ranking and `backend` do not see
+  the board's width, and a state is matched as text, not counted as a row — so `version` stays at 1.
 - **spec_revision 2 (2026-11-08, orchestrator):** this document is the **authority for the search
   contract** (D-002 of `specs/DECISIONS.md`). The `hifa search` command of SPEC-050 uses
   exactly these flags and this envelope: `{hits: [{issue, snippet, score}], total, has_more,

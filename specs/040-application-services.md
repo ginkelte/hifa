@@ -1929,7 +1929,7 @@ Feature: Application use cases
     And resolved_at did not change between the first and the second call
 
   @REQ-F040-14
-  Scenario: creating a team creates the workspace and the six states
+  Scenario: creating a team creates the workspace and the seven states
     Given a migrated database without workspace or teams
     When create_team is run with key "ENG" and name "Engineering"
     Then a workspace exists
