@@ -18,7 +18,7 @@ from conftest import CLI_ENV
 from hifa.cli.main import app
 
 runner = CliRunner()
-CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "Done", "Canceled"]
+CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"]
 
 
 def run(*args: str):
@@ -35,7 +35,7 @@ def body(result) -> dict:
 
 @pytest.fixture
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolated cwd + `HIFA_DB` with one team (ENG) and its six canonical states."""
+    """Isolated cwd + `HIFA_DB` with one team (ENG) and its seven canonical states."""
     project = tmp_path / "proj"
     project.mkdir()
     monkeypatch.chdir(project)
@@ -54,9 +54,9 @@ def test_list_prints_the_canonical_order(sandbox: Path) -> None:
     assert header.split() == ["POSITION", "NAME", "TYPE", "COLOR", "DEFAULT", "ISSUES"]
     rows = [re.split(r"\s{2,}", line.strip()) for line in result.stdout.splitlines()[1:]]
     assert [row[1] for row in rows] == CANONICAL
-    assert [row[0] for row in rows] == ["1.0", "2.0", "3.0", "4.0", "5.0", "6.0"]
+    assert [row[0] for row in rows] == ["1.0", "2.0", "3.0", "4.0", "4.5", "5.0", "6.0"]
     # DEFAULT is a marker, not a sentence: `*` for the default column, `-` for the rest.
-    assert [row[4] for row in rows] == ["–", "*", "–", "–", "–", "–"]
+    assert [row[4] for row in rows] == ["–", "*", "–", "–", "–", "–", "–"]
     # One concrete row, cell by cell, so a formatting regression cannot hide behind the header.
     assert rows[1] == ["2.0", "Todo", "unstarted", "#E2E2E2", "*", "0"]
 
@@ -69,7 +69,7 @@ def test_list_json_uses_the_items_envelope(sandbox: Path) -> None:
     assert list(payload) == ["items"]
     items = payload["items"]
     assert [item["name"] for item in items] == CANONICAL
-    assert [item["position"] for item in items] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert [item["position"] for item in items] == [1.0, 2.0, 3.0, 4.0, 4.5, 5.0, 6.0]
     assert list(items[0]) == [
         "id",
         "name",
@@ -83,12 +83,10 @@ def test_list_json_uses_the_items_envelope(sandbox: Path) -> None:
 
 
 def test_create_after_a_neighbour_lands_between_the_two_columns(sandbox: Path) -> None:
-    created = run(
-        "state", "create", "In Review", "--type", "started", "--after", "In Progress", "--json"
-    )
+    created = run("state", "create", "QA", "--type", "started", "--after", "In Progress", "--json")
 
     assert created.exit_code == 0, out(created)
-    assert body(created)["position"] == 4.5
+    assert body(created)["position"] == 4.25
 
     listed = body(run("state", "list", "--json"))["items"]
     assert [item["name"] for item in listed] == [
@@ -96,6 +94,7 @@ def test_create_after_a_neighbour_lands_between_the_two_columns(sandbox: Path) -
         "Todo",
         "Backlog",
         "In Progress",
+        "QA",
         "In Review",
         "Done",
         "Canceled",
@@ -151,7 +150,15 @@ def test_update_moves_a_state_before_another_one(sandbox: Path) -> None:
     assert result.exit_code == 0, out(result)
     assert body(result)["position"] == 2.5
     listed = [item["name"] for item in body(run("state", "list", "--json"))["items"]]
-    assert listed == ["Triage", "Todo", "Canceled", "Backlog", "In Progress", "Done"]
+    assert listed == [
+        "Triage",
+        "Todo",
+        "Canceled",
+        "Backlog",
+        "In Progress",
+        "In Review",
+        "Done",
+    ]
 
 
 def test_update_renames_and_recolors(sandbox: Path) -> None:
@@ -219,7 +226,7 @@ def test_update_json_carries_the_same_count_as_list(sandbox: Path) -> None:
 
 
 def test_create_reports_zero_issues_without_assuming_it(sandbox: Path) -> None:
-    created = run("state", "create", "In Review", "--type", "started")
+    created = run("state", "create", "QA", "--type", "started")
     assert created.exit_code == 0, out(created)
     payload = body(run("state", "create", "Blocked", "--type", "started", "--json"))
     assert payload["issues_count"] == 0

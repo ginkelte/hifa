@@ -25,7 +25,7 @@ from hifa.app.teams import DEFAULT_STATES, create_state, create_team, list_state
 from hifa.domain.errors import Validation
 
 ACTOR = Actor(source="cli", label="cli")
-CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "Done", "Canceled"]
+CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"]
 
 
 def _prepare(path: Path) -> UnitOfWork:
@@ -63,7 +63,7 @@ def _state_id(uow: UnitOfWork, name: str) -> str:
 def test_canonical_template_puts_todo_before_backlog_and_marks_it_default() -> None:
     assert [entry[0] for entry in DEFAULT_STATES] == CANONICAL
     assert [entry[0] for entry in DEFAULT_STATES if entry[4]] == ["Todo"]
-    assert [entry[3] for entry in DEFAULT_STATES] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert [entry[3] for entry in DEFAULT_STATES] == [1.0, 2.0, 3.0, 4.0, 4.5, 5.0, 6.0]
 
 
 def test_create_team_seeds_the_canonical_order(db_path: Path) -> None:
@@ -97,6 +97,7 @@ def test_reordering_between_two_neighbours_leaves_a_fractional_position(db_path:
         "Canceled",
         "Backlog",
         "In Progress",
+        "In Review",
         "Done",
     ]
     assert dict(ordered)["Canceled"] == 2.5
@@ -147,19 +148,20 @@ def test_create_state_with_an_explicit_position_lands_in_between(db_path: Path) 
     try:
         created = create_state(
             uow,
-            CreateState(team="ENG", name="In Review", state_type="started", position=4.5),
+            CreateState(team="ENG", name="QA", state_type="started", position=4.25),
             ACTOR,
         )
         ordered = [name for name, _ in _ordered(uow)]
     finally:
         uow.close()
 
-    assert created.position == 4.5
+    assert created.position == 4.25  # between In Progress (4.0) and In Review (4.5)
     assert ordered == [
         "Triage",
         "Todo",
         "Backlog",
         "In Progress",
+        "QA",
         "In Review",
         "Done",
         "Canceled",
