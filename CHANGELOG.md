@@ -1,3 +1,10 @@
+# [0.8.0](https://github.com/ginkelte/hifa/compare/v0.7.1...v0.8.0) (2026-11-16)
+
+
+### Features
+
+* **app:** the board carries a review column between In Progress and Done ([#24](https://github.com/ginkelte/hifa/issues/24)) ([381ebb1](https://github.com/ginkelte/hifa/commit/381ebb1383bc9ca0d4f8f85a272a89b930002353)), closes [#BB87](https://github.com/ginkelte/hifa/issues/BB87) [#6B6F76](https://github.com/ginkelte/hifa/issues/6B6F76) [#BB87](https://github.com/ginkelte/hifa/issues/BB87) [#BB87](https://github.com/ginkelte/hifa/issues/BB87) [#6B6F76](https://github.com/ginkelte/hifa/issues/6B6F76) [#BB87](https://github.com/ginkelte/hifa/issues/BB87) [#BB87](https://github.com/ginkelte/hifa/issues/BB87) [#BB87](https://github.com/ginkelte/hifa/issues/BB87)
+
 ## [0.7.1](https://github.com/ginkelte/hifa/compare/v0.7.0...v0.7.1) (2026-11-16)
 
 
