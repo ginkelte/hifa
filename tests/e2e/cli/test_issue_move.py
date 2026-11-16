@@ -50,6 +50,35 @@ def test_move_to_the_same_state_twice_is_idempotent(cli: Cli) -> None:
     assert row["completed_at"] is not None
 
 
+def test_a_change_in_review_is_still_open_work(cli: Cli) -> None:
+    """D-058: `In Review` is `type = started`, so the card waiting on a review stays open.
+
+    Pins the three consequences of that choice, the ones a `type = completed` review column
+    would silently break: `v_issue.is_open` stays 1 and the issue answers `issue list --open`,
+    the `completed_at` column is still NULL, and the team's `open_count` still counts it.
+    Declaring the seeded `In Review` as `completed` (the tempting reading of "the work is
+    done, only the review is missing") would stamp `completed_at`, drop the row out of the
+    open listing and move it into `closed_count`, turning all three assertions red.
+    """
+    created = cli.create("Waiting on review")
+    before = json_stdout(cli.run("team", "show", "ENG", "--json"))["progress"]
+
+    moved = cli.run("issue", "move", created, "--state", "In Review", "--json")
+    assert moved.exit_code == 0, moved.stdout + moved.stderr
+
+    (view,) = cli.rows("SELECT is_open FROM v_issue WHERE identifier = ?", (created,))
+    assert view["is_open"] == 1
+    assert cli.issue(created)["completed_at"] is None
+
+    listed = cli.run("issue", "list", "--open", "--json")
+    assert listed.exit_code == 0, listed.stdout + listed.stderr
+    assert [str(item["identifier"]) for item in json_stdout(listed)["items"]] == [created]
+
+    after = json_stdout(cli.run("team", "show", "ENG", "--json"))["progress"]
+    assert before == {"open_count": 1, "closed_count": 0, "urgent_open": 0}
+    assert after == before
+
+
 def test_move_before_an_anchor_puts_the_issue_first(cli: Cli) -> None:
     cli.create("One")
     cli.create("Two")
