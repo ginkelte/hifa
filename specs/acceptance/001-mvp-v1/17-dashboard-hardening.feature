@@ -1,9 +1,10 @@
 @SPEC-001
 Feature: Dashboard hardening
 
-  # Path traversal, local bind, sanitization and htmx guard.
-  # There is no CSRF token nor SameSite cookie (SPEC-000 REQ-S005): the only write
-  # guard is the `HX-Request` header, and without it the fragment responds 400.
+  # Path traversal, local bind, sanitization and the two write guards.
+  # There is no CSRF token nor SameSite cookie (SPEC-000 REQ-S005): a state-changing request
+  # from another origin is refused before the route runs by the write guard of SPEC-070
+  # §2.1.7 (R28, D-057), and a `/_/*` without `HX-Request` answers 400.
 
   @REQ-S001 @smoke
   Scenario Outline: a path escaping the static root returns 404

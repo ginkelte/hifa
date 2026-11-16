@@ -271,7 +271,7 @@ Coverage of the requirements that have no scenario of their own (they are verifi
 | REQ-N001, REQ-N002, REQ-N003, REQ-N008 | SPEC-001 §4.2 (benchmarks of T-17) |
 | REQ-N004, REQ-N005, REQ-N006 | SPEC-070 §7 and SPEC-001 §4.2 (REQ-N003) |
 | REQ-N007 | §8 step 1 (`pyproject.toml`) + AC "the CLI works without the web extra" |
-| REQ-S001, REQ-S005 | SPEC-000 AC + SPEC-070 §7 (bind, `HX-Request`) |
+| REQ-S001, REQ-S005 | SPEC-000 AC + SPEC-070 §7 (bind, `HX-Request`, the write guard of §2.1.7) |
 | REQ-S002 | SPEC-090 §7 (hostile query) and SPEC-030 (parameterized SQL) |
 | REQ-S003 | SPEC-001 REQ-S004 (sanitization) and SPEC-070 §7 |
 | REQ-S004 | SPEC-080 §7 (import/export paths) and SPEC-001 REQ-S001 |
@@ -373,5 +373,6 @@ Multi-tenant, auth, sync, plugins, AI, binary attachments, notifications, webhoo
   R1-42 (`component: soporte`: the template enum has no `sistema`). Version 2 due to REQ-N007
   (base deps with `markdown-it-py` + `python-ulid`, D-020) and to the exit code map of
   D-014. Gaps R1-18/R1-19 were resolved by subordination: REQ-S001 (no ack flag, warning and
-  exit 0) and REQ-S005 (no CSRF/Bearer; only `HX-Request` in the dashboard) are the ones this
-  spec mandates, and SPEC-001 was aligned to them.
+  exit 0) and REQ-S005 (no CSRF token; only `HX-Request` in the dashboard as of this revision) are the
+  ones this spec mandates, and SPEC-001 was aligned to them. Revision 10 amends the second one with
+  the write guard (D-057).
