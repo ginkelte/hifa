@@ -4,7 +4,7 @@ title: Configuration and bootstrap
 component: support
 status: review
 version: 1
-spec_revision: 6
+spec_revision: 7
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/config.py
@@ -15,7 +15,7 @@ implements:
 acceptance: specs/acceptance/100-config-bootstrap.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # SPEC-100 — Configuration and bootstrap
@@ -24,7 +24,7 @@ updated: 2026-11-11
 
 **Does:** resolves the database path deterministically (`--db` → `HIFA_DB` → `.hifa.toml` →
 XDG → home), parses and validates `.hifa.toml`, seeds a usable workspace with `hifa init`
-(workspace + team + 6 workflow_states + labels + local member + settings), makes that seeding
+(workspace + team + 7 workflow_states + labels + local member + settings), makes that seeding
 idempotent and diagnoses the database with `hifa doctor` (integrity, FKs, orphans, identifiers,
 `user_version`, size, permissions, FTS).
 
@@ -233,6 +233,7 @@ DEFAULT_STATES: tuple[tuple[str, str, str, float, int], ...] = (
     ("Todo",        "unstarted", "#E2E2E2", 2.0, 1),
     ("Backlog",     "backlog",   "#6B6F76", 3.0, 0),
     ("In Progress", "started",   "#F2C94C", 4.0, 0),
+    ("In Review",   "started",   "#BB87FC", 4.5, 0),
     ("Done",        "completed", "#5E6AD2", 5.0, 0),
     ("Canceled",    "canceled",  "#95A2B3", 6.0, 0),
 )
@@ -330,7 +331,7 @@ Human output of `init`:
 initialized hifa at /home/vicho/proj/.hifa/hifa.db
   workspace  Ginkelte (ginkelte)
   team       ENG — Engineering 🚀
-  states     Triage, Todo, Backlog, In Progress, Done, Canceled
+  states     Triage, Todo, Backlog, In Progress, In Review, Done, Canceled
   labels     Bug, Feature, Improvement, Docs
   member     vicho <vicho@local>
   config     /home/vicho/proj/.hifa.toml (created)
@@ -359,7 +360,7 @@ Outside a work tree the human block is therefore:
 initialized hifa at /home/vicho/.local/share/hifa/hifa.db
   workspace  Tmp (tmp)
   team       ENG — Engineering 🚀
-  states     Triage, Todo, Backlog, In Progress, Done, Canceled
+  states     Triage, Todo, Backlog, In Progress, In Review, Done, Canceled
   labels     Bug, Feature, Improvement, Docs
   member     vicho <vicho@local>
   config     none (outside a git work tree)
@@ -380,7 +381,7 @@ Human output of `doctor`: a `CHECK | SEVERITY | COUNT | DETAIL` table and a foot
 |---|---|---|
 | `workspace` | 1 | `id = ULID`, `name = opts.workspace_name or title(basename(cwd))`, `url_key = slugify(name)`, `created_at = clock.now()` |
 | `team` | 1 | `key = opts.team_key`, `name = opts.team_name`, `icon = opts.icon`, `color = opts.color`, `timezone = opts.timezone`, `visibility = 'public'`, `cycles_enabled = 0`, `cycle_duration = 2`, `cycle_start_day = 1`, `issue_estimation_type = 'fibonacci'`, `triage_enabled = 0`, `parent_id = NULL`, `archived_at = NULL` |
-| `workflow_state` | 6 | the 6 tuples of `DEFAULT_STATES`, in that `position`; exactly one with `is_default = 1` (Todo) |
+| `workflow_state` | 7 | the 7 tuples of `DEFAULT_STATES`, in that `position`; exactly one with `is_default = 1` (Todo) |
 | `label` | 4 or 0 | the 4 from `DEFAULT_LABELS` with `team_id = NULL` (workspace scope, SPEC-010 R6); 0 if `--no-labels` |
 | `member` | 1 or 0 | `name = member_name`, `display_name = member_name`, `email = member_email`, `initials` = first 2 letters uppercased, `timezone = opts.timezone`, `is_admin = 1`, `is_active = 1`, `created_at = clock.now()`; 0 if `--no-member` |
 | `team_membership` | 1 or 0 | `(team_id, member_id, is_owner = 1, sort_order = 0)`; 0 if `--no-member` |
@@ -389,9 +390,9 @@ Invariants that `hifa init` guarantees on completion:
 
 1. `SELECT COUNT(*) FROM workspace` = 1.
 2. Exactly one `team` exists with `key = opts.team_key` in that workspace.
-3. There are exactly 6 non-archived `workflow_state` rows, one for each `type` of
-   `('triage','backlog','unstarted','started','completed','canceled')`, and exactly one with
-   `is_default = 1`.
+3. There are exactly 7 non-archived `workflow_state` rows covering the six `type`s of
+   `('triage','backlog','unstarted','started','completed','canceled')`, with `started` carried twice
+   (`In Progress`, `In Review`), and exactly one with `is_default = 1`.
 4. `SELECT COUNT(*) FROM workflow_state WHERE team_id <> <team>` = 0 right after initialization.
 5. The local member is the **first** by `ORDER BY created_at, id` (SPEC-090 depends on that for
    `assignee:me`).
@@ -457,7 +458,7 @@ Invariants that `hifa init` guarantees on completion:
   pending migrations (SPEC-030; `user_version` stays at 1), (5) detect existing state,
   (6) seed in **one** transaction, (7) set the file permissions to `0600`, (8) write
   `.hifa.toml` if applicable. It never seeds before migrating.
-- **R10 — Exact seeding (REQ-F100-10).** The values of §3.1 are literal: 6 states with those
+- **R10 — Exact seeding (REQ-F100-10).** The values of §3.1 are literal: 7 states with those
   names, types, colors and positions; 4 workspace-wide labels; team with `visibility='public'` and
   `issue_estimation_type='fibonacci'`. The IDs are new ULIDs (`ids.new()`), never derived from the
   name. `created_at`/`updated_at` come from `clock.now()` in ISO-8601 UTC.
@@ -589,7 +590,7 @@ the `team`/`cli`/`web` values come from it; if not, from the defaults.
  7. BEGIN IMMEDIATE
        get-or-create workspace  (by url_key)
        get-or-create team       (by workspace_id, key)
-       get-or-create 6 workflow_states (by team_id, name)
+       get-or-create 7 workflow_states (by team_id, name)
        get-or-create 4 labels   (by workspace_id, NULL, name)   if seed_labels
        get-or-create member     (by email | display_name)       if seed_member
        get-or-create team_membership
@@ -674,9 +675,9 @@ Feature: Configuration, bootstrap and database diagnostics
     And the file ".hifa.toml" exists
     And the workspace has a name equal to the basename of the directory
     And team "ENG" exists with timezone "America/Santiago"
-    And 6 non-archived workflow_states exist
+    And 7 non-archived workflow_states exist
     And exactly one workflow_state has is_default 1 and is called "Todo"
-    And the types of the 6 states are triage, backlog, unstarted, started, completed, canceled
+    And the seven states cover the six types, with "In Progress" and "In Review" both started
     And 4 labels exist with team_id NULL
     And 1 member exists with is_admin 1
     And 1 team_membership exists with is_owner 1
@@ -873,7 +874,7 @@ Feature: Configuration, bootstrap and database diagnostics
    real environment of the machine.
 9. `pytest tests -k "config or init or doctor"` green.
 10. `python scripts/spec_contract_check.py --spec specs/100-config-bootstrap.md`: the `DEFAULT_*`
-    constants, the 6 states, the 4 labels and the signatures of `resolve_config`/`bootstrap`/`doctor`
+    constants, the 7 states, the 4 labels and the signatures of `resolve_config`/`bootstrap`/`doctor`
     must match with no drift.
 11. `grep -rn "import sqlite3" src/hifa/config.py` must return 0 lines.
 
@@ -885,9 +886,10 @@ Feature: Configuration, bootstrap and database diagnostics
   `source="home"` explicitly distinguishes the fallback from the variable being set.
 - `.hifa.toml` with `[workspace] [team] [cli] [web]`: format requested by Ginkelte (2026-11-08),
   parsed with stdlib `tomllib` to avoid adding dependencies (SPEC-000 REQ-N007).
-- The 6 default states `Triage/Backlog/Todo/In Progress/Done/Canceled` and their `type`
-  (`triage/backlog/unstarted/started/completed/canceled`): `workflow_state.type` of SPEC-010, with
-  `is_default` on `Todo` so that a new issue always lands somewhere sane.
+- The 7 default states `Triage/Todo/Backlog/In Progress/In Review/Done/Canceled` and their `type`
+  (`triage/unstarted/backlog/started/started/completed/canceled`): `workflow_state.type` of SPEC-010, with
+  `is_default` on `Todo` so that a new issue always lands somewhere sane, and `In Review` shared by both
+  review phases (D-058).
 - `issue_estimation_type='fibonacci'`, `cycle_duration=2`, `cycle_start_day=1`: the defaults of
   `team` in SPEC-010.
 - Default labels `Bug/Feature/Improvement/Docs`: the usual minimal set in trackers; the colours are
@@ -913,6 +915,16 @@ Feature: Configuration, bootstrap and database diagnostics
 
 ## 11. Notes
 
+- **spec_revision 7 (2026-11-16): the seed gains one shared `In Review` at `4.5` (D-058).** §2.5's
+  `DEFAULT_STATES` is now `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) ·
+  In Review(4.5) · Done(5.0) · Canceled(6.0)`: one column for spec review and code review alike, of type
+  `started` and colour `#BB87FC` — the values SPEC-050 §2.7 already printed for a hand-created
+  `In Review`, and the position `between(4.0, 5.0)` yields. No state that exists today changes its
+  number, so a fresh team and a six-state team that runs `hifa state create 'In Review' --type started
+  --color '#BB87FC' --before Done` (SPEC-050 §2.5.6) hold the same seven. `started` is the first type the
+  template carries twice, which is why §3.1 invariant 3 counts rows **per type** instead of one per type.
+  No data migration is written and §3.1's `schema_migration` count is untouched: the old team is one
+  command away (D-058).
 - **spec_revision 6 (2026-11-11): `init` writes `.hifa.toml` only inside a git work tree (D-041,
   closes P-12).** The write guard of R13 is stated in terms of `find_project_root` (§2.1), the same
   notion of project root that bounds the walk-up of R3 — so the file is written where a project
@@ -935,7 +947,8 @@ Feature: Configuration, bootstrap and database diagnostics
 - **spec_revision 3 (2026-11-08, Fix Agent, spec-review-03):** application of D-011…D-020.
   - **D-013 (gap 1/2):** the canonical seed is the one in §2.5 (`DEFAULT_STATES`: Triage, Backlog, Todo,
     In Progress, Done, Canceled; `Todo` with `is_default=1`) — **the `Todo`/`Backlog` order of this
-    bullet was superseded by D-034 in spec_revision 5** (see the first bullet of this section). There is no `In Review`. SPEC-050 §2.5.1
+    bullet was superseded by D-034 in spec_revision 5** (see the first bullet of this section), and
+    `In Review` joined the seed in spec_revision 7 (D-058). SPEC-050 §2.5.1
     now references this table instead of repeating its own list, and its `--json` envelope is the
     `BootstrapResult` of §2.5.
   - **Gap 6:** the `.hifa.toml` format keeps a single shape (the one in §2.3). `[defaults] team/member`
