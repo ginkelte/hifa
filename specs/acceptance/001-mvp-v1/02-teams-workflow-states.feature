@@ -91,9 +91,21 @@ Feature: Teams and workflow states
     Given an initialized database with the team "ENG"
     When I run "hifa state list"
     Then the exit code is 0
-    And the states are ordered "Triage", "Todo", "Backlog", "In Progress", "Done", "Canceled"
+    And the states are ordered "Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"
     And the state "Todo" has position 2.0 and is_default 1
     And the state "Backlog" has position 3.0
+
+  # D-058: a team seeded before the column existed gains it with the documented command, at the same
+  # `4.5` a new team's seed uses, and no state that exists today changes its number.
+  @REQ-F008 @smoke
+  Scenario: a team created before the review column gains it with one command
+    Given a team "ENG" with the states "Triage" at 1.0, "Todo" at 2.0, "Backlog" at 3.0, "In Progress" at 4.0, "Done" at 5.0 and "Canceled" at 6.0
+    When I run "hifa state create 'In Review' --type started --before Done" and then I query the board of the team "ENG" in JSON
+    Then the first invocation exits with exit code 0
+    And the state "In Review" has position 4.5 and is_default 0
+    And the states are ordered "Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"
+    And the state "Done" has position 5.0
+    And the "columns" field has 7 elements
 
   @REQ-F008 @smoke
   Scenario: a reorder writes the order and no migration
