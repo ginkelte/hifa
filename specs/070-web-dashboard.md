@@ -272,10 +272,10 @@ public in SPEC-001 §2 and in the `hifa serve` contract, so it is kept (D-028).
 Every state-changing request of this layer passes one check **before the route is matched**. The check is
 installed by `create_app` as an HTTP middleware — the mechanism `_headers` already uses — and it is **not**
 a per-route dependency: a dependency is opt-in, and a route added by a later phase can forget it. The guard
-decides on the method and on two request headers, never on the path, the route table, the database or the
-body, so every route that exists and every route a later phase registers is covered by construction, and a
-method no route serves yet (`PUT`, `DELETE`) is covered too. **R28** is the rule; this section is its
-contract.
+decides on the method and on `Sec-Fetch-Site` and `Origin`, compared against `Host`, never on the path,
+the route table, the database or the body, so every route that exists and every route a later phase
+registers is covered by construction, and a method no route serves yet (`PUT`, `DELETE`) is covered too.
+**R28** is the rule; this section is its contract.
 
 | Request, method not in `GET`/`HEAD`/`OPTIONS` | Answer |
 |---|---|
