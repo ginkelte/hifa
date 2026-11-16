@@ -2322,10 +2322,11 @@ REQ-F040-14, §7, §9, Notes; SPEC-001 REQ-F001, §9, Notes; `001-mvp-v1.tasks.m
 **Prior state.** `DEFAULT_STATES` (SPEC-100 §2.5) seeds six columns and no review column, and three
 clauses say so on purpose: SPEC-050 §2.5.1 closes its list with "There is no `In Review`", SPEC-100 §11
 repeats it in the D-013 bullet, and D-013 itself fixed the seed at six. The column is not new to the
-corpus, only absent from it: SPEC-050 §2.5.3 records that the pre-D-013 bespoke list **had** `In Review`
-(and omitted `Triage`), and SPEC-050 §2.7 still uses it as the example of a state a user creates by hand,
-at `4.5`, type `started`, colour `#BB87FC`. What the six-state seed cannot express is the phase this
-work spends most of its time in: HIFA-31 has been open since 2026-11-13 and every day of it was a review.
+corpus, only absent from it: SPEC-050 §11 records (spec_revision 3, D-013) that the pre-D-013 bespoke
+list **had** `In Review` (and omitted `Triage`), and SPEC-050 §2.7 still uses it as the example of a state
+a user creates by hand, at `4.5`, type `started`, colour `#BB87FC`. What the six-state seed cannot
+express is the phase this work spends most of its time in: HIFA-31 has been open since 2026-11-13 and
+every day of it was a review.
 
 **Resolution: one `In Review`, shared by spec review and code review, seeded between `In Progress` and
 `Done`.** The issue asked whether there should be one state per review phase or one shared state; this is
@@ -2359,8 +2360,9 @@ distinction would live only in the two names.
 | 5.0 | `Done` | `completed` | `#5E6AD2` | 0 |
 | 6.0 | `Canceled` | `canceled` | `#95A2B3` | 0 |
 
-- **`type = started`, and this is the first type the template carries twice.** `type` is the fixed
-  semantic bucket that survives a rename (SPEC-020 §9) and it answers one question: is the work open.
+- **`type = started`, and it is the type the template carries twice** — the pre-D-013 bespoke list had a
+  state named `In Review` too, until D-013 removed it (SPEC-050 §11, spec_revision 3). `type` is the
+  fixed semantic bucket that survives a rename (SPEC-020 §9) and it answers one question: is the work open.
   `v_issue.is_open` is `type NOT IN ('completed','canceled')` (SPEC-010 §3.2), so `started` keeps an issue
   under review on the board, inside `open_count` and inside every `--open` listing — a change in review is
   not finished work. `completed` would count it as closed before it is merged **and** would set

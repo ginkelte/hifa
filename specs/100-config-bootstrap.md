@@ -921,8 +921,10 @@ Feature: Configuration, bootstrap and database diagnostics
   `started` and colour `#BB87FC` — the values SPEC-050 §2.7 already printed for a hand-created
   `In Review`, and the position `between(4.0, 5.0)` yields. No state that exists today changes its
   number, so a fresh team and a six-state team that runs `hifa state create 'In Review' --type started
-  --color '#BB87FC' --before Done` (SPEC-050 §2.5.6) hold the same seven. `started` is the first type the
-  template carries twice, which is why §3.1 invariant 3 counts rows **per type** instead of one per type.
+  --color '#BB87FC' --before Done` (SPEC-050 §2.5.6) hold the same seven. `started` is the type the
+  template carries twice — the pre-D-013 bespoke list had a state named `In Review` too, until D-013
+  removed it (SPEC-050 §11, spec_revision 3) — which is why §3.1 invariant 3 counts rows **per type**
+  instead of one per type.
   No data migration is written and §3.1's `schema_migration` count is untouched: the old team is one
   command away (D-058).
 - **spec_revision 6 (2026-11-11): `init` writes `.hifa.toml` only inside a git work tree (D-041,
