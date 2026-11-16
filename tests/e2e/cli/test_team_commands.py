@@ -203,17 +203,17 @@ def test_create_rejects_an_unknown_visibility(sandbox: SimpleNamespace, visibili
     assert scalar(sandbox.db, "SELECT COUNT(*) FROM team WHERE key = 'OPS'") == 0
 
 
-def test_create_seeds_the_six_states_with_todo_as_default(sandbox: SimpleNamespace) -> None:
+def test_create_seeds_the_seven_states_with_todo_as_default(sandbox: SimpleNamespace) -> None:
     assert run("team", "create", "OPS", "Operations").exit_code == 0
 
-    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workflow_state") == 12
+    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workflow_state") == 14
     assert (
         scalar(
             sandbox.db,
             "SELECT COUNT(*) FROM workflow_state s JOIN team t ON t.id = s.team_id"
             " WHERE t.key = 'OPS'",
         )
-        == 6
+        == 7
     )
     assert (
         scalar(
@@ -392,10 +392,11 @@ def test_show_states_json_is_sorted_by_position(sandbox: SimpleNamespace) -> Non
         "Todo",
         "Backlog",
         "In Progress",
+        "In Review",
         "Done",
         "Canceled",
     ]
-    assert [state["position"] for state in states] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert [state["position"] for state in states] == [1.0, 2.0, 3.0, 4.0, 4.5, 5.0, 6.0]
     assert all(list(state) == STATE_KEYS for state in states)
     assert [state["is_default"] for state in states].count(True) == 1
 
@@ -411,7 +412,7 @@ def test_show_states_human_lists_the_names(sandbox: SimpleNamespace) -> None:
     result = run("team", "show", "ENG", "--states")
 
     assert result.exit_code == 0, out(result)
-    assert "6 (Triage, Todo*, Backlog, In Progress, Done, Canceled)" in result.stdout
+    assert "7 (Triage, Todo*, Backlog, In Progress, In Review, Done, Canceled)" in result.stdout
 
 
 def test_show_with_an_unknown_key_exits_three(sandbox: SimpleNamespace) -> None:

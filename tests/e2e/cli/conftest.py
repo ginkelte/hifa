@@ -198,7 +198,7 @@ class Cli:
 
 @pytest.fixture
 def cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Cli:
-    """Initialized workspace with team ENG and its six default workflow states."""
+    """Initialized workspace with team ENG and its seven default workflow states."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / ".git").mkdir()

@@ -2,7 +2,8 @@
 Feature: Database initialization and bootstrap
 
   # A user with no previous database runs `hifa init` and gets a usable tracker with
-  # 1 workspace, 1 team, 6 workflow states (D-013), 4 labels and 1 member.
+  # 1 workspace, 1 team, 7 workflow states (D-013, the shared `In Review` of D-058), 4 labels
+  # and 1 member.
   # The current schema is user_version = 3 (migrations 001/002/003 from SPEC-010).
 
   @REQ-F001 @smoke
@@ -13,10 +14,12 @@ Feature: Database initialization and bootstrap
     And the file "/tmp/h1/hifa.db" exists
     And the user_version of the database is 3
     And the table "schema_migration" has 3 rows with versions 1, 2 and 3
-    And there are 6 rows in "workflow_state" with positions 1.0 to 6.0
+    And there are 7 rows in "workflow_state" with positions 1.0, 2.0, 3.0, 4.0, 4.5, 5.0 and 6.0
     And the state "Triage" has type "triage"
     And the state "Todo" has type "unstarted" and is_default 1
     And the state "Todo" has position 2.0 and the state "Backlog" has position 3.0
+    And the state "In Review" has type "started" and position 4.5
+    And the state "In Progress" has type "started" and position 4.0
     And exactly one workflow_state has is_default 1
     And there are 4 rows in "label" with names "Bug", "Feature", "Improvement" and "Docs"
     And the 4 labels have a null team_id
@@ -33,12 +36,12 @@ Feature: Database initialization and bootstrap
 
   @REQ-F002 @smoke
   Scenario: a second init run does not duplicate data
-    Given a database initialized with 1 team, 6 states, 4 labels and 1 member
+    Given a database initialized with 1 team, 7 states, 4 labels and 1 member
     When I run "hifa init --db /tmp/h1/hifa.db" a second time
     Then the exit code is 0
     And stdout contains "already initialized"
     And the count of "team" is still 1
-    And the count of "workflow_state" is still 6
+    And the count of "workflow_state" is still 7
     And the count of "label" is still 4
 
   @REQ-F003 @smoke

@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 4
-spec_revision: 21
+spec_revision: 22
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -1774,7 +1774,7 @@ Feature: hifa web dashboard
     Given a team ENG with 4 issues spread across 2 states
     When GET /ENG/board is requested
     Then the status is 200
-    And the HTML contains 6 columns in position order
+    And the HTML contains 7 columns in position order
     And each column shows its count
     And the HTML contains no inline script tags
 
@@ -1878,7 +1878,7 @@ Feature: hifa web dashboard
     Given a team ENG created with the canonical states
     When GET /ENG/board is requested
     Then the status is 200
-    And the columns appear in the order "Triage", "Todo", "Backlog", "In Progress", "Done", "Canceled"
+    And the columns appear in the order "Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"
     And every column carries a data-state-id and a data-position attribute
 
   Scenario: dropping a column persists the new position
@@ -2117,6 +2117,13 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 22 (2026-11-16): **the board a new team gets is seven columns (D-058).** The template
+  gains one shared `In Review` between `In Progress` and `Done` (SPEC-100 §2.5), so §7's two column
+  assertions move from six to seven and list the new name in place; nothing of this layer's contract
+  moves with them. The columns were already derived from `workflow_state.position` (§2.3.2, R25), so
+  the board renders the new column with no template, read-model or fragment change, and the drag of
+  §2.6.5 reorders it like any other. A team seeded before the decision gets it through that same drag or
+  through `hifa state update` (SPEC-050 §2.5.6), never through a migration (D-058).
 - spec_revision 21 (2026-11-16): **the write guard — a state-changing request from another origin is
   refused before the route runs, and a request carrying no origin information is allowed (D-057).**
   The layer could be told no in two ways and neither was about the caller: R18's `403` is the *process*

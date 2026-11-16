@@ -6,15 +6,20 @@ regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Tem
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
 **11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 3` / `spec_revision: 6`
 after the engine change of D-039 and the governed outcome classifier of D-040). Accepted debt P-01…P-09 in
-[`DECISIONS.md`](./DECISIONS.md) (**57 decisions: D-001 … D-057**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
+[`DECISIONS.md`](./DECISIONS.md) (**58 decisions: D-001 … D-058**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
 
-**State order and state commands (D-034, D-035):** the canonical seed is
-`Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · Done(5.0) ·
-Canceled(6.0)` — `Todo` sits **before** `Backlog`, and SPEC-100 §2.5 is the only template.
+**State order and state commands (D-034, D-035, D-058):** the canonical seed is
+`Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · In Review(4.5) ·
+Done(5.0) · Canceled(6.0)` — `Todo` sits **before** `Backlog`, and the single `In Review` of type
+`started` serves spec review and code review alike, so `started` is the one type the seed carries
+twice (SPEC-100 §3.1 invariant 3 counts rows per type). SPEC-100 §2.5 is the only template.
 `hifa state list|create|update` is the CLI surface for it (SPEC-050 §2.5.6), and the board
 columns can be dragged, persisted through `POST /_/states/{id}/position`
 (SPEC-070 §2.6.5, R25). Existing teams are reordered with a command or a drag, **never** with a
-data migration. Archiving or deleting a state is deferred (D-035): no verb is published for it,
+data migration: a team seeded before the review column existed gains it with
+`hifa state create 'In Review' --type started --color '#BB87FC' --before Done`, which lands at the
+`4.5` a new team's seed uses and moves no state that already exists (D-058). Archiving or deleting a
+state is deferred (D-035): no verb is published for it,
 because what happens to the issues that live in the state is undefined.
 
 **Deferred on purpose (D-031):** `hifa team archive` is **not** part of the CLI surface —
@@ -79,8 +84,8 @@ enforced for every other actor (D-036).
 
 ## Acceptance criteria
 
-`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 198 scenarios**
-(186 `Scenario` + 12 `Scenario Outline`, each outline counted once),
+`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 199 scenarios**
+(187 `Scenario` + 12 `Scenario Outline`, each outline counted once),
 all with exactly one `When` (verified by parsing every file with `gherkin-official`).
 The per-component Gherkin lives **inline** in each spec (§7); the individual `.feature` files are
 debt P-01 in `DECISIONS.md`.

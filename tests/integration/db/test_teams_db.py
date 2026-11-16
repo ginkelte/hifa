@@ -1,6 +1,6 @@
 """Integration tests for `create_team` against a real migrated database.
 
-They prove the atomicity the contract asks for: the workspace, the team and its six states are
+They prove the atomicity the contract asks for: the workspace, the team and its seven states are
 one transaction, so a failure while inserting a state leaves **no** team behind.
 """
 
@@ -47,7 +47,7 @@ def _count(db: Path, table: str) -> int:
     return int(_rows(db, f"SELECT COUNT(*) AS n FROM {table}")[0]["n"])
 
 
-def test_create_team_seeds_workspace_six_states_and_todo_default(db_path: Path) -> None:
+def test_create_team_seeds_workspace_seven_states_and_todo_default(db_path: Path) -> None:
     _prepare(db_path)
     uow = _uow(db_path)
     try:
@@ -69,11 +69,12 @@ def test_create_team_seeds_workspace_six_states_and_todo_default(db_path: Path) 
         ("Todo", "unstarted", 2.0),
         ("Backlog", "backlog", 3.0),
         ("In Progress", "started", 4.0),
+        ("In Review", "started", 4.5),
         ("Done", "completed", 5.0),
         ("Canceled", "canceled", 6.0),
     ]
     assert [row["name"] for row in states if row["is_default"]] == ["Todo"]
-    assert len({row["color"] for row in states}) == 5
+    assert len({row["color"] for row in states}) == 6
 
 
 def test_a_second_team_reuses_the_workspace(db_path: Path) -> None:
@@ -88,7 +89,7 @@ def test_a_second_team_reuses_the_workspace(db_path: Path) -> None:
     assert first.workspace_id == second.workspace_id
     assert _count(db_path, "workspace") == 1
     assert _count(db_path, "team") == 2
-    assert _count(db_path, "workflow_state") == 12
+    assert _count(db_path, "workflow_state") == 14
 
 
 def test_duplicate_key_is_a_conflict_and_writes_nothing(db_path: Path) -> None:
@@ -103,7 +104,7 @@ def test_duplicate_key_is_a_conflict_and_writes_nothing(db_path: Path) -> None:
 
     assert caught.value.rule == "UNIQUE_TEAM_KEY"
     assert _count(db_path, "team") == 1
-    assert _count(db_path, "workflow_state") == 6
+    assert _count(db_path, "workflow_state") == 7
 
 
 def test_a_failing_state_insert_leaves_no_orphan_rows(

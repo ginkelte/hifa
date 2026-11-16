@@ -1,6 +1,6 @@
 """Workspace bootstrap for `hifa init`.
 
-`bootstrap` seeds in **one** transaction: 1 `workspace`, 1 `team`, the 6 canonical
+`bootstrap` seeds in **one** transaction: 1 `workspace`, 1 `team`, the 7 canonical
 `workflow_state` rows (`Todo` with `is_default=1`), the 4 workspace `label`s,
 1 local `member` and its `team_membership`. Every step is *get-or-create* by natural key:
 a second run returns `created=[]` and `already_initialized=True`.
@@ -37,13 +37,18 @@ from hifa.domain.ranking import UNIT_GAP, between, last
 from hifa.ports import Clock, IdGen
 
 #: Default states: `(name, type, color, position, is_default)`.
-#: `Todo` sits between `Triage` and `Backlog` and is the default one: the canonical
-#: order is Triage · Todo · Backlog · In Progress · Done · Canceled.
+#: Seven columns in the canonical order: Triage · Todo · Backlog · In Progress ·
+#: In Review · Done · Canceled. `Todo` sits between `Triage` and `Backlog` and is the
+#: default one; `In Review` sits at `4.5`, between `In Progress` (4.0) and `Done` (5.0),
+#: so no other state changes its number. `In Review` is of type `started` — the only type
+#: the template carries twice — because the card waiting on a review is the same open
+#: work, not a closed one.
 DEFAULT_STATES: tuple[tuple[str, str, str, float, int], ...] = (
     ("Triage", "triage", "#6B6F76", 1.0, 0),
     ("Todo", "unstarted", "#E2E2E2", 2.0, 1),
     ("Backlog", "backlog", "#6B6F76", 3.0, 0),
     ("In Progress", "started", "#F2C94C", 4.0, 0),
+    ("In Review", "started", "#BB87FC", 4.5, 0),
     ("Done", "completed", "#5E6AD2", 5.0, 0),
     ("Canceled", "canceled", "#95A2B3", 6.0, 0),
 )
@@ -252,7 +257,7 @@ def bootstrap(
         else:
             skipped.append("team")
 
-        # 3. the 6 workflow_state rows (by team_id, name)
+        # 3. the 7 workflow_state rows (by team_id, name)
         for state_name, state_type, color, position, is_default in DEFAULT_STATES:
             label = f"workflow_state:{state_name}"
             if repos.states.get_by_name(team.id, state_name) is not None:
@@ -435,15 +440,15 @@ def _reject_default_state(value: str | None) -> None:
             "default_state is not supported yet",
             code="NOT_IMPLEMENTED",
             field="default_state",
-            hint="the six canonical states always mark Todo as default",
+            hint="the seven canonical states always mark Todo as default",
         )
 
 
 def create_team(uow: UnitOfWork, cmd: CreateTeam, actor: Actor) -> Team:
-    """Create a team and its six canonical states in **one** transaction.
+    """Create a team and its seven canonical states in **one** transaction.
 
     The workspace is created when it is missing and reused otherwise; `DEFAULT_STATES` is the
-    only source of the six states, so `create_team` and `bootstrap` cannot drift apart. A key
+    only source of the seven states, so `create_team` and `bootstrap` cannot drift apart. A key
     collision raises `Conflict(rule='UNIQUE_TEAM_KEY')` before any insert; any other failure
     rolls the whole write back, so a team is never left without its states. `actor` is accepted
     for signature symmetry with the rest of `app/`: `team` has no history table.

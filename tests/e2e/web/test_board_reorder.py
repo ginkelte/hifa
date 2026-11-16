@@ -24,7 +24,7 @@ HTMX = {"HX-Request": "true"}
 # Scope to the column element: issue cards carry `data-state-id` too, so a bare
 # `data-state-id="..."` search mixes columns and cards.
 STATE_IDS = re.compile(r'<section class="column" data-state-id="([^"]+)"')
-CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "Done", "Canceled"]
+CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"]
 
 
 def _run(*args: str) -> None:
@@ -124,6 +124,7 @@ def test_position_with_the_header_answers_204_and_persists_the_order(
         "Canceled",
         "Backlog",
         "In Progress",
+        "In Review",
         "Done",
     ]
     assert _board_order(seeded.client) == [seeded.states[name] for name in expected]
@@ -202,7 +203,15 @@ def test_position_accepts_two_neighbours_and_lands_between_them(
     )
 
     assert response.status_code == 204
-    expected = ["Triage", "Todo", "Canceled", "Backlog", "In Progress", "Done"]
+    expected = [
+        "Triage",
+        "Todo",
+        "Canceled",
+        "Backlog",
+        "In Progress",
+        "In Review",
+        "Done",
+    ]
     assert _board_order(seeded.client) == [seeded.states[name] for name in expected]
     with sqlite3.connect(seeded.db) as conn:
         position = conn.execute(

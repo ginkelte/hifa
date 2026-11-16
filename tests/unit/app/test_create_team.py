@@ -2,7 +2,7 @@
 
 The transaction itself is covered by `tests/integration/db/test_teams_db.py`; here we pin the
 validation rules and the shape of what the use case writes: key normalization, defaults,
-workspace creation and the six canonical states taken from `DEFAULT_STATES`.
+workspace creation and the seven canonical states taken from `DEFAULT_STATES`.
 """
 
 from __future__ import annotations
@@ -214,11 +214,11 @@ def test_existing_workspace_is_reused() -> None:
 # --- states -------------------------------------------------------------------------------
 
 
-def test_six_canonical_states_are_inserted_with_todo_as_default() -> None:
+def test_seven_canonical_states_are_inserted_with_todo_as_default() -> None:
     uow, _, states = build()
     team = create_team(uow, CreateTeam(key="OPS", name="Operations"), Actor())
 
-    assert len(states.inserted) == 6
+    assert len(states.inserted) == 7
     assert [
         (state.name, state.type, state.position, state.is_default, state.color)
         for state in states.inserted
@@ -228,4 +228,4 @@ def test_six_canonical_states_are_inserted_with_todo_as_default() -> None:
     ]
     assert [state.name for state in states.inserted if state.is_default] == ["Todo"]
     assert all(state.team_id == team.id for state in states.inserted)
-    assert len({state.id for state in states.inserted}) == 6
+    assert len({state.id for state in states.inserted}) == 7

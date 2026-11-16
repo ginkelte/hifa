@@ -71,7 +71,7 @@ def init_command(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="IDs only."),
     no_color: bool = typer.Option(False, "--no-color", help="No color."),
 ) -> None:
-    """Initialize a workspace: workspace, team, 6 states, labels and the local member."""
+    """Initialize a workspace: a team, seven states, four labels and the local member."""
     root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
     json_mode = bool(json_output or root.json)
     quiet_mode = bool(quiet or root.quiet)

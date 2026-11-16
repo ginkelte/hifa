@@ -2311,3 +2311,161 @@ first comparison), `::test_an_origin_of_the_served_authority_is_accepted`,
 `::test_read_only_keeps_its_own_403`. Plus `::test_every_state_changing_route_is_covered`, which enumerates
 `app.routes` (P8) — the reason this lands before T-20.1 adds its four page routes and their four
 fragments.
+
+## D-058 — One shared `In Review` column, seeded between `In Progress` and `Done` at 4.5
+
+**Date:** 2026-11-16 · **Wins:** SPEC-100 §2.5 · **Touches:** SPEC-100 §1, §2.5, §2.7, §3.1, §4.2, §5,
+§7, §8, §9, Notes; SPEC-050 §2.5.1, §2.5.2, §2.5.6, §2.7, §7, Notes; SPEC-070 §7, Notes; SPEC-040
+REQ-F040-14, §7, §9, Notes; SPEC-001 REQ-F001, §9, Notes; `001-mvp-v1.tasks.md` (T-04, T-21);
+`01-init.feature`, `02-teams-workflow-states.feature`, `06-board-ranking.feature`; `INDEX.md`
+
+**Prior state.** `DEFAULT_STATES` (SPEC-100 §2.5) seeds six columns and no review column, and three
+clauses say so on purpose: SPEC-050 §2.5.1 closes its list with "There is no `In Review`", SPEC-100 §11
+repeats it in the D-013 bullet, and D-013 itself fixed the seed at six. The column is not new to the
+corpus, only absent from it: SPEC-050 §11 records (spec_revision 3, D-013) that the pre-D-013 bespoke
+list **had** `In Review` (and omitted `Triage`), and SPEC-050 §2.7 still uses it as the example of a state
+a user creates by hand, at `4.5`, type `started`, colour `#BB87FC`. What the six-state seed cannot
+express is the phase this work spends most of its time in: HIFA-31 has been open since 2026-11-13 and
+every day of it was a review.
+
+**Resolution: one `In Review`, shared by spec review and code review, seeded between `In Progress` and
+`Done`.** The issue asked whether there should be one state per review phase or one shared state; this is
+the shared one, because
+
+- **the unit under review does not change when the phase does.** Same issue, same branch, same change:
+  going from "the spec is under review" to "the code is under review" is the same card read twice, not a
+  second card, so two columns would hold the same work twice, in sequence, with one name each.
+- **the corpus's own review is two stages of one change**, and both end at the same event — the merge — so
+  the board's question ("where is this work") has one answer for both stages.
+- **the stage is already recorded where a reader looks for it**: the PR says which review it waits on and
+  `issue_history` says when the card moved. A second column would duplicate that with no room for the
+  reason, which is the part a reader needs.
+
+The alternative — `In Spec Review` and `In Code Review` — costs a template of eight columns for every new
+team, two drags per change, and a rule for the round trip when the code review sends the work back to the
+spec: the issue would move backwards into a column it had already left, writing two `issue_history` rows
+and two `updated_at` bumps for one loop. Both columns would also carry the same `type` (`started`), so no
+read of the corpus — the state-type filter, `is_open`, the WIP counts — would tell them apart, and the
+distinction would live only in the two names.
+
+### The seed
+
+| position | name | type | colour | `is_default` |
+|---|---|---|---|---|
+| 1.0 | `Triage` | `triage` | `#6B6F76` | 0 |
+| 2.0 | `Todo` | `unstarted` | `#E2E2E2` | 1 |
+| 3.0 | `Backlog` | `backlog` | `#6B6F76` | 0 |
+| 4.0 | `In Progress` | `started` | `#F2C94C` | 0 |
+| **4.5** | **`In Review`** | **`started`** | **`#BB87FC`** | **0** |
+| 5.0 | `Done` | `completed` | `#5E6AD2` | 0 |
+| 6.0 | `Canceled` | `canceled` | `#95A2B3` | 0 |
+
+- **`type = started`, and it is the type the template carries twice** — the pre-D-013 bespoke list had a
+  state named `In Review` too, until D-013 removed it (SPEC-050 §11, spec_revision 3). `type` is the
+  fixed semantic bucket that survives a rename (SPEC-020 §9) and it answers one question: is the work open.
+  `v_issue.is_open` is `type NOT IN ('completed','canceled')` (SPEC-010 §3.2), so `started` keeps an issue
+  under review on the board, inside `open_count` and inside every `--open` listing — a change in review is
+  not finished work. `completed` would count it as closed before it is merged **and** would set
+  `completed_at` on the way into review, because SPEC-040 §4.1 R7 derives the milestone from the
+  destination type. A seventh type is not on the table: it would change the CHECK of SPEC-010, the
+  `WorkflowStateType` enum of SPEC-020 and the two vocabularies built on it (`--state-type` of
+  `issue list`, `--type` of `state create`), for a column one of the six types already covers. The price
+  of reusing `started` is one invariant: SPEC-100 §3.1 can no longer say "one state per type", and it now
+  says one row per type with `started` twice.
+- **`position = 4.5`, the midpoint of the slot the column describes.** `domain.ranking.between(4.0, 5.0)`
+  is `4.5`, which is exactly what `hifa state create 'In Review' --type started --color '#BB87FC'
+  --before Done` computes on a team that
+  still has six states — so a fresh team and an existing team that ran the documented command hold the
+  **same seven numbers**, and no state that exists today changes its stored position (`Done` stays `5.0`,
+  `Canceled` stays `6.0`). Every clause that reads "positions 1.0 to 6.0" stays true. The rejected
+  alternative was renumbering to `1.0…7.0` so the seed is a plain ordinal: it would move `Done` to `6.0`
+  and `Canceled` to `7.0` for every **new** team while every existing team keeps `5.0`/`6.0`, so two
+  teams in one workspace would print different numbers for the same column, the seed's `In Review` (`5.0`)
+  would differ from the value its own documented command produces on an old team (`4.5`), and the range
+  clauses of SPEC-050 §2.5.6 and `01-init.feature` would have to be rewritten to say nothing more.
+- **`colour = #BB87FC`.** It is the colour SPEC-050 §2.7 already prints for a hand-created `In Review`, it
+  is inside the palette the dashboard already draws (it is the `Feature` label of SPEC-100 §2.5
+  `DEFAULT_LABELS`), and it sits between the yellow of `In Progress` and the indigo of `Done` without
+  repeating either. That a colour is shared with a label, or between two states, is established:
+  `#6B6F76` is both `Triage` and `Backlog`, because a state colour is a dot on a column header, not a
+  key.
+- **`is_default` stays on `Todo`.** Untouched, so `create_issue` with no `--state` still lands where it
+  did and the "exactly one default" invariant of SPEC-100 §3.1 is untouched.
+
+### Existing teams get the column with one command
+
+A seed reaches `hifa init` and `create_team` and nothing else, so the six-state teams already on the real
+board keep six columns until their owner acts. The operator runs, once per team:
+
+```
+hifa state create 'In Review' --type started --color '#BB87FC' --before Done
+```
+
+(SPEC-050 §2.5.6.) `--before Done` resolves the anchor, computes `between(4.0, 5.0)` on the server and
+sends `CreateState(position=4.5)` — the seed's own number, through the seed's own arithmetic, with no flag
+that carries a float. Two outcomes, both correct: exit `0` with the new row, or exit `4`
+`Conflict(UNIQUE_STATE_NAME)` when the team already has a state of that name — which is the case the
+corpus's own CLI example produces, since creating `In Review` by hand is what a team does before this
+decision exists. There the reconciliation is `hifa state update 'In Review' --before Done`, which moves the
+column instead of creating it.
+
+### No migration, and that is a decision
+
+`workflow_state` rows are user data, so no migration writes them. Three reasons, and the third is
+specific to this column:
+
+1. **A column set is not a schema.** An owner who renamed, deleted or reordered a column has a board a
+   `INSERT … SELECT` cannot respect: the migration would not know whether that team wants a review column
+   at all, nor where its owner put `Done`.
+2. **A migration could not tell "the column exists" from "a different column with that name".** A team
+   that already created `In Review` by hand (SPEC-050 §2.7, `02-teams-workflow-states.feature`) collides
+   with the seeded row, and both candidate behaviours — skip and overwrite — are wrong for one of the two
+   teams.
+3. **R25 already says it for this table.** An existing team is reordered with the route or with
+   `hifa state update`, never with a migration (SPEC-070 R25, D-034). This decision does not open a second
+   mechanism for the same column; it uses the one that exists, and `schema_migration` keeps its 3 rows,
+   which `02-teams-workflow-states.feature` asserts.
+
+### The CI check is dropped
+
+The last item of HIFA-31 reads "ideally a `scripts/` check that fails CI when a merged PR has no issue in
+`Done` referencing it". The board it would read is the local SQLite file (`*.db` is in `.gitignore`, and
+`git ls-files` tracks no `.db`): CI checks out the repository, so the state of an issue is not an input
+any job has. The two halves of that check are not equally reachable:
+
+- **The reference half is reachable and proves nothing.** A workflow can read `pull_request.body` and
+  require an identifier matching `^[A-Z][A-Z0-9]{1,9}-[0-9]+$`. That is a statement about a string in a
+  form, and it goes green for a PR whose issue is in `In Review`, in `Backlog` or deleted.
+- **The state half is not reachable.** No job can read the file; `hifa doctor` reads the database and
+  nothing else and has no network (A4); a release-checklist item in SPEC-110 would be executed by the same
+  pipeline with the same blind spot.
+
+Writing the first half would leave the corpus claiming that a merged PR has a tracked issue in `Done`
+while the only evidence is a regex over a body — a check that fails CI for a formatting mistake and
+passes a PR nobody tracked. **So no script, no workflow, no `doctor` finding and no checklist item is
+specified here.** What closes the loop is the pair that already exists and is delivered: the move verb,
+`hifa issue move REF --state Done` (`src/hifa/cli/commands/issue.py`, T-06), and the agent rule kept
+outside this repository, which requires the issue to be on the board and moved by the agent that merged.
+The price, stated: nothing mechanical detects a merged PR whose issue was left in `In Review`. The
+detector is the person reading the board — and the new column is what makes that state visible instead of
+hiding it inside `In Progress`.
+
+### Scope and the losing specs
+
+No new verb, route, field, table or enum value: `DEFAULT_STATES` gains one row, and the counts that
+depended on six move to seven. `version` is unchanged in every spec — D-034 set that precedent for this
+same tuple, because the seed is data and no signature, command, endpoint or enum moves. The §2.5.4
+wireframe of SPEC-070 draws four columns of one sample board and is not the template, so it stays.
+
+The clauses that said "there is no `In Review`" are corrected rather than deleted (SPEC-050 §2.5.1,
+SPEC-100 §11's D-013 bullet), the counts of SPEC-100 §1/§3.1/§4.2/§5/§7/§8 and SPEC-040 REQ-F040-14/§7,
+SPEC-050 §2.5.1/§2.5.2/§2.7/§7 and SPEC-001 REQ-F001 move to seven, the two `state create` scenarios that
+used `In Review` as the example of a **custom** state use a name that is not in the template, and the
+canonical-order scenarios of `01-init.feature`, `02-teams-workflow-states.feature` and
+`06-board-ranking.feature` list the seven names. `02-teams-workflow-states.feature` also gains the
+existing-team path as a scenario, so the one-command route cannot rot into a claim.
+
+**Verification.** The code side is T-21: `DEFAULT_STATES` in `src/hifa/app/teams.py` and the tests that
+pin it (`tests/unit/app/test_create_team.py`, `tests/integration/app/test_state_reorder_db.py`, whose
+position list is `[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]` today). This branch is the spec change only; the drift
+is the reason for the `spec_revision` bump and closes when T-21 lands.

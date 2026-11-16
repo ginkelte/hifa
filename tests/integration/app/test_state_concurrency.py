@@ -24,7 +24,7 @@ from typer.testing import CliRunner
 from hifa.cli.main import app as cli_app
 
 runner = CliRunner()
-CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "Done", "Canceled"]
+CANONICAL = ["Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"]
 
 # Runs the real CLI in a fresh interpreter: `app()` reads sys.argv[1:].
 BOOTSTRAP = "from hifa.cli.main import app; app()"

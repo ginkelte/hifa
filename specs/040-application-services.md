@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 21
+spec_revision: 22
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/040-application-services.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-13
+updated: 2026-11-16
 ---
 
 # SPEC-040 — Application services
@@ -1312,7 +1312,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-11** | `unrelate_issues` deletes the relation and writes history; if it does not exist, `NotFound(resource='relation')` |
 | **REQ-F040-12** | `comment_on_issue` validates `body`, requires `parent_id` to be a comment of the same issue and sets `author_id` from the actor |
 | **REQ-F040-13** | `resolve_comment` sets `resolved_at` only once (idempotent) and returns the comment |
-| **REQ-F040-14** | `create_team` creates the workspace if missing, inserts the team and its 6 default states, all in one transaction |
+| **REQ-F040-14** | `create_team` creates the workspace if missing, inserts the team and its 7 default states, all in one transaction |
 | **REQ-F040-15** | `archive_team` rejects with `Validation(rule='TEAM_HAS_OPEN_ISSUES')` if there are open issues |
 | **REQ-F040-16** | `create_project`/`update_project`/`archive_project` write only `project` and validate `team` and the date range |
 | **REQ-F040-17** | `add_milestone` requires the project to exist and validates `target_date`; the name is unique per project |
@@ -1929,11 +1929,11 @@ Feature: Application use cases
     And resolved_at did not change between the first and the second call
 
   @REQ-F040-14
-  Scenario: creating a team creates the workspace and the six states
+  Scenario: creating a team creates the workspace and the seven states
     Given a migrated database without workspace or teams
     When create_team is run with key "ENG" and name "Engineering"
     Then a workspace exists
-    And the ENG team has 6 workflow_state, one per type
+    And the ENG team has 7 workflow_state covering the six types, with started twice
     And exactly one has is_default 1
 
   @REQ-F040-15
@@ -2192,8 +2192,11 @@ Feature: Application use cases
   without replaying history. Keeping `started_at` when reopening is the author's decision, 2026-11-08.
 - **Directional `blocks` with `blocked_by` as a non-stored inverse**: `issue_relation.type` of
   SPEC-010, stored once and read backwards for the inverse.
-- **Default state of a new team: 6 workflow_state (Backlog, Todo, In Progress, In Review,
-  Done, Canceled)**: the exact names are Ginkelte's decision, 2026-11-08.
+- **Default state of a new team: the 7 `workflow_state` of SPEC-100 §2.5** (`Triage`, `Todo`,
+  `Backlog`, `In Progress`, `In Review`, `Done`, `Canceled`): the names are Ginkelte's decision,
+  2026-11-08, and this bullet no longer carries a copy of the list — the template has one owner, and the
+  copy here had drifted from it (it had `In Review` and no `Triage`). `In Review` returns as one shared
+  column for both review phases, seeded at `4.5` (D-058).
 - **History per column instead of a change blob**: `issue_history` table of SPEC-010 §3.1;
   the `(field, old_value, new_value)` format is what makes "who changed what" queryable without
   parsing JSON.
@@ -2219,6 +2222,14 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 22 (2026-11-16): **the seed `create_team` writes is seven states wide (D-058).**
+  REQ-F040-14 counts seven, and the §7 scenario stops claiming "one per type": the shared `In Review`
+  carries `started`, the same type as `In Progress`, so a team seeded by this layer holds one type twice
+  and the six types remain six. Nothing in this layer changes with it — `create_team` still iterates the
+  tuple and writes it in one transaction — and §9's provenance bullet stops restating the list, which had
+  drifted from SPEC-100 §2.5 for a year. The use cases of `state` are untouched: `create_state` already
+  accepted a type that another state of the team carries, and no uniqueness rule on `type` exists in
+  SPEC-010 or SPEC-020 to relax. `version` stays at 3: no signature, command field or error code moves.
 - spec_revision 21 (2026-11-13): **the web edge does not send `rebalance`, and it was never able to
   (D-052).** The third row of §5.2 described the payload as `{state_id, sort_order, rebalance?}` and
   built `rebalance=true` "if the client's gap was `< 1e-4`": SPEC-070 R9/R10 declare

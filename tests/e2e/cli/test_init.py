@@ -27,6 +27,7 @@ EXPECTED_STATES = [
     ("Todo", "unstarted"),
     ("Backlog", "backlog"),
     ("In Progress", "started"),
+    ("In Review", "started"),
     ("Done", "completed"),
     ("Canceled", "canceled"),
 ]
@@ -104,17 +105,59 @@ def test_init_human_output_mentions_initialized(sandbox: SimpleNamespace) -> Non
     assert "next: hifa issue create" in result.stdout
 
 
-def test_init_seeds_the_six_canonical_states(sandbox: SimpleNamespace) -> None:
+def test_init_seeds_the_seven_canonical_states(sandbox: SimpleNamespace) -> None:
+    """The seven seeded states come back in the canonical order.
+
+    Pins the order of the names only — Triage, Todo, Backlog, In Progress, In Review, Done,
+    Canceled — read back with `ORDER BY position`. The columns of each state (type, position,
+    colour, `is_default`) belong to
+    `test_init_seeds_seven_states_and_in_review_sits_at_four_point_five`; this cheaper check
+    survives an edit to that richer test and still catches a state inserted in the wrong slot.
+    """
     run("init")
-    rows = query(sandbox.db, "SELECT name, type FROM workflow_state ORDER BY position")
-    assert [(row["name"], row["type"]) for row in rows] == EXPECTED_STATES
+    rows = query(sandbox.db, "SELECT name FROM workflow_state ORDER BY position")
+    assert [row["name"] for row in rows] == [name for name, _ in EXPECTED_STATES]
+
+
+def test_init_seeds_seven_states_and_in_review_sits_at_four_point_five(
+    sandbox: SimpleNamespace,
+) -> None:
+    """The review column is part of the seed, between `In Progress` and `Done`.
+
+    Read back from the database rather than from the printed block: the order, the fractional
+    position of the seventh state and its type are what a fresh team's board shows.
+    """
+    run("init")
+    rows = query(
+        sandbox.db,
+        "SELECT name, type, color, position, is_default FROM workflow_state ORDER BY position",
+    )
+
+    assert len(rows) == 7
+    assert [
+        (row["name"], row["type"], row["position"], row["color"], row["is_default"]) for row in rows
+    ] == [
+        ("Triage", "triage", 1.0, "#6B6F76", 0),
+        ("Todo", "unstarted", 2.0, "#E2E2E2", 1),
+        ("Backlog", "backlog", 3.0, "#6B6F76", 0),
+        ("In Progress", "started", 4.0, "#F2C94C", 0),
+        ("In Review", "started", 4.5, "#BB87FC", 0),
+        ("Done", "completed", 5.0, "#5E6AD2", 0),
+        ("Canceled", "canceled", 6.0, "#95A2B3", 0),
+    ]
+    # `started` is carried twice and the default stays with `Todo`: the review column does
+    # not take it away.
+    assert [row["name"] for row in rows if row["type"] == "started"] == [
+        "In Progress",
+        "In Review",
+    ]
 
 
 def test_init_has_exactly_one_default_state_and_it_is_todo(sandbox: SimpleNamespace) -> None:
     run("init")
     assert scalar(sandbox.db, "SELECT COUNT(*) FROM workflow_state WHERE is_default = 1") == 1
     assert scalar(sandbox.db, "SELECT name FROM workflow_state WHERE is_default = 1") == "Todo"
-    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workflow_state") == 6
+    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workflow_state") == 7
 
 
 def test_init_seeds_four_workspace_labels(sandbox: SimpleNamespace) -> None:
@@ -186,7 +229,7 @@ def test_init_second_run_keeps_counts(sandbox: SimpleNamespace) -> None:
     run("init")
     assert scalar(sandbox.db, "SELECT COUNT(*) FROM workspace") == 1
     assert scalar(sandbox.db, "SELECT COUNT(*) FROM team") == 1
-    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workflow_state") == 6
+    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workflow_state") == 7
     assert scalar(sandbox.db, "SELECT COUNT(*) FROM label") == 4
     assert scalar(sandbox.db, "SELECT COUNT(*) FROM member") == 1
 
