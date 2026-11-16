@@ -65,10 +65,13 @@ MAX_LIMIT = 200
 #: `page["revision_poll"]` and nothing else repeats the duration.
 REVISION_POLL = "5s"
 #: Methods that cannot commit: their `HX-Revision` is the number observed before they ran.
+#: The write guard reads the same set, so these methods never reach its question at all: a
+#: maintainer changing this constant for one consumer changes it for both.
 READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-#: `Sec-Fetch-Site` values that name this edge itself, or a navigation the reader started (R28).
+#: `Sec-Fetch-Site` values that name this edge itself, or a navigation the reader started.
 ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
-#: The guard's one sentence (SPEC-070 §6): a statement about the caller, not about the instance.
+#: The guard's one sentence: a statement about the caller, not about the instance, and a
+#: different sentence from the read-only refusal so a reader can tell which one answered.
 CROSS_SITE_REFUSAL = "cross-site write refused"
 
 
@@ -1263,26 +1266,37 @@ def _install_security_headers(app: FastAPI) -> None:
 
 
 def _origin_authority(origin: str) -> str | None:
-    """The `host[:port]` an `Origin` names, or `None` when it names no authority (R28, D-057).
+    """Return the authority an `Origin` names, or `None` when it names no authority.
 
-    The scheme is dropped on purpose: behind a cloudflared quick tunnel the browser reports
-    `https://<tunnel>` while the socket this process accepts is plain `http`, and the corpus
-    declares no `X-Forwarded-Proto` trust that could reconcile the two (A4, SPEC-070 §2.1.7).
-    `null` — an opaque origin — and anything that does not parse to an authority answer `None`,
-    and the caller refuses both, because no page of this application produces either.
+    The answer is `host[:port]` with any userinfo stripped, so a genuine same-authority request
+    that carries credentials in `Origin` is not refused, and no credential can travel into a
+    caller or a log. The scheme is dropped on purpose: behind a cloudflared quick tunnel the
+    browser reports `https://<tunnel>` while the socket this process accepts is plain `http`, and
+    this edge declares no `X-Forwarded-Proto` trust that could reconcile the two. `null` — an
+    opaque origin — and anything that does not parse to an authority answer `None`, and the
+    caller refuses both, because no page of this application produces either.
 
     Comparison is case-insensitive and the port is compared **as addressed**: the name and the
-    port are what a foreign page cannot forge without controlling them.
+    port are what a foreign page cannot forge without controlling them. A malformed port is not
+    rejected here — nothing reads `.port`, so it comes back inside the authority and fails the
+    comparison as text. Two legitimate-but-different spellings fail that comparison the same way,
+    which is the fail-closed direction: the stored authority is `.strip()`ed while the origin is
+    not, so a header padded with whitespace never matches, and a port compares as text, so `:080`
+    is not `:80`.
     """
     try:
         parts = urlsplit(origin)
     except ValueError:
         return None
-    return parts.netloc.lower() or None
+    return parts.netloc.rpartition("@")[2].lower() or None
 
 
-def _is_foreign_write(request: Request) -> bool:
-    """Whether this request is a state-changing one from another authority (R28, D-057).
+def _is_cross_site_request(request: Request) -> bool:
+    """Return whether this request comes from another authority.
+
+    The method is not consulted here: the middleware asks this question only for a request whose
+    method is outside `READ_METHODS`, so the caller owns whether the method matters, and a
+    cross-site `GET` answers `True` here and is still served.
 
     `Sec-Fetch-Site` is the browser's own statement about who initiated the request, so it is
     read first and decides alone: `same-origin` and `none` are this edge, `cross-site` and
@@ -1291,10 +1305,9 @@ def _is_foreign_write(request: Request) -> bool:
 
     Without fetch metadata, `Origin` is the fallback and only its authority is compared. A
     request carrying neither header is allowed, and that is the contract, not a gap: there is no
-    cookie, session or token to ride (REQ-S005), so the subject of the guard is the browser the
-    reader is using — which sends these headers on its own — and a client that sets its own
-    headers can set any. That absence is what keeps the `httpx` client of these tests, an agent
-    and `curl` working.
+    cookie, session or token to ride, so the subject of the guard is the browser the reader is
+    using — which sends these headers on its own — and a client that sets its own headers can set
+    any. That absence is what keeps the `httpx` client of these tests, an agent and `curl` working.
     """
     fetch_site = request.headers.get("sec-fetch-site")
     if fetch_site is not None:
@@ -1305,19 +1318,21 @@ def _is_foreign_write(request: Request) -> bool:
     host = request.headers.get("host")
     if host is None:
         # No served authority to compare against: an `Origin` that cannot be shown to be this
-        # edge is another authority as far as this guard can tell. Only HTTP/1.0 reaches here.
+        # edge is another authority as far as this guard can tell. Only HTTP/1.0 reaches here —
+        # a client always sends `Host` over HTTP/1.1 — so no test can drive this branch.
         return True
     return _origin_authority(origin) != host.strip().lower()
 
 
 def _install_write_guard(app: FastAPI) -> None:
-    """Install the one guard that refuses a write from another origin (SPEC-070 §2.1.7, R28).
+    """Install the one guard that refuses a write from another authority.
 
     It is a middleware and not a per-route dependency, because a dependency is opt-in and its
-    failure mode is the route that forgets the line — the bug this closes (D-057). Deciding on
-    the method alone covers every route registered now and every route a later phase registers,
-    and covers a method no route serves yet (`PUT`, `DELETE`); `tests/e2e/web/test_write_guard.py`
-    enumerates `app.routes` so that claim is a test and not a promise (P8).
+    failure mode is the route that forgets the line — the bug this guard exists to close.
+    Deciding on the method alone covers every route registered now and every route a later
+    phase registers, and covers a method no route serves yet (`PUT`, `DELETE`);
+    `tests/e2e/web/test_write_guard.py` enumerates `app.routes` so that claim is a test and not
+    a promise.
 
     It **returns** its refusal and never raises it: `@app.exception_handler` lives in Starlette's
     `ExceptionMiddleware`, inside the user middleware stack, so an exception raised here would
@@ -1335,7 +1350,7 @@ def _install_write_guard(app: FastAPI) -> None:
     async def _write_guard(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        if request.method in READ_METHODS or not _is_foreign_write(request):
+        if request.method in READ_METHODS or not _is_cross_site_request(request):
             return await call_next(request)
         return PlainTextResponse(
             CROSS_SITE_REFUSAL,
@@ -1395,7 +1410,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     # Installed before `_install_security_headers` because Starlette applies the user middleware
     # in reverse registration order: the guard must sit *inside* `_headers`, not wrap it, so a
-    # refusal still leaves with the security headers of every other answer (SPEC-070 §2.1.7).
+    # refusal still leaves with the security headers of every other answer.
     _install_write_guard(app)
     _install_security_headers(app)
     _install_error_handlers(app)
