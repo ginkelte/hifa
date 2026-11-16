@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -176,7 +177,10 @@ def test_the_fetch_metadata_decides_before_the_origin(seeded: SimpleNamespace) -
     whenever it is present would invert both answers and stay green, because no other test of this
     file sends the two headers at once — which is exactly the mutation this test forecloses.
     """
-    served_origin = f"{seeded.client.base_url.scheme}://{seeded.client.base_url.netloc}"
+    # `base_url.netloc` is bytes in this httpx version, so the origin is parsed from the URL
+    # itself: it has to name exactly the authority the guard compares an `Origin` against.
+    served = urlsplit(str(seeded.client.base_url))
+    served_origin = f"{served.scheme}://{served.netloc}"
 
     allowed = _patch_title(
         seeded.client,
