@@ -726,11 +726,11 @@ Feature: Full-text search over issues
 ## 11. Notes
 
 - spec_revision 4 (2026-11-16): **the fixture's team carries seven `workflow_state`s, not six (D-058).**
-  §7's `Background` read a team `ENG` with "the 6 default workflow_states", a count that
-  stopped being the seed when SPEC-100 §2.5 (rev 7) gained `In Review` at `4.5`; the scenarios would
-  have measured a team `create_team` no longer produces. It reads seven, the count of SPEC-040
-  REQ-F040-14. The search contract is untouched — filters, envelope, ranking and `backend` do not see
-  the board's width, and a state is matched as text, not counted as a row — so `version` stays at 1.
+  §7's `Background` counted the fixture team's states as six, a count that stopped being the seed when
+  SPEC-100 §2.5 (rev 7) gained `In Review` at `4.5`; the scenarios would have measured a team
+  `create_team` no longer produces. It reads seven, the count of SPEC-040 REQ-F040-14. The search
+  contract is untouched — filters, envelope, ranking and `backend` do not see the board's width, and a
+  state is matched as text, not counted as a row — so `version` stays at 1.
 - **spec_revision 2 (2026-11-08, orchestrator):** this document is the **authority for the search
   contract** (D-002 of `specs/DECISIONS.md`). The `hifa search` command of SPEC-050 uses
   exactly these flags and this envelope: `{hits: [{issue, snippet, score}], total, has_more,

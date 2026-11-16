@@ -935,12 +935,12 @@ Feature: Issue import and export in CSV and JSON
 ## 11. Notes
 
 - spec_revision 6 (2026-11-16): **the fixture's team carries seven `workflow_state`s, not six (D-058).**
-  §7's `Background` built a team `ENG` with "its 6 default workflow_states",
-  which stopped being the seed when SPEC-100 §2.5 (rev 7) gained `In Review` at `4.5`: every scenario of
-  the file would have run against a board no team has. The line reads seven, the count `create_team`
-  writes (SPEC-040 REQ-F040-14, rev 22). Nothing of this layer's contract moves with it — a state is
-  resolved by name at import, `Status` stays the free-form column of §5.2 and no `position` is read or
-  written — so `version` stays at 1.
+  §7's `Background` counted the fixture team's states as six, which stopped being the seed when
+  SPEC-100 §2.5 (rev 7) gained `In Review` at `4.5`: every scenario of the file would have run against
+  a board no team has. The line reads seven, the count `create_team` writes (SPEC-040 REQ-F040-14,
+  rev 22). Nothing of this layer's contract moves with it — a state is resolved by name at import,
+  `Status` stays the free-form column of §5.2 and no `position` is read or written — so `version`
+  stays at 1.
 - spec_revision 5 (2026-11-13): **the JSON import is a writer of `issue_relation`, so it normalises the
   pair (D-045).** §3 said `issue_relation` was "INSERT (JSON only)" validating nothing but the column
   names against `PRAGMA table_info`, which let `(A,B,related)` and `(B,A,related)` both be stored: two
