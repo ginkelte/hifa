@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 4
-spec_revision: 20
+spec_revision: 21
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -13,7 +13,7 @@ implements:
 acceptance: specs/acceptance/001-mvp-v1/16-dashboard.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-14
+updated: 2026-11-16
 ---
 
 # SPEC-070 — Web dashboard
@@ -267,6 +267,98 @@ its own verification connection, runs `PRAGMA integrity_check`, compares `user_v
 neither shadowing the other: `/healthz` belongs to the web layer, `/health` to the API. The path is
 public in SPEC-001 §2 and in the `hifa serve` contract, so it is kept (D-028).
 
+#### 2.1.7 The write guard: a state-changing request from another origin is refused (D-057)
+
+Every state-changing request of this layer passes one check **before the route is matched**. The check is
+installed by `create_app` as an HTTP middleware — the mechanism `_headers` already uses — and it is **not**
+a per-route dependency: a dependency is opt-in, and a route added by a later phase can forget it. The guard
+decides on the method and on `Sec-Fetch-Site` and `Origin`, compared against `Host`, never on the path,
+the route table, the database or the body, so every route that exists and every route a later phase
+registers is covered by construction, and a method no route serves yet (`PUT`, `DELETE`) is covered too.
+**R28** is the rule; this section is its contract.
+
+| Request, method not in `GET`/`HEAD`/`OPTIONS` | Answer |
+|---|---|
+| `Sec-Fetch-Site: same-origin` | allowed |
+| `Sec-Fetch-Site: none` — a navigation the user started (typed URL, bookmark) | allowed |
+| `Sec-Fetch-Site: cross-site` or `same-site` | `403`, `text/plain`, `cross-site write refused` |
+| no `Sec-Fetch-Site`, `Origin` with the authority of `Host` | allowed |
+| no `Sec-Fetch-Site`, `Origin` with another authority | `403`, as above |
+| no `Sec-Fetch-Site`, `Origin: null` | `403`, as above |
+| neither header | allowed: the non-browser client |
+
+`same-site` is refused because this edge is served from one host and port and no page of it can produce
+that value, so a `same-site` request is necessarily another origin. `Sec-Fetch-Site` is the browser's own
+statement about who initiated the request, so it is read first; `Origin` is the fallback for the client
+that does not send it.
+
+**The comparison is the authority, and the scheme is not in it.** The request's own origin is the
+authority of `Host` — host and port as addressed — and `Origin` is refused when its authority differs from
+it, compared case-insensitively. Comparing `scheme://host[:port]` against the connection would refuse the
+tunnel's legitimate writes: behind a cloudflared quick tunnel the browser's `Origin` is `https://<tunnel>`
+while the socket is plain `http`, and this corpus declares no `X-Forwarded-Proto` trust to tell the two
+apart — `hifa serve` opens the socket itself and knows of no proxy (A4). The name and the port are what a
+foreign page cannot forge without controlling them; the scheme it does not control adds nothing, and TLS
+termination is out of scope of this rule. `Origin: null` — an opaque origin: a sandboxed frame, a
+`file://` document, a redirect that stripped it — names no authority at all, so it is neither "another
+origin" nor absent, and it is refused: no page of this application produces it.
+
+**Absence is allowed, and that is the contract.** There is no cookie, no session and no token to ride or to
+demand (SPEC-000 REQ-S005): the client that can set one header can set any, so refusing a headerless
+request buys nothing and breaks the clients the corpus runs on — the `httpx` client of `tests/e2e/web/`, an
+agent driving the fragments, `curl` in the no-JS path, the `hifa serve` smoke of
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`. The subject of the guard is the **browser the reader is
+using**, which sends these headers on its own. It is not a lock on the port, and the limit is declared, not
+implied: the holder of a published tunnel URL can still write with a client of their own.
+
+**The refusal is a returned response; nothing is raised.** The middleware **returns** `403` with
+`Content-Type: text/plain; charset=utf-8`, body `cross-site write refused` and `Cache-Control: no-store`.
+No exception is raised, no exception handler is involved and none is added: `@app.exception_handler` lives
+in Starlette's `ExceptionMiddleware`, **inside** the user middleware stack, so an exception raised by a
+middleware is never mapped there and would answer `500`. The edge's one exception-and-handler pair is
+`FragmentRequiresHtmx` (`src/hifa/web/app.py`), raised by the `HX-Request` dependency and mapped by its own
+handler, both of them inside that stack; the read-only `403` is not an exception either — it is an inline
+`return` in each of the five write routes of §2.1.2/§2.1.3 (`POST /_/states/{state_id}/position`,
+`PATCH /_/issues/{identifier}`, `POST /{team}/issue`, `POST /{team}/issue/{identifier}`, `POST /_/issues`),
+as R18 says. The status is the one this edge already uses for "understood and refused", and the two 403s
+differ by their message, which §6 keeps as two rows: `server in read-only mode` is a statement about the
+instance, `cross-site write refused` about the caller. Nothing is written, because the refusal is produced
+before the handler, so no use case and no transaction runs. The body is a sentence and not a page because
+the guard fires before routing and has no read model, no team and no sidebar; the corpus's other
+guard-produced refusals (`fragment requires htmx`, `workflow state does not exist`) have the same shape.
+
+**It sits inside `_headers`.** `_headers` wraps the guard, so a refusal leaves with the same
+`Content-Security-Policy`, `X-Content-Type-Options: nosniff` and `Referrer-Policy` as every other answer of
+this edge, and its own `Cache-Control: no-store` stands, because `_headers` supplies one only to an answer
+that has none. The price is one revision probe on a request that is refused, and that probe answers `None`
+instead of raising when it cannot read (D-049), so the refusal is still produced with the file locked. The
+opposite order is rejected in D-057: a `text/plain` answer without `nosniff` would be the only answer of
+this edge a browser may sniff.
+
+**Order.** The guard precedes both refusals that already exist, because a middleware runs before the route
+is matched, before the per-route `HX-Request` dependency and before the handler that reads
+`app.state.read_only`:
+
+1. the write guard — `403 cross-site write refused` (R28, this section)
+2. `HX-Request` — `400 fragment requires htmx` (§6, R5)
+3. read-only mode — `403 server in read-only mode` (§6, R18)
+4. the use case — `404`, `422` validation, `422 confirmation_required`, `409` archived (§6, R27)
+
+A cross-site write to an identifier that does not exist is therefore `403`, not `404`: the refusal must not
+depend on the target resolving, or a `404` would prove the guard was not in the way and the answer would
+begin to depend on the database — which the guard must be able to answer with the file locked. A same-origin
+write on a read-only server keeps the read-only `403` of §6; a cross-site one is the guard's.
+
+**Reads are not covered, deliberately.** `GET`, `HEAD` and `OPTIONS` are served exactly as before. The
+browser's same-origin policy already stops the attacker's script from reading the answer and this edge
+emits no CORS header on any route (REQ-S005), so a cross-site read is a navigation whose bytes the attacker
+cannot see. Writes were the hole because they are **sent**, not read.
+
+**Out of scope of this rule.** Accounts, sessions and per-user permissions (the model has one local member
+by design); TLS termination; the tunnel's configuration; rate limiting; a server-side CSRF token; any change
+to the CLI, which never opens a socket (A4); any change to the meaning of the read-only mode; any new route,
+verb or field; and the JSON API — this spec governs `web/**` only and `src/hifa/api/` serves no write route
+today, so the writes of SPEC-060 get their own answer when they land.
 
 ### 2.2 Templates
 
@@ -1421,6 +1513,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R25** | **Reordering the columns changes the presentation order, nothing else.** `POST /_/states/{id}/position` writes `workflow_state.position` and **only** that: no issue changes `state_id` or `board_order`, no `issue_history` row is written and no counter moves. The payload is `{before, after}` with **state ids** (`null` at the edge), never a float; the new `position` is `domain.ranking.between(prev, next)` computed on the server and persisted by `update_state`. The response is `204` + `HX-Trigger: board-reordered` with no swap (the DOM already moved), `403` in `--read-only`, `404` for an unknown state and `422` for neighbours from another team. The canonical order a **new** team is seeded with is `DEFAULT_STATES` (SPEC-100 §2.5, D-034); an existing team is reordered with this route or with `hifa state update` (SPEC-050 §2.5.6), never with a migration. → **REQ-F070-06** |
 | **R26** | **The page notices a foreign write by a change signal, never by a timer.** `GET /_/revision` answers `{"revision": <n>}` read from `PRAGMA data_version` on the process's single long-lived read connection (§2.1.3.1, §3, D-049); the number changes iff another connection committed since the previous read — which is what the CLI is, and what the process's own per-request connections are. The page carries the number it was rendered with (`<body data-revision>`, `page["revision"]`) and adopts the `HX-Revision` of an answer that replaced the collection; a panel, a row, the palette or the counters do not adopt (D-050); the poller (`hx-trigger="every {{ page.revision_poll }}"`, `hx-swap="none"`, visibility enforced in the client by cancelling `htmx:beforeRequest` while the tab is hidden — never as a `[condition]` filter, which the CSP's `script-src 'self'` makes unrunnable) reloads `page["refresh_url"]` into `#board`/`#issues-tbody` **only when the numbers differ**, so no request and no swap happens while nothing changed. The reload is **deferred, never forced**, while a detail panel is open, the quick add holds unsaved text or a drag is in flight; the last revision seen is applied as soon as the interaction ends (§2.6.8). The number is opaque — compared for equality, never ordered, never arithmetic, never displayed. Without JS nothing of this runs and a reload shows the new data (P5). The probe is a read: `--read-only` neither blocks it nor changes it. → **REQ-F070-15** |
 | **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The five capabilities of §2.1.2 are seven page forms and their five fragments (§2.1.3), and each form's `hx-*` points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card or the panel after an edit (`?view=panel` answers the panel, for the description editor of §2.6.3), `204` with no body after a move, an archive, a delete or a restore, `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
+| **R28** | **A state-changing request from another origin is refused before the route runs, and a request with no origin information is allowed.** Every request whose method is outside `GET`/`HEAD`/`OPTIONS` is answered `403`, `text/plain` `cross-site write refused`, `Cache-Control: no-store` — returned by one middleware installed by `create_app` inside `_headers`, never raised as an exception — when `Sec-Fetch-Site` is `cross-site` or `same-site`, or when that header is absent and `Origin` names another authority or is `null`; `same-origin`, `none`, an `Origin` whose authority is `Host`'s, and a request with neither header are served. The comparison is the authority (host and port, compared case-insensitively, the scheme dropped), so a browser whose `Origin` says `https` behind a plain `http` tunnel still writes, and `Origin: null` — which names no authority — is refused. The guard reads no path, no route table, no table and no body, so it precedes the `HX-Request` `400` (R5), the read-only `403` (R18) and the use case, and a cross-site write to an unknown identifier is `403` rather than `404`. It does not authenticate, does not close the tunnel and does not make a header a credential — a client that sets its own headers can set any, and a same-origin page can write by definition; and it covers no read, because a cross-site read is served and its bytes are unreadable to the other origin (REQ-S005). → **REQ-F070-16** |
 
 Component-specific requirements:
 
@@ -1594,6 +1687,7 @@ Component-specific requirements:
 | `archive` of an already-archived issue | 204 (`/`), 303 (page) | no body; `/{team}/list` | a no-op: no history row, `archived_at` unchanged (SPEC-040 §5.5, REQ-F040-33) |
 | Unknown `{state_id}` on `/_/states/{id}/position` | 404 | `text/plain` `workflow state does not exist` | the client reloads `/_/board/{team}` |
 | Neighbour of the column drop from another team, or the moved state itself | 422 | `text/plain` `invalid neighbour` | same reload; the columns return to the server order |
+| A state-changing request from another origin (§2.1.7, R28) | 403 | `text/plain` `cross-site write refused` + `Cache-Control: no-store`, returned by the middleware before routing | nothing is written and no page is rendered: the tab shows the sentence |
 | Write with `read_only` | 403 | `error.html` from a page route; `partials/fragment_error.html` from a `/_/` route | read-mode banner (a fragment never swaps a document) |
 | `/_/revision` when the probe connection cannot answer | 503 | `application/json` `{"revision": null}` + `Cache-Control: no-store` | the body is not a number ⇒ the client does nothing; no swap, and the next tick retries on its own |
 | Unmapped exception | 500 | generic `error.html` (no traceback) | same |
@@ -1612,6 +1706,7 @@ Catalog of visible messages (exact text, lowercase initial, no trailing period):
 | archive with open children | `cannot archive ENG-13: it has 2 open sub-issues` |
 | missing confirmation | `confirm the delete of ENG-13` (`confirm the archive of ENG-13`) |
 | read-only | `server in read-only mode` |
+| write from another origin (§2.1.7, R28) | `cross-site write refused` |
 | invalid field | `invalid value` + the domain `error.message` |
 
 In fragments, the error travels in the HTML (`.field-error`), **not** in JSON: the client of this
@@ -2022,6 +2117,25 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 21 (2026-11-16): **the write guard — a state-changing request from another origin is
+  refused before the route runs, and a request carrying no origin information is allowed (D-057).**
+  The layer could be told no in two ways and neither was about the caller: R18's `403` is the *process*
+  being read-only, and R5's `400` is the *client* not being htmx — while the page forms of §2.1.2 take a
+  plain urlencoded `POST` with no header from any origin. Over a cloudflared quick tunnel that means a
+  page the reader visits can write, and after T-20.1 can archive or delete. §2.1.7 declares one HTTP
+  middleware installed by `create_app` inside `_headers`, keyed on the method, **returning** `403
+  cross-site write refused` when `Sec-Fetch-Site` is `cross-site`/`same-site`, or when it is absent and
+  `Origin` names another authority or is `null`; `same-origin`, `none`, an `Origin` whose authority is
+  `Host`'s, and a request with neither header are served, and the authority is compared with the scheme
+  dropped so the tunnel's `https` browser over a plain `http` socket still writes. R28 states the rule,
+  and §6 gains the refusal as its own row and its own exact text, next to the read-only `403` it must not
+  be confused with. The refusal is returned and not raised: a handler of `@app.exception_handler` sits
+  inside the user middleware stack and would never see it, so there is no exception type and no handler —
+  the edge's only such pair remains `FragmentRequiresHtmx`. It answers before the route, before the
+  `HX-Request` dependency and before the read-only `403`, so a cross-site write to an unknown identifier
+  is a refusal and not a `404`. No route, verb, field or successful status changes: `version` stays 4 and
+  only `spec_revision` moves (20 → 21). The rule's own limits are in §2.1.7: no token, no session, no TLS,
+  a same-origin page can write, the tunnel URL stays a capability, and the API edge of SPEC-060 is out.
 - spec_revision 20 (2026-11-14): **the inline edit declares the body the browser really sends —
   form-urlencoded, no JSON, and the hidden form inside the cell (D-056).**
   T-20.1 implemented §2.6.3 and the first run that reached the wire proved the prescription wrong:
