@@ -11,12 +11,12 @@ this module.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -66,6 +66,10 @@ MAX_LIMIT = 200
 REVISION_POLL = "5s"
 #: Methods that cannot commit: their `HX-Revision` is the number observed before they ran.
 READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+#: `Sec-Fetch-Site` values that name this edge itself, or a navigation the reader started (R28).
+ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
+#: The guard's one sentence (SPEC-070 §6): a statement about the caller, not about the instance.
+CROSS_SITE_REFUSAL = "cross-site write refused"
 
 
 class FragmentRequiresHtmx(Exception):
@@ -1258,6 +1262,88 @@ def _install_security_headers(app: FastAPI) -> None:
         return response
 
 
+def _origin_authority(origin: str) -> str | None:
+    """The `host[:port]` an `Origin` names, or `None` when it names no authority (R28, D-057).
+
+    The scheme is dropped on purpose: behind a cloudflared quick tunnel the browser reports
+    `https://<tunnel>` while the socket this process accepts is plain `http`, and the corpus
+    declares no `X-Forwarded-Proto` trust that could reconcile the two (A4, SPEC-070 §2.1.7).
+    `null` — an opaque origin — and anything that does not parse to an authority answer `None`,
+    and the caller refuses both, because no page of this application produces either.
+
+    Comparison is case-insensitive and the port is compared **as addressed**: the name and the
+    port are what a foreign page cannot forge without controlling them.
+    """
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return None
+    return parts.netloc.lower() or None
+
+
+def _is_foreign_write(request: Request) -> bool:
+    """Whether this request is a state-changing one from another authority (R28, D-057).
+
+    `Sec-Fetch-Site` is the browser's own statement about who initiated the request, so it is
+    read first and decides alone: `same-origin` and `none` are this edge, `cross-site` and
+    `same-site` are not, and a value this edge does not know is refused rather than trusted.
+    One host and one port serve this edge, so no page of it can be `same-site` to another.
+
+    Without fetch metadata, `Origin` is the fallback and only its authority is compared. A
+    request carrying neither header is allowed, and that is the contract, not a gap: there is no
+    cookie, session or token to ride (REQ-S005), so the subject of the guard is the browser the
+    reader is using — which sends these headers on its own — and a client that sets its own
+    headers can set any. That absence is what keeps the `httpx` client of these tests, an agent
+    and `curl` working.
+    """
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site is not None:
+        return fetch_site.strip().lower() not in ALLOWED_FETCH_SITES
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    host = request.headers.get("host")
+    if host is None:
+        # No served authority to compare against: an `Origin` that cannot be shown to be this
+        # edge is another authority as far as this guard can tell. Only HTTP/1.0 reaches here.
+        return True
+    return _origin_authority(origin) != host.strip().lower()
+
+
+def _install_write_guard(app: FastAPI) -> None:
+    """Install the one guard that refuses a write from another origin (SPEC-070 §2.1.7, R28).
+
+    It is a middleware and not a per-route dependency, because a dependency is opt-in and its
+    failure mode is the route that forgets the line — the bug this closes (D-057). Deciding on
+    the method alone covers every route registered now and every route a later phase registers,
+    and covers a method no route serves yet (`PUT`, `DELETE`); `tests/e2e/web/test_write_guard.py`
+    enumerates `app.routes` so that claim is a test and not a promise (P8).
+
+    It **returns** its refusal and never raises it: `@app.exception_handler` lives in Starlette's
+    `ExceptionMiddleware`, inside the user middleware stack, so an exception raised here would
+    reach no handler and would answer `500`. The guard reads no path, no route table, no database
+    and no body, so it answers the same way with the database file locked.
+
+    `create_app` installs this **before** `_install_security_headers`, and Starlette applies the
+    user middleware in reverse registration order, so `_headers` stays outermost: a refusal
+    leaves with the CSP, `nosniff` and `Referrer-Policy` of every other answer of this edge, and
+    its own `Cache-Control: no-store` stands, because `_headers` supplies one only to an answer
+    that has none.
+    """
+
+    @app.middleware("http")
+    async def _write_guard(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.method in READ_METHODS or not _is_foreign_write(request):
+            return await call_next(request)
+        return PlainTextResponse(
+            CROSS_SITE_REFUSAL,
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Nothing to start; one thing to stop — the read connection the probe keeps open."""
@@ -1307,6 +1393,10 @@ def create_app(
         }
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    # Installed before `_install_security_headers` because Starlette applies the user middleware
+    # in reverse registration order: the guard must sit *inside* `_headers`, not wrap it, so a
+    # refusal still leaves with the security headers of every other answer (SPEC-070 §2.1.7).
+    _install_write_guard(app)
     _install_security_headers(app)
     _install_error_handlers(app)
     app.include_router(router)
