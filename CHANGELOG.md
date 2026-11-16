@@ -1,3 +1,10 @@
+## [0.7.1](https://github.com/ginkelte/hifa/compare/v0.7.0...v0.7.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **web:** a write from another authority is refused before the route runs ([#23](https://github.com/ginkelte/hifa/issues/23)) ([a700eba](https://github.com/ginkelte/hifa/commit/a700ebacd0add211a98313d16054fa7fb9aedc05))
+
 # [0.7.0](https://github.com/ginkelte/hifa/compare/v0.6.0...v0.7.0) (2026-11-16)
 
 
