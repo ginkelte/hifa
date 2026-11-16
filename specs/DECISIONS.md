@@ -2228,124 +2228,86 @@ a future reader wants it they have to reopen this decision rather than find an u
 
 ## D-057 — A write from another origin is refused before the route runs, and a request with no origin information is the declared non-browser client
 
-**Date:** 2026-11-16 · **Wins:** SPEC-070 §2.1.7 · **Touches:** SPEC-070 §2.1.7 (new), §11;
-`specs/acceptance/001-mvp-v1/16-dashboard.feature`; `specs/001-mvp-v1.tasks.md` §T-20 (T-20.0)
+**Date:** 2026-11-16 · **Wins:** SPEC-070 §2.1.7 · **Touches:** SPEC-070 §2.1.7 (new), §11; SPEC-000
+REQ-S005 (rev 10); SPEC-001 REQ-S005 + §Notes (rev 10); `16-dashboard.feature`,
+`17-dashboard-hardening.feature`; `001-mvp-v1.tasks.md` §T-20; `INDEX.md`
 
-The corpus declared two ways for a write to be told no, and neither was about the caller. R18 declares the
-read-only mode — with `can_write=False` no write control is rendered and a `POST` answers `403` — and it is
-a property of the **process** (`--read-only`, `HIFA_SERVE_READ_ONLY=1`), not of the request. R5 and §6
-declare the htmx guard — a `/_/*` without `HX-Request` is `400 fragment requires htmx` — and that header
-says which **client** is asking, in the same family as `Accept`. §2.1.2 adds `confirm=1`, a statement about
-the **body**. SPEC-000 REQ-S005 names the gap and accepts it: *"there is no CSRF token or `Bearer`: the only
-guard on dashboard writes is `HX-Request`"*. That sentence was true and was never sufficient, because
-`HX-Request` is a header only a script sets, and the write that needs no header at all is the page form —
-which is exactly the shape a `<form>` on somebody else's page submits.
+**Prior state.** The corpus declared two ways for a write to be told no, and neither concerned the caller:
+R18's read-only mode is a property of the **process**, R5's htmx guard a statement about which **client** is
+asking (the family of `Accept`), and `confirm=1` (§2.1.2) a statement about the **body**. SPEC-000 REQ-S005
+named the gap and accepted it: the htmx header was the only guard on dashboard writes. True, never enough.
 
-**The hole, measured on the tree at `ff01ec5`.** Five state-changing routes: `POST /_/states/{state_id}/position`,
-`PATCH /_/issues/{identifier}`, `POST /{team}/issue`, `POST /{team}/issue/{identifier}`, `POST /_/issues`.
-None of them reads `Origin`, `Sec-Fetch-Site` or a token, and `_can_write` answers "is this instance in
-read-only mode", never "may this caller write". Two of the five are page forms that accept
-`application/x-www-form-urlencoded` with no header at all — `POST /{team}/issue` and
-`POST /{team}/issue/{identifier}` — so a page the reader visits while the dashboard is open on a cloudflared
-quick tunnel can submit `POST https://<tunnel>/ENG/issue/ENG-13` with `title=…`, and the server accepts it
-because the port was reachable: no preflight, no CORS refusal, nothing the browser blocks. The three `/_/*`
-writes do require `HX-Request`, which a `<form>` cannot set — but that header is a client-compatibility
-guard that REQ-S005 mistook for a credential, and it protects nothing on the page routes. T-20.1 adds four
-more page forms (`move`, `archive`, `delete`, `restore`) and their four fragments, so the headerless surface
-goes from two routes to six and starts carrying the destructive writes. HIFA-54 counts five routes growing
-to nine; the five are confirmed, and with T-20.1's four page forms and four fragments the total reaches
-thirteen — the count only makes the point stronger.
+**The hole, measured at `ff01ec5`.** Five state-changing routes — the three `/_/*` writes
+(`POST /_/states/{state_id}/position`, `PATCH /_/issues/{identifier}`, `POST /_/issues`) and the two page forms
+`POST /{team}/issue` and `POST /{team}/issue/{identifier}` — and none reads `Origin`, `Sec-Fetch-Site` or a
+token; `_can_write` answers "is this instance read-only", never "may this caller write". The two page forms
+take `application/x-www-form-urlencoded` with **no header at all**, so a page the reader visits while the
+dashboard is open on a cloudflared quick tunnel can submit `POST https://<tunnel>/ENG/issue/ENG-13` with
+`title=…` and the server accepts it: no preflight, no CORS refusal, nothing the browser blocks. The other three
+require `HX-Request`, which a `<form>` cannot set — a compatibility guard REQ-S005 mistook for a credential.
+T-20.1 adds four page forms (`move`, `archive`, `delete`, `restore`) and four fragments, so the headerless
+surface goes from two routes to six and starts carrying the destructive writes: five write routes today
+become thirteen.
 
-**Resolution: one guard, installed by `create_app` as an HTTP middleware, keyed on the method, answering
-`403` before the route is matched.** SPEC-070 §2.1.7 is the contract; nothing else in §2 changes.
+**Resolution: one guard, an HTTP middleware installed by `create_app`, keyed on the method, answering before
+the route is matched.** It adds no route, verb, field or successful status, so `version` stays 4 and
+`spec_revision` moves 20 → 21: a precondition on who may reach an existing route.
 
-- **Where it lives, and why that is the testable part.** Not a per-route dependency. The layer already has
-  that shape — `HTMX = Depends(require_htmx)` — and its failure mode is a route that forgets the line,
-  which is the bug being fixed. A middleware sees every request by method alone: the guard consults no
-  path, no route table, no database and no body, so a route added by a later phase is covered the moment it
-  is registered, and a method no route serves yet (`PUT`, `DELETE`) is covered too. The property a test
-  checks is the enumeration — every state-changing route of `app.routes`, asked cross-site, is refused —
-  and that is what makes "no write route can be added without passing through it" a fact rather than a
-  convention (P8).
-- **What it compares, in this order.** `Sec-Fetch-Site` first: `same-origin` and `none` are allowed,
-  `cross-site` and `same-site` are refused. `none` is what a browser sends for a navigation the user
-  started — a typed URL, a bookmark — and what a non-page client sends when it sets the header at all.
-  `same-site` is refused because this edge is served from one host and port and no page of it can produce
-  that value, so a `same-site` request is necessarily another origin; allowing it would allow exactly the
-  sibling-origin case the guard exists to deny. When `Sec-Fetch-Site` is absent, `Origin` is compared with
-  the request's own origin (`scheme://host[:port]`, from `Host` and the connection scheme): equal is
-  allowed, different is refused.
-- **Both headers absent is allowed, and that is the contract, not an oversight.** There is no cookie, no
-  session and no token to ride or to demand (REQ-S005): a client that can set its own headers can set any
-  of them, so refusing a headerless request buys nothing an attacker could not undo in one line, while it
-  breaks every non-browser client the corpus runs on — the `httpx` client of `tests/e2e/web/`, an agent
-  driving the fragments, `curl` in the no-JS path, the `hifa serve` smoke of `16-dashboard.feature`. The
-  subject of the guard is the **browser the reader is using**, which carries the reader's reachability of
-  the tunnel and sends those headers on its own. It is not a lock on the port, and §2.1.7 says so instead of
-  implying otherwise.
-- **`403`, one sentence, no template.** `text/plain`, body `cross-site write refused`, `Cache-Control:
-  no-store`. `400` would say the request is malformed, and a cross-site form is well-formed by
-  construction. `422` and `409` are this layer's statements about the body and about the row's layer —
-  missing `confirm`, open children, archived — and none of them is true here. `403` is the only status the
-  edge already uses for "understood and refused", and the two 403s are told apart by their message, which
-  is exactly the difference between "not this instance" and "not this caller". A7 asks for one mapping per
-  error in one place, and this is that: one exception, one handler, beside the read-only and htmx handlers,
-  not a status invented per route. The body is a sentence rather than a page because the guard fires
-  before routing and has no read model, no team and no sidebar; the corpus's other guard-produced refusals
-  (`fragment requires htmx`, `workflow state does not exist`) have the same shape.
-- **The order is structural, not a preference.** A middleware runs before the route is matched, before any
-  dependency resolves and before the handler, so the guard precedes the `400 fragment requires htmx` (a
-  per-route dependency) and the read-only `403` (raised inside the handler from `app.state.read_only`). Two
-  consequences, each pinned by a scenario: a cross-site write to an identifier that does not exist is
-  `403` and not `404` — the refusal must not depend on the target resolving, or a `404` becomes a way to
-  prove the guard was not in the way, and the answer would begin to depend on the database; and a
-  cross-site write on a read-only server is the guard's `403`, while a same-origin write there keeps the
-  read-only `403` with `server in read-only mode`. The guard reads no table for the same reason: it must
-  answer with the file locked.
-- **Reads are not covered, deliberately.** Every `GET` is served exactly as before. The browser's
-  same-origin policy already stops the attacker's script from reading the answer, and this edge emits no
-  CORS header on any route (REQ-S005, `17-dashboard-hardening.feature`), so a cross-site read is a
-  navigation whose bytes the attacker cannot see. Writes were the hole because they are **sent**, not read.
+- **Not a per-route dependency.** The layer already has that shape (`HTMX = Depends(require_htmx)`), and its
+  failure mode is a route that forgets the line — the bug being fixed. A middleware decides on the method alone,
+  so a route added later is covered the moment it is registered and a method no route serves yet (`PUT`,
+  `DELETE`) is covered too. What a test checks is the enumeration of `app.routes`, which turns "no write route
+  can be added without passing through it" into a fact (P8).
+- **What it compares.** `Sec-Fetch-Site` first: `same-origin` and `none` allowed, `cross-site` and `same-site`
+  refused — one host and one port serve this edge, so no page of it can produce `same-site`. Absent, `Origin` is
+  compared by **authority** (`Host`, port as addressed, case-insensitive, scheme dropped, so the tunnel's
+  `https` browser over a plain `http` socket still writes); another authority is refused, and so is
+  `Origin: null`, which names none.
+- **Both headers absent is allowed, and that is the contract.** There is no cookie, no session and no token to
+  ride or to demand (REQ-S005): a client that sets its own headers can set any, so refusing a headerless request
+  buys nothing and breaks every non-browser client the corpus runs on (the `httpx` client of the tests, an agent
+  driving fragments, `curl` in the no-JS path). The subject is the **browser the reader is using**, which sends
+  those headers on its own; it is not a lock on the port, and §2.1.7 says so.
+- **`403`, one sentence, returned and never raised.** `text/plain`, `cross-site write refused`, `no-store`,
+  inside `_headers` like every other answer of this edge. `400` would call a well-formed cross-site form
+  malformed, and `422`/`409` are statements about the body and the row. No exception type and no handler are
+  added, and none could be: `@app.exception_handler` lives inside Starlette's `ExceptionMiddleware`, below the
+  user middleware stack, so it would answer `500`. The edge's only exception-and-handler pair stays
+  `FragmentRequiresHtmx`; the read-only `403` is an inline `return` in each write route, not an exception either.
+  The two 403s differ by message, as two rows of §6.
+- **The order is structural.** A middleware runs before routing, before any dependency and before the handler,
+  so the guard precedes the `400 fragment requires htmx` and the read-only `403`. Two consequences, each pinned
+  by a scenario: a cross-site write to an identifier that does not exist is `403` and not `404` (the refusal must
+  not depend on the target resolving), and a cross-site write on a read-only instance is the guard's `403` while
+  a same-origin write there keeps `server in read-only mode`. The guard reads no table, so it answers with the
+  file locked.
 
-**Rejected.** A per-route dependency (`Depends(require_same_origin)`): the same opt-in shape as `HTMX`, and
-its failure mode is the bug. A token in the URL or in a header the dashboard sets at startup: a credential
-in a history, in a log and in a `Referer`, and it would change what the CLI is (A4 — the CLI never opens a
-socket) to defend a socket it never opens. Refusing every request whose headers are absent: no security,
-and the tests, the agents and the no-JS path stop working (above). `401` with `WWW-Authenticate`: there is
-nothing to authenticate against and the corpus has no account to name.
+**Rejected.** A per-route dependency (`Depends(require_same_origin)`): the same opt-in shape as `HTMX`, its
+failure mode is the bug. A token in the URL or in a header set at startup: a credential in a history, a log and a
+`Referer`, and it would change what the CLI is (A4) to defend a socket the CLI never opens.
 
-**Scope and assumptions, stated rather than implied.** The threat model is a browser the reader is using,
-on a page the reader did not write — not an attacker who can run an HTTP client of their own, who sends no
-headers and is allowed, or who sets `Sec-Fetch-Site: same-origin` because nothing verifies it. A
-**same-origin page can write**: that is what same-origin means, and if a page of this app is ever
-compromised the guard is not the defence. There is still no account, no session, no token and no TLS, and
-the tunnel is the operator's choice — a quick tunnel publishes the port to whoever holds the URL, and this
-decision does not change that. Deliberately out of scope: accounts, sessions and per-user permissions (the
-model has one local member by design); TLS termination; the tunnel's configuration; rate limiting; a
-server-side CSRF token; any change to the CLI (A4); any change to the meaning of the read-only mode; and
-any new route, verb or field. **The API edge is out as well**: SPEC-070 governs `web/**` only, and
-`src/hifa/api/` holds `__init__.py` and nothing else — SPEC-060 publishes the JSON contract and the tree
-serves no write route of it. When those routes land they need their own answer, and this decision does not
-pre-empt it.
+**Scope and assumptions.** The threat model is a browser the reader is using, on a page the reader did not write:
+an attacker running an HTTP client of their own sends no headers and is allowed, and `Sec-Fetch-Site:
+same-origin` cannot be verified. A **same-origin page can write**; if a page of this app is compromised the guard
+is not the defence. No account, session, token or TLS exists; out of scope: those, the tunnel's configuration,
+rate limiting, a server-side CSRF token, any change to the CLI (A4) or to the read-only mode, any new route,
+verb or field. **The API edge is out**: SPEC-070 governs `web/**` only and `src/hifa/api/` holds `__init__.py`,
+so its routes need their own answer. Reads are not covered either: every `GET` is served as before, this edge
+emits no CORS header (REQ-S005), and writes were the hole because they are **sent**, not read.
 
-**`version` stays 4; `spec_revision` 20 → 21.** The guard adds no route, no verb, no field, no
-`Content-Type` of a successful answer and no status a successful write can return: it states a precondition
-on who may reach a route that already exists. That is a revision of §2, not a change of its shape.
-SPEC-000 REQ-S005's last sentence — *"the only guard on dashboard writes is `HX-Request`"* — is
-**superseded** by this decision and is not edited here: SPEC-000's next revision carries it, and until then
-the two documents disagree by exactly one clause, which is the clause this decision writes.
+**The losing spec is adjusted in this branch.** AGENTS §3 requires the bump and the §Notes pointer; the branch
+does it: SPEC-000 REQ-S005 and SPEC-001 REQ-S005 (both rev 10) name the guard and state what it does not do,
+`17-dashboard-hardening.feature`'s header and `tasks.md` T-20/T-20.1 carry the correction, and `INDEX.md` counts
+the decisions and the scenarios. No clause still calls the header the only guard.
 
-**Verification.** `tests/e2e/web/test_write_guard.py`, the file T-20.0 writes:
-`::test_a_cross_site_write_is_refused_and_writes_nothing` (`Origin` + `Sec-Fetch-Site: cross-site` on
-`PATCH /_/issues/ENG-13?view=list` ⇒ `403`, body `cross-site write refused`, title and `issue_history`
-unchanged); `::test_a_same_origin_write_is_accepted` (`Sec-Fetch-Site: same-origin` **alone** ⇒ `200` and
-the new title, which pins `Sec-Fetch-Site` as the first comparison and `Origin` as the fallback);
-`::test_a_write_without_origin_information_is_accepted`; `::test_a_cross_site_read_is_served`
-(`GET /ENG/board` with both headers ⇒ `200` and its rows); `::test_the_guard_answers_before_the_route_runs`
-(`POST /ENG/issue/ENG-999` cross-site ⇒ `403`, never `404`, and no row); `::test_read_only_keeps_its_own_403`
-(same-origin write, `403 server in read-only mode`, nothing written); and
-`::test_every_state_changing_route_is_covered`, which iterates `app.routes`, sends a cross-site request to
-each route whose method is not `GET`/`HEAD`/`OPTIONS` and fails on any answer that is not the refusal — the
-executable form of "no write route can be added without passing through it" (P8), and the reason this lands
-before T-20.1 adds eight. The six scenarios of `16-dashboard.feature` are the same properties in the
-corpus's vocabulary.
+**Verification.** `tests/e2e/web/test_write_guard.py` (T-20.0) mirrors the eleven scenarios of the guard block in
+`16-dashboard.feature`. Refused: `::test_a_cross_site_write_is_refused_and_writes_nothing`,
+`::test_a_same_site_write_is_refused`, `::test_an_origin_of_another_authority_is_refused`,
+`::test_an_opaque_origin_is_refused`, `::test_the_guard_answers_before_the_route_runs` (`403`, never `404`, for
+an unknown identifier), `::test_a_cross_site_write_on_a_read_only_instance_is_the_guards_refusal`. Served:
+`::test_a_same_origin_write_is_accepted` (`Sec-Fetch-Site: same-origin` **alone** ⇒ `200`, which pins it as the
+first comparison), `::test_an_origin_of_the_served_authority_is_accepted`,
+`::test_a_write_without_origin_information_is_accepted`, `::test_a_cross_site_read_is_served`,
+`::test_read_only_keeps_its_own_403`. Plus `::test_every_state_changing_route_is_covered`, which enumerates
+`app.routes` (P8) — the reason this lands before T-20.1 adds its four page routes and their four
+fragments.
