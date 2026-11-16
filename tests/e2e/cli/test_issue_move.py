@@ -51,7 +51,7 @@ def test_move_to_the_same_state_twice_is_idempotent(cli: Cli) -> None:
 
 
 def test_a_change_in_review_is_still_open_work(cli: Cli) -> None:
-    """D-058: `In Review` is `type = started`, so the card waiting on a review stays open.
+    """`In Review` is `type = started`, so the card waiting on a review stays open.
 
     Pins the three consequences of that choice, the ones a `type = completed` review column
     would silently break: `v_issue.is_open` stays 1 and the issue answers `issue list --open`,

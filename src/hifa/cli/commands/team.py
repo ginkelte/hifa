@@ -71,7 +71,7 @@ def create_command(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Team key only."),
     no_color: bool = typer.Option(False, "--no-color", help="No color."),
 ) -> None:
-    """Create a team with its six canonical workflow states."""
+    """Create a team with its seven canonical workflow states."""
     root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
     json_mode = bool(json_output or root.json)
     quiet_mode = bool(quiet or root.quiet)
