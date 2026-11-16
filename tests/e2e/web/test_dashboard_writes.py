@@ -30,6 +30,11 @@ HISTORY = (
     "SELECT h.field FROM issue_history h JOIN issue i ON i.id = h.issue_id"
     " WHERE i.identifier = ? ORDER BY h.id"
 )
+#: The one `<select>` the edit form builds its state from, and the options inside it.
+STATE_SELECT = re.compile(r'<select name="state".*?</select>', re.S)
+STATE_OPTION = re.compile(
+    r'<option value="(?P<value>[^"]+)"(?P<selected> selected)?>(?P<label>[^<]*)</option>'
+)
 
 
 def _run(*args: str) -> None:
@@ -82,6 +87,77 @@ def _title_input(html: str) -> str:
     match = TITLE_INPUT.search(html)
     assert match is not None, "the edit control of the title is not in the answer"
     return match.group(0)
+
+
+def _team_states(db: Path, key: str) -> list[tuple[str, str]]:
+    """`(id, name)` of every live state of one team, in the order the dashboard offers them."""
+    with sqlite3.connect(db) as conn:
+        return list(
+            conn.execute(
+                "SELECT id, name FROM workflow_state"
+                " WHERE team_id = (SELECT id FROM team WHERE key = ?) AND archived_at IS NULL"
+                " ORDER BY position, name",
+                (key,),
+            )
+        )
+
+
+def _state_select(html: str) -> re.Match[str]:
+    """The `state` select of an answer, which is the field a human edits the state with."""
+    match = STATE_SELECT.search(html)
+    assert match is not None, "the edit form carries no state control"
+    return match
+
+
+def test_the_detail_page_and_the_panel_offer_the_team_states(seeded: SimpleNamespace) -> None:
+    """Pin that both read paths of the edit form offer the team's states, the current one selected.
+
+    Both had been built without them: the `<select>` rendered no `<option>`, an empty select
+    submits nothing, and `state` read as unchanged — so the field could not be set from the
+    detail page nor from the panel, the two places a human edits it.
+    """
+    expected = _team_states(seeded.db, "ENG")
+    assert len(expected) > 1, "the fixture's team has no states to choose from"
+    current = _value_of("state_id", seeded.db, seeded.identifier)
+    answers = {
+        "detail page": seeded.client.get(f"/ENG/issue/{seeded.identifier}"),
+        "panel": seeded.client.get(f"/_/issues/{seeded.identifier}/panel", headers=HTMX),
+    }
+
+    for label, response in answers.items():
+        assert response.status_code == 200, label
+        options = list(STATE_OPTION.finditer(_state_select(response.text).group(0)))
+        assert [option["value"] for option in options] == [state for state, _ in expected], label
+        assert [option["label"] for option in options] == [name for _, name in expected], label
+        assert [option["value"] for option in options if option["selected"]] == [current], label
+
+
+def test_an_archived_issue_offers_no_edit_form(seeded: SimpleNamespace) -> None:
+    """Pin that an archived issue keeps the edit form off both elements, not only its writes.
+
+    The form used to survive the archive and every submit answered `409`: the reader was offered
+    a control whose only possible outcome is a refusal.
+    """
+    detail_url = f"/ENG/issue/{seeded.identifier}"
+    panel_url = f"/_/issues/{seeded.identifier}/panel"
+    assert 'class="issue-edit"' in seeded.client.get(detail_url).text, "no form to remove"
+
+    _run("issue", "archive", seeded.identifier, "--yes")
+
+    detail = seeded.client.get(detail_url)
+    panel = seeded.client.get(panel_url, headers=HTMX)
+
+    for label, response in {"detail page": detail, "panel": panel}.items():
+        assert response.status_code == 200, label
+        assert 'class="issue-edit"' not in response.text, label
+        assert 'name="state"' not in response.text, label
+        # The criterion names the Save button of both answers, not only the detail page's.
+        assert ">Save</button>" not in response.text, label
+    # The panel is still the panel, and still the issue that was asked for. An empty `<aside>`
+    # satisfies every negative above, so "the panel still renders the issue" needs positives.
+    assert '<aside id="panel"' in panel.text
+    assert f'aria-label="Issue {seeded.identifier}"' in panel.text
+    assert f'<h2 class="panel-title">{STORED_TITLE}</h2>' in panel.text
 
 
 def test_the_edit_form_saves_the_field_and_redirects_to_the_detail(

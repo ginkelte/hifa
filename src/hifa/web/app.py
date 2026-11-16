@@ -477,16 +477,18 @@ def list_page(request: Request, team: str) -> HTMLResponse:
 
 @router.get("/{team}/issue/{ref}")
 def issue_page(request: Request, team: str, ref: str) -> Response:
-    """One URL per issue: a ULID or a lowercase identifier redirects to the canonical one."""
+    """One URL per issue: a ULID or a lowercase identifier redirects to the canonical one.
+
+    Render the detail carrying the team's states and the archive flags, so the edit form offers
+    its `state` control and stays off an issue that cannot take a write.
+    """
     db = _database(request)
     entity = boards.require_team(db, team)
     detail = boards.issue_detail(db, ref, include=boards.DETAIL_INCLUDE)
     canonical = detail.issue.identifier
     if ref != canonical or detail.team.key != entity.key:
         return RedirectResponse(f"/{detail.team.key}/issue/{canonical}", status_code=303)
-    vm = readmodels.build_issue_vm(
-        detail, today=_today(), now=datetime.now(UTC), can_write=_can_write(request)
-    )
+    vm = _issue_detail_vm(request, detail)
     page = _page(
         request, title=f"{canonical} \u00b7 {detail.issue.title}", nav="issue", team=entity
     )
@@ -690,10 +692,14 @@ def issue_card_fragment(request: Request, identifier: str) -> HTMLResponse:
 
 @router.get("/_/issues/{identifier}/panel", dependencies=[HTMX])
 def issue_panel_fragment(request: Request, identifier: str) -> Response:
+    """Answer the panel of one issue, carrying the team's states and the archive flags.
+
+    The panel is where the description is edited, so it holds the same edit form as the detail
+    page; without the states its `state` control submitted nothing, and without the flags an
+    archived issue kept a form every write of which is refused.
+    """
     detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
-    vm = readmodels.build_issue_vm(
-        detail, today=_today(), now=datetime.now(UTC), can_write=_can_write(request)
-    )
+    vm = _issue_detail_vm(request, detail)
     response = _render(
         request,
         "partials/issue_panel.html",
@@ -1030,6 +1036,8 @@ def _issue_detail_extras(
     `IssueListItem` is a projection of `v_issue` without the archive columns, so the flags are
     read from the entity in the same unit of work the states come from — the caller renders
     one element, not three.
+
+    raises: `NotFound` (issue) when the issue is gone between the route's read and this one
     """
     uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
     try:
@@ -1039,7 +1047,7 @@ def _issue_detail_extras(
     finally:
         uow.close()
     if issue is None:  # pragma: no cover - the detail was read from the same database
-        return states, False, False
+        raise NotFound(resource="issue", key=detail.issue.identifier)
     return states, issue.archived_at is not None, issue.trashed
 
 
@@ -1050,7 +1058,12 @@ def _issue_detail_vm(
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
 ) -> dict[str, object]:
-    """`build_issue_vm` of a request, with the refusal of a write carried into the model."""
+    """Build the model of the detail page, the panel and a refused write: the single builder.
+
+    Resolve the team's workflow states and the issue's archive flags here, so that every render
+    of an issue — page, panel or refusal — carries them; a refused write arrives as
+    `form_errors`/`form_error` and is carried into the model, and both stay absent otherwise.
+    """
     states, is_archived, is_trashed = _issue_detail_extras(request, detail)
     return readmodels.build_issue_vm(
         detail,
