@@ -7,12 +7,13 @@ Feature: Board and fractional ranking
 
   @REQ-F018 @smoke
   Scenario: the board groups by state ordered by position
-    Given the team "ENG" with the 6 states at positions 1.0 to 6.0 and 3 issues in "Todo"
+    Given the team "ENG" with the 7 states at positions 1.0, 2.0, 3.0, 4.0, 4.5, 5.0 and 6.0 and 3 issues in "Todo"
     When I query the board of the team "ENG" in JSON
-    Then the "columns" field has 6 elements
+    Then the "columns" field has 7 elements
     And the first column has state_name "Triage"
     And the "Todo" column reports count 3
     And the "In Progress" column reports wip 0
+    And the "In Review" column reports count 0
 
   @REQ-F018 @smoke
   Scenario: inside the column the issues are ordered by board_order
