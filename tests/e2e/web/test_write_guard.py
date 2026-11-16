@@ -152,6 +152,42 @@ def test_a_same_origin_write_is_accepted(seeded: SimpleNamespace) -> None:
     assert _history(seeded.db, seeded.identifier).count("title") == 1
 
 
+def test_the_fetch_metadata_decides_before_the_origin(seeded: SimpleNamespace) -> None:
+    """Pin that `Sec-Fetch-Site` decides alone and `Origin` is only the fallback (§2.1.7, D-057).
+
+    The table of §2.1.7 makes `same-origin` allowed and `cross-site` refused without
+    qualification, and its prose says the fetch metadata "is read first; `Origin` is the fallback
+    for the client that does not send it". The two headers are therefore made to disagree in both
+    directions: a `same-origin` request carrying a foreign `Origin` must be served, and a
+    `cross-site` one whose `Origin` names the served authority must be refused. A guard that
+    consulted `Origin` first whenever it is present would invert both answers and stay green,
+    because no other test of this file sends the two headers at once — which is exactly the
+    mutation this test forecloses.
+    """
+    served_origin = f"{seeded.client.base_url.scheme}://{seeded.client.base_url.netloc}"
+
+    allowed = _patch_title(
+        seeded.client,
+        seeded.identifier,
+        {**HTMX, "Sec-Fetch-Site": "same-origin", "Origin": "https://evil.example"},
+    )
+
+    assert allowed.status_code == 200, allowed.text
+    assert _title(seeded.db, seeded.identifier) == "Fix SSO login"
+    accepted = _history(seeded.db, seeded.identifier)
+    assert accepted.count("title") == 1
+
+    refused = _patch_title(
+        seeded.client,
+        seeded.identifier,
+        {**HTMX, "Sec-Fetch-Site": "cross-site", "Origin": served_origin},
+    )
+
+    _assert_refusal(refused)
+    assert _title(seeded.db, seeded.identifier) == "Fix SSO login"
+    assert _history(seeded.db, seeded.identifier) == accepted
+
+
 def test_a_write_without_origin_information_is_accepted(seeded: SimpleNamespace) -> None:
     """Pin absence as allowed: the declared non-browser client of SPEC-070 §2.1.7.
 
@@ -303,6 +339,27 @@ def test_read_only_keeps_its_own_403(seeded: SimpleNamespace) -> None:
     assert response.status_code == 403, response.text
     assert "read-only" in response.text
     assert REFUSAL not in response.text
+    assert _title(seeded.db, seeded.identifier) == STORED_TITLE
+    assert _history(seeded.db, seeded.identifier) == before
+
+
+def test_a_method_no_route_serves_is_guarded_too(seeded: SimpleNamespace) -> None:
+    """Pin the method as the rule, not the route table: `PUT` and `DELETE` are covered (R28).
+
+    SPEC-070 §2.1.7 guards every request whose method is outside `GET`/`HEAD`/`OPTIONS`, "and a
+    method no route serves yet (`PUT`, `DELETE`) is covered too". The route-coverage test below
+    walks the registered routes, so it cannot reach a method this tree does not serve: a guard
+    rewritten as an allow-list of the methods that exist today (`POST`, `PATCH`) would keep it
+    green while a cross-site `PUT` answered `405` — routing reached, the guard not in the way —
+    and the promise of §2.1.7 would be untested. The path is served for reading, so a `405` here
+    can only mean "the guard was bypassed". Nothing may move either way.
+    """
+    before = _history(seeded.db, seeded.identifier)
+
+    for method in ("PUT", "DELETE"):
+        response = seeded.client.request(method, "/ENG/board", headers=CROSS_SITE, content=b"")
+        _assert_refusal(response)
+
     assert _title(seeded.db, seeded.identifier) == STORED_TITLE
     assert _history(seeded.db, seeded.identifier) == before
 
