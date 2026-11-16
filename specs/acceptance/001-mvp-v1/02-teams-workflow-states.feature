@@ -72,12 +72,15 @@ Feature: Teams and workflow states
     And the third invocation exits with exit code 0
     And the "identifier" field of the output is "OPS-1"
 
+  # D-058: the seed now carries `In Review`, so a name in the template is not a free-form demo —
+  # creating it on a seeded team is exit 4 `Conflict(UNIQUE_STATE_NAME)`. `QA` is not in the template
+  # and appends after the last column, exactly as SPEC-050 §7 shows.
   @REQ-F008 @smoke
   Scenario: new state with a free-form name and a fixed type
-    When I run "hifa state create 'In Review' --type started"
+    When I run "hifa state create 'QA' --type started"
     Then the exit code is 0
-    And a state "In Review" exists with type "started"
-    And its position is greater than the one of "Done"
+    And a state "QA" exists with type "started"
+    And its position is greater than the one of "Canceled"
 
   @REQ-F008 @smoke
   Scenario: a state type outside the enum is rejected
