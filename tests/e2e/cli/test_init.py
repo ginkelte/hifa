@@ -106,9 +106,17 @@ def test_init_human_output_mentions_initialized(sandbox: SimpleNamespace) -> Non
 
 
 def test_init_seeds_the_seven_canonical_states(sandbox: SimpleNamespace) -> None:
+    """The seven seeded states come back in the canonical order.
+
+    Pins the order of the names only — Triage, Todo, Backlog, In Progress, In Review, Done,
+    Canceled — read back with `ORDER BY position`. The columns of each state (type, position,
+    colour, `is_default`) belong to
+    `test_init_seeds_seven_states_and_in_review_sits_at_four_point_five`; this cheaper check
+    survives an edit to that richer test and still catches a state inserted in the wrong slot.
+    """
     run("init")
-    rows = query(sandbox.db, "SELECT name, type FROM workflow_state ORDER BY position")
-    assert [(row["name"], row["type"]) for row in rows] == EXPECTED_STATES
+    rows = query(sandbox.db, "SELECT name FROM workflow_state ORDER BY position")
+    assert [row["name"] for row in rows] == [name for name, _ in EXPECTED_STATES]
 
 
 def test_init_seeds_seven_states_and_in_review_sits_at_four_point_five(
