@@ -103,9 +103,10 @@ Feature: Teams and workflow states
   @REQ-F008 @smoke
   Scenario: a team created before the review column gains it with one command
     Given a team "ENG" with the states "Triage" at 1.0, "Todo" at 2.0, "Backlog" at 3.0, "In Progress" at 4.0, "Done" at 5.0 and "Canceled" at 6.0
-    When I run "hifa state create 'In Review' --type started --before Done" and then I query the board of the team "ENG" in JSON
+    When I run "hifa state create 'In Review' --type started --color '#BB87FC' --before Done" and then I query the board of the team "ENG" in JSON
     Then the first invocation exits with exit code 0
     And the state "In Review" has position 4.5 and is_default 0
+    And the state "In Review" has color "#BB87FC"
     And the states are ordered "Triage", "Todo", "Backlog", "In Progress", "In Review", "Done", "Canceled"
     And the state "Done" has position 5.0
     And the "columns" field has 7 elements

@@ -2373,7 +2373,8 @@ distinction would live only in the two names.
   of reusing `started` is one invariant: SPEC-100 §3.1 can no longer say "one state per type", and it now
   says one row per type with `started` twice.
 - **`position = 4.5`, the midpoint of the slot the column describes.** `domain.ranking.between(4.0, 5.0)`
-  is `4.5`, which is exactly what `hifa state create 'In Review' --before Done` computes on a team that
+  is `4.5`, which is exactly what `hifa state create 'In Review' --type started --color '#BB87FC'
+  --before Done` computes on a team that
   still has six states — so a fresh team and an existing team that ran the documented command hold the
   **same seven numbers**, and no state that exists today changes its stored position (`Done` stays `5.0`,
   `Canceled` stays `6.0`). Every clause that reads "positions 1.0 to 6.0" stays true. The rejected
