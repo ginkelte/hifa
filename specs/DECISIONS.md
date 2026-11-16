@@ -1928,3 +1928,300 @@ exists for: `import --format csv` leaves every `board_order` at `0` (SPEC-080 §
 the cheapest fixture for it. No code changed under this decision; if an implementer finds that the `id`
 tie-break and the `number` tie-break disagree on a real database, the answer is the `id` column of
 SPEC-030 SQL-6 and the code is already right.
+
+## D-053 — `archive` and `restore` are two routes, and a layer write requires `confirm=1`
+
+**Date:** 2026-11-13 · **Wins:** SPEC-070 §2.1.2 (rev 19) · **Touches:** SPEC-070 §2.1.2, §2.1.3, §3,
+§4 (R27), §5.7, §6, §2.6.9, §11; `specs/001-mvp-v1.tasks.md` §T-20;
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`
+
+The dashboard's write paths are one issue in the tracker (HIFA-3) and four contracts in the corpus: the
+five capabilities the CLI already has, comments, labels and the palette. The smallest of the four — the
+parity debt — was still two capabilities short of a contract. `scripts/check_edge_parity.py` reports
+`issue.delete` and `issue.restore` as CLI-only, and §2.1.2 of SPEC-070 (rev 18) had **no route** for
+either: the only way to reach the trash layer from the dashboard was nothing, and the only way to reach
+restore was a body field, `undo?`, on `POST …/archive`.
+
+**Resolution: `archive` and `restore` are two routes, and both `archive` and `delete` require
+`confirm=1` on the body. `undo` does not exist.** SPEC-070 §2.1.2 is the spec that changes; it was
+already the contract this work had to revise, so no spec loses a clause to another — the clause that
+goes away is its own `undo?` field: it made one route mean two requests, one of them confirmation-gated
+and the other not, and it left `restore` with no route of its own for the parity map to point at.
+
+- **Why a capability needs its own route.** The parity checker is a map of capabilities — one row per
+  capability — and it validates in both directions: a route no row declares is a violation, and a row's
+  `web` pointer must be a route that exists. A `restore` that is reachable only by posting an `undo` flag
+  to the archive route has no route to point at. The row would either share the pointer with `issue.archive`
+  (two capabilities, one route: the map stops being one row per capability) or point at a route whose
+  method and path say *archive*. Neither survives the next reader.
+- **Why not `undo`, even though the CLI has it.** `hifa issue archive --undo` is a convenience alias,
+  and SPEC-050 §2.5.3 says so: it "runs `restore_issue` on the same reference", i.e. it **is** restore —
+  `restore_issue(...) if undo else archive_issue(...)`, and `restore_issue` clears both layers
+  (`archived_at` first, then `trashed`, §5.5 of SPEC-040). The CLI nonetheless publishes **two verbs**,
+  `issue archive` and `issue restore`, and the parity map gives each its own row with its own `debt=`:
+  folding them into one route with a flag would leave the map with two capabilities pointing at one
+  path, which is the shape this bullet before it already rejects. And the two requests are not the same
+  request twice: `archive` requires the confirmation and `restore` never asks (D-053's own rule, and
+  SPEC-050 §2.5.3 — undoing is not destructive), while what they answer differs too — an archive sends
+  the reader to the list (the issue left it), a restore sends them back to the detail (the issue is still
+  there, §2.1.2). A single route carrying an `undo` flag would put two different confirmations behind one
+  path and make the caller's intent a body field the route has to interpret.
+- **Why the confirmation, and why this shape.** P6 is normative: nothing destructive runs without an
+  explicit `--yes`. The CLI implements it as a prompt, `--yes` to skip it and `--no-input` to refuse
+  (`confirmation_required`, exit `2`, SPEC-050 §2.5.3). The dashboard had no equivalent, which made the
+  web edge the one place where a single mis-aimed request takes an issue out of every listing — and a
+  POST is exactly what a stale tab, a replayed form, a crawler following a link or an agent without the
+  contract sends. The shape chosen is a **required body field `confirm=1`**, refused with `422`
+  `confirmation_required`, and a checkbox with `name="confirm" value="1" required` in the block that
+  offers the button (§2.6.9). Three alternatives are rejected: a modal `<dialog>`, because `open` is an
+  attribute only the server or a script can set — a dialog is permanently open or permanently shut and
+  the modal method of `<dialog>` needs a script, where the corpus needs none and the panel is already a
+  sheet on a phone (D-055); typing the
+  identifier, because that is friction the CLI does not impose (`--yes` is a flag, not a word) and it
+  would make the web edge a different act from the CLI's; and a `GET …/confirm` page, because it is one
+  route per action and a page a crawler can fetch, i.e. a confirmation that confirms nothing.
+- **Why `confirm=1` is not decoration.** The `required` attribute is the browser's guard and the field
+  is the server's: the route refuses a body without it before it touches the database, so the write
+  cannot happen by navigation, by a link, by a replayed form from another session's tab or by a client
+  that did not read this spec. It is the same act as `--yes`: an answer to "are you sure", given by the
+  person who pressed the button.
+- **Why `restore` never asks.** SPEC-050 §2.5.3: undoing is not destructive, and `hifa issue restore`
+  never prompts. The web edge mirrors the verb, not a generic "write" rule; asking for confirmation to
+  undo an undo is how a confirmation becomes noise.
+
+**Verification.** `scripts/check_edge_parity.py` is the executable form of the whole issue: run it after
+T-20.1 and `issue.archive`, `issue.delete` and `issue.restore` print no `DEBT` line, because the map
+rows of `CAPABILITIES` lose `debt="HIFA-3"` and gain the `(METHOD, path)` pointers of this revision —
+a row with both edges and a stale `debt=` is a violation, so the map cannot be left half-closed. The
+contract itself is asserted by the scenarios "archive without the confirmation is refused", "archive
+with the confirmation takes the issue out of the list and keeps its state", "delete without the
+confirmation is refused", "an archived issue can be deleted", "restore clears both layers and writes one
+history row each" and "the panel of an archived issue offers Restore and no other write" in
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`, written as
+`tests/e2e/web/test_dashboard_layers.py`. `tests/e2e/cli/test_issue_archive_restore.py` already pins the CLI
+side of the same two layers, which is what makes this a parity change rather than a second contract.
+
+## D-054 — After a write the answer is the element, or nothing at all and the collection is re-read
+
+**Date:** 2026-11-13 · **Wins:** SPEC-070 §2.1.3 (rev 19) · **Touches:** SPEC-070 §2.1.3, §2.1.2, §2.6.8,
+§2.6.9, §5.7, §4 (R27), §11; `specs/acceptance/001-mvp-v1/16-dashboard.feature`;
+`specs/001-mvp-v1.tasks.md` §T-20
+
+Four questions of shape that the corpus did not answer, and they only look like one: does a write answer
+the row, the panel or the collection; is the row re-rendered or the collection reloaded; what does the
+panel answer after a layer write; and what is in the body of a move. They are answered together because
+each one is the same question — *which node does the answer own* — and answering them in four places is
+how a layer ends up with four idioms.
+
+**(a) A field edit answers the element; a layer write answers nothing.**
+The distinction is whether the element survives the write. An edit changes the content of a row, a card
+or the panel, and the element is still in the collection afterwards, so the answer is that element and
+htmx swaps it (`200`, `outerHTML` for a row/card, `innerHTML` for the panel).
+An archive, a delete or a restore changes **membership**: the row the panel was opened from is no longer
+in the collection, and there is no element to return that would be true. Returning the panel instead
+would leave the archived card on the board, because a panel answer does not adopt the revision (D-050)
+and the poller would then believe the page is current. So the answer is `204` with **no body**,
+`HX-Trigger: issue-archived|issue-deleted|issue-restored` and `HX-Revision`, and the client re-reads the
+collection from `page["refresh_url"]` — the fragment the filter bar and the poller already use (§2.6.8),
+the only answer that carries server-rendered rows and the only one that adopts the revision. One path,
+already shipped and tested (`tests/e2e/web/test_revision.py`), and no new swap target.
+Rejected: `200` with the whole collection (a write route that has to know the filters of a page it did
+not render, duplicating `/_/issues`); `200` with an empty body plus `HX-Reswap: none` (the same thing,
+lying about the content type); and letting the client remove the row (the DOM becomes a second source of
+truth, which R7 forbids and which loses the row for good if the request was the one that failed).
+
+**(b) The panel needs a third `view`, because the panel is where the description is edited.**
+§2.6.3 says the description is not inline: it is edited in a panel with a `<textarea>` and a Save
+button, and §2.6.6 says "edit a field: yes (panel form + Save)". A panel editor whose Save posts to the
+page route follows a `303` into an htmx swap and pastes a document into `#panel`. So
+`PATCH /_/issues/{identifier}` accepts `view=panel`: same route, same use case, same read model (R13),
+target `#panel`, `innerHTML`, body the `<aside>` of `partials/issue_panel.html`. `view=list|board` keep
+the answer they had.
+
+**(c) `state` and `state_id` are two names because they are two things, and a reviewer will try to
+unify them.** `state` on the edit form and on the PATCH body is a **reference** — a name or a ULID,
+resolved inside the transaction exactly like `hifa issue edit -s`, and setting it appends the issue to
+the target column (`UpdateIssue`, SPEC-040 §2.2). `state_id` on the move form and on the drop payload is
+**the column the issue was put in**, and it comes from `data-state-id` of the node under the pointer
+(§2.6.4). Unifying them would mean one of two worse shapes: the move form resolving a *name* after the
+drop already happened, or the edit form accepting a column id where the CLI accepts a state name — the
+same key carrying two contracts on the wire. Neither name is a position, which is the property R9
+actually protects.
+
+**(d) Neither form carries a position, and the wire permits the neighbours the rendered form does not
+send.** The move route accepts `before?`/`after?` (§2.1.2), so a form *could* name the two rows it is to
+land between and reach the same place the drop does without a script — but §2.6.4's rendered form sends
+`state_id` and nothing else, so the form a reader actually submits lands `position="last"`. The wire
+permits; the rendered control does not name.
+What neither request ever carries is a **position** — no `board_order`, `sort_order`, `rebalance` or
+float, whether the neighbours are present or absent, and with none of them the placement is
+`position="last"`. The float is computed by `domain/ranking.between` inside `move_issue`/`reorder_issue`
+(R9/R10). Nothing in this decision relaxes that: it is restated in R27 so that it binds the edit and the
+layer writes too, which are the routes a reader would assume are "just a form".
+
+**Verification.** Four tests of `tests/e2e/web/test_dashboard_writes.py` — a file **T-20.1 writes** (the tree
+has `test_board_reorder`, `test_dashboard`, `test_revision` and `test_teams_dashboard` under
+`tests/e2e/web/` today), so the names below are the contract that phase implements, not tests that exist:
+`::test_the_drop_answers_204_with_no_body` (status,
+empty body, `HX-Trigger: issue-moved`), `::test_the_panel_edit_answers_the_panel` (`view=panel` returns
+`<aside id="panel">`, not a document), `::test_archive_answers_204_and_the_row_leaves_the_list` (204,
+header, then a GET of `page["refresh_url"]` no longer contains the identifier),
+`::test_restore_answers_204_and_the_row_returns_to_the_list` (204, no body, then a GET of
+`page["refresh_url"]` contains the identifier again), and the scenario set of
+`specs/acceptance/001-mvp-v1/16-dashboard.feature` named in D-053 plus "the inline edit answers the row
+it changed" and "the drop answers 204 with no body and lands between its neighbours". The client half —
+panel closes, collection re-read, focus where §2.6.9 says — is verified **by hand in a browser**, because
+this host has no Playwright (the debt §2.6.8 already records); the HTTP half is pytest. If an implementer
+finds a write that cannot be answered with `204`, the answer is not a body: it is a second route whose
+`hx-target` is the collection, declared in §2.1.3 before it is written.
+
+## D-055 — The confirmation is a `<details>` block the server renders: no modal, no route, no wire field
+
+**Date:** 2026-11-14 · **Wins:** SPEC-070 §2.6.9 · **Touches:** SPEC-070 §2.6.9, §2.1.2, §5.7, §6, §11;
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`
+
+D-053 decides *that* `archive` and `delete` require `confirm=1` and is silent about *how the reader says
+yes*. §2.6.9 had to render that answer five times the same way — panel footer, detail page header, on a
+phone at 320 px, with JavaScript and without it — and every mechanism that carries state off the document
+loses one of those five: a modal needs a script to appear, a `GET …/confirm` page needs a route and
+navigates the reader out of the panel, a wire field describing "open" puts presentation on the wire. So
+the confirmation is a **`<details>`/`<summary>` block rendered by the server**, with the form inside it.
+It is the only mechanism that works with no JavaScript (R4/P5), adds no route and no wire field, and
+whose three states — closed, open, refused — are each a server-rendered document.
+
+- **What the block is.** `archive` and `delete` each render one `<details class="confirm">` in the action
+  group: the `<summary class="btn">` **is** the action, the form inside it posts to the route of §2.1.2,
+  and the checkbox is `name="confirm" value="1" required`. There is no third surface and no second copy of
+  the payload: the fragment forms carry `hx-post` to the `/_/` route with `hx-swap="none"`, the page forms
+  carry `method="post"` to the page route and no `hx-*`, and both are the same block — the two renderings
+  differ only in the form's attributes, and each answers what its own route answers: `303` from the page
+  copy, `204` with no swap from the panel's (§2.1.3, §2.6.9, D-054(a)).
+- **Why the `required` checkbox is not the mechanism.** `required` is the browser's guard and it is what a
+  browser without JavaScript enforces: the form cannot be submitted with the box unchecked, so the no-JS
+  path reaches the server only with `confirm=1`. The server refuses with `422 confirmation_required`
+  anyway, for the client that never saw the HTML (D-053). The block is the interface; the field is the
+  contract.
+- **The three states, all server-rendered.** Closed is the `<summary>` alone. Open is the summary plus the
+  form, with the content already in the document — nothing is fetched to open it. **Refused** (`422`
+  `confirmation_required`) re-renders the same `<details>` **with the `open` attribute**, so the block that
+  failed is still open in front of the reader, the checkbox carries `.is-invalid` and its message, and
+  focus goes to that checkbox (§2.6.9 focus table). An open attribute the server wrote on the refusal is
+  the only way "open" ever appears in the markup, and it is a consequence of a request — not a state the
+  client asked for.
+- **Closing is the summary, so there is no `Cancel` link.** The `<summary>` is the control that closes the
+  block and it is still focused after the block shuts; a link would navigate away from the panel the
+  reader is standing in. `Esc` closes the block through the panel's key handler (§2.6.2) and leaves the
+  panel open; without JavaScript `Esc` belongs to the browser and the summary is the way back — a difference
+  this decision accepts, because the no-JS path has no panel key handler to route it to.
+- **Rejected: `<dialog>`.** A `<dialog open>` **does** render without a script — that is not why it loses.
+  It loses because `open` can only be produced by the server or by a script: a dialog is permanently open
+  or permanently shut, and the modal method of `<dialog>` needs JavaScript, so the reader pressing the
+  button cannot open it without either a script or a request that already knew the answer. A modal
+  overlay is rejected on its own grounds: the panel is already a sheet on a phone, and a box inside it
+  puts a scrim over content the
+  reader can no longer reach (§2.5.6).
+- **Rejected: a `GET …/confirm` page.** It is one route per action that a crawler, a prefetcher or a stale
+  tab can fetch, and it navigates the reader out of the panel — a confirmation page that confirms nothing.
+
+**Verification.** The mechanism is executable, not argued. `specs/acceptance/001-mvp-v1/16-dashboard.feature`
+pins both halves of the field rule: *"archive without the confirmation is refused"* and *"delete without
+the confirmation is refused"* post the form with no `confirm` and assert `422 confirmation_required`, no
+history row and `archived_at` unchanged (the delete one: `trashed 0`); *"archive with the confirmation takes
+the issue out of the list and keeps its state"* posts `confirm=1` and asserts the `303`, `Location:
+/ENG/list`, the `archived_at`, the state kept and exactly one history row. The markup is asserted on the
+refused render, where it is produced: both refusal scenarios contain `<details class="confirm" open>`, the
+`name="confirm"` field and `is-invalid` on the checkbox — the `open` attribute and the marked field are
+pinned by a scenario, not only by this paragraph. That the same block reaches the **panel footer** is the
+shared-template assertion of T-20.1 (`tests/e2e/web/test_dashboard_writes.py`, the file that phase writes).
+These are assertions on the response body, i.e. a client that parses
+HTML and posts a form can execute every one of them, and **a browser with no JavaScript executes the whole
+flow**: it opens the block with `Enter` on the summary, ticks the box because the browser will not submit
+otherwise, and the server either closes the panel or hands back the open, marked block. The client-only
+half — `Esc` closing the block before the panel, focus landing on the checkbox after a refusal — is
+verified by hand in a browser, for the reason §2.6.8 records (no Playwright on this host).
+
+## D-056 — The inline edit posts a form, not JSON: htmx's own encoding, and the hidden form inside the cell
+
+**Date:** 2026-11-14 · **Wins:** SPEC-070 §2.6.3 · **Touches:** SPEC-070 §2.6.3, §5.3, §11;
+`src/hifa/web/static/js/app.js` (the deleted override), `src/hifa/web/templates/partials/issue_row.html`
+
+§2.6.3 prescribed a wire format no route of the layer can accept, and the prescription — not the code —
+is what produced a real bug. It said three things: the `PATCH` body is JSON
+(`body JSON: {"title": "…"}`); a `htmx:configRequest` shim in `app.js` in place of `json-enc`; and the
+hidden `<form method="post">` outside the `<td>`, reached by `hx-include="closest form"`. T-20.1
+implemented the section as written and the first request that reached a browser failed. The three
+clauses fail for three different reasons, and each one is checkable without reading the implementation
+as an intention:
+
+- **No fragment route parses JSON, and that is by design.** Every `/_/` write of the corpus is parsed by
+  `_parse_form` in `src/hifa/web/app.py`, which decodes the body as UTF-8 and hands it to `parse_qs` —
+  urlencoded. The single JSON body under `/_/` is `GET /_/revision`, declared as an exception in
+  §2.1.3.1 and resolved by D-049, and it is a **read**: nothing in the family *accepts* JSON, so a JSON
+  `PATCH` is not a format the layer chose against, it is a format it never had. The declaration is not
+  even reachable as a route signature — the handler takes `body: bytes = Body(default=b"")`, so a
+  `Content-Type: application/json` body is validated as JSON by the framework and the request dies in
+  `RequestValidationError` ⇒ `422 invalid request`, an error page about the envelope rather than about
+  the title. Making JSON work would mean a second body parser for exactly one route, in a layer whose
+  whole write surface — the five fragments of §2.1.3 and the seven page forms of §2.1.2 — already speaks
+  urlencoded, and whose no-JS path (§2.6.6) can only ever speak it.
+- **The shim cannot work, because the body is already encoded when it runs.** The event it hooks is a
+  notification: htmx fires it *after* serializing the form and does not honour `preventDefault()` on it.
+  A listener that sets `Content-Type: application/json` therefore does not change what is on the wire —
+  it only relabels a `title=Fix+SSO+login` body as JSON. The server sees a header it parses as JSON and
+  a body that is not JSON — neither format — and answers `422 invalid request`, the same refusal,
+  reached through the shim instead of through the declaration. That is exactly the failure the first
+  browser run produced, and it is why the override was deleted instead of repaired: there is no version
+  of the shim that can work, since the one thing it would have to change is the thing the event no
+  longer controls. The client's own note in `app.js` now says so where the next reader will look for the
+  missing code.
+- **A `<form>` child of `<tr>` is foster-parented out of the table.** The HTML parser does not allow a
+  form between `<tbody>` and `<tr>`, so it lifts it above the table and leaves it where a table may not
+  have content — the exact hazard the docstring of `tests/e2e/web/test_revision.py` names for the quick
+  add, and the reason that test asserts what the fragment ships rather than that it ships no form. The
+  declared markup therefore could not be the markup a browser builds: the form ended up detached from the
+  row it belongs to, and `hx-include="closest form"` had no ancestor form left to find. The working shape
+  is the same form **inside the `<td>`** that holds the field, `hidden`, carrying an `id` of its own, with
+  the control naming it twice — `form="edit-{identifier}"` for ownership (and the no-JS submit) and
+  `hx-include="#edit-{identifier}"` for what htmx serializes. Inside the cell it is not foster-parented,
+  it travels with the row it is rendered into, and it is replaced together with it (§2.6.3).
+
+- **Rejected: vendoring the JSON extension and keeping the JSON body.** It is the one alternative that
+  would make the declaration executable, and it loses on two counts the corpus treats as binding. It adds
+  a vendored asset to the §2.4 budget — seven files with a `≤ 75 KB` total and per-file ceilings
+  enforced by `test_asset_budget_is_under_75_kb_gzip`, where every new file is a new licence row, a new
+  `sha256` in `static/vendor/README.md` and a new number in a total with ~9 KB of room left — to buy a
+  wire format the server does not want. And it would give **one** route of the layer a second
+  serialization while its seven page forms, its four other fragments and its no-JS fallback stay
+  urlencoded: two formats for one write, distinguished per element, with the difference invisible at the
+  route. The form the browser already encodes is the contract; the extension is a cost with no reader on
+  the other side.
+
+- **What the contract is now.** §2.6.3's exchange block states `Content-Type:
+  application/x-www-form-urlencoded` and a `title=…` body; its markup block shows the hidden form inside
+  the `<td>` and the control naming it by `id`; its rule states that `app.js` keeps **no**
+  request-rewriting hook for `PATCH`es and why. `Enter` is declared as the implicit submission of the form
+  owner — the same `hx-patch` the form carries — rather than as a `keyup[key=='Enter']` trigger, which
+  the shipped markup does not have and which would have sent the request twice. §5.3 step 1 stops
+  drawing the payload as an object. No route, field, enum or `Content-Type` of a **response** changes,
+  so `version` stays 4 and only `spec_revision` moves (19 → 20).
+
+**Verification.** The contract is executable in two places, and the browser one is the reason this
+decision exists. `/var/tmp/t03/probe_browser.py` is a Playwright run against a real `hifa serve` and a
+real Chromium: it reads the row's ownership off the parsed DOM and requires `formThere`, `hidden`,
+`method=post`, `action=/ENG/issue/ENG-1`, `hx-patch` on the form, `ownerIsForm`, `ownFields ==
+["title"]`, `insideTr` **and** `formInCell` — i.e. the parser did not move the form; then it types a
+title, presses `Tab`, and asserts the one exchange it captured has
+`content_type=application/x-www-form-urlencoded`, `body=title=Renamed%20in%20a%20real%20browser` and
+`status 200`, and that the swapped row comes back carrying the new title; then it does the same with
+`Enter`, which reaches the same `PATCH` through the form owner and answers `200`; then it clears the
+field, leaves it, and asserts the exchange is `422` while the returned control carries
+`aria-invalid="true"`, `.is-invalid` and the **stored** title — the field marked and the server's value
+in it (R7), not the empty one the reader typed; finally it fails the run on any CSP violation or page
+error in the console. The pytest half is `tests/e2e/web/test_dashboard_writes.py` (the edit across
+`?view=list|board|panel`, the `200` with the row, the `422` with the field marked and the stored value);
+until that file lands with the rest of the phase, the property already asserted in the tree is the one
+`tests/e2e/web/test_revision.py` carries — every form the row fragment ships writes its row through
+`hx-patch="/_/issues/…"`, keeps `method="post"` and `action="/ENG/issue/…"` as the no-JS fallback, and is
+`hidden`, which is the shape §2.6.3 now declares. A `Content-Type: application/json` on that route is
+not covered by a test because it is not a behaviour to preserve: it answers `422 invalid request`, and if
+a future reader wants it they have to reopen this decision rather than find an unasserted path.

@@ -14,8 +14,7 @@ How the two surfaces are read
   Recent FastAPI wraps an included router in `_IncludedRouter`, so the walk descends into
   `original_router.routes` (and into `Mount.routes`) instead of trusting the flat list.
   Every HTTP method counts except `HEAD`/`OPTIONS`, which FastAPI adds for free: a `PATCH` or a
-  `DELETE` route is a capability route exactly like a `GET` and must be declared (T-16 will add
-  `PATCH /_/issues/{identifier}` and `POST .../move`).
+  `DELETE` route is a capability route exactly like a `GET` and must be declared.
 
 The database is never touched: `create_app` opens it lazily and `boards.startup_state` degrades
 to an empty workspace on a missing file, so no migration is applied and no file is created.
@@ -173,8 +172,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         web=(("POST", "/{team}/issue"), ("POST", "/_/issues")),
     ),
     Capability(name="issue.list", cli="issue list", web=("GET", "/{team}/list")),
-    # The five writes below are CLI-only until the dashboard stage 2 lands their web edge.
-    Capability(name="issue.edit", cli="issue edit", web=None, debt="HIFA-3"),
+    # The no-JS form post and the htmx field write are the same capability.
+    Capability(
+        name="issue.edit",
+        cli="issue edit",
+        web=(("POST", "/{team}/issue/{identifier}"), ("PATCH", "/_/issues/{identifier}")),
+    ),
+    # The four writes below are CLI-only until the dashboard stage 2 lands their web edge.
     Capability(name="issue.move", cli="issue move", web=None, debt="HIFA-3"),
     Capability(name="issue.archive", cli="issue archive", web=None, debt="HIFA-3"),
     Capability(name="issue.delete", cli="issue delete", web=None, debt="HIFA-3"),
@@ -223,6 +227,7 @@ FRAGMENT_ALLOWLIST: Mapping[Route, str] = {
     ("GET", "/_/counts"): "htmx partial of the dashboard counters",
     ("GET", "/_/revision"): "htmx read of the change signal: one number, no HTML to swap",
     ("POST", "/_/issues"): "htmx quick-add: the web transport of `issue create`",
+    ("PATCH", "/_/issues/{identifier}"): "htmx field write: the web transport of `issue edit`",
     ("POST", "/_/states/{state_id}/position"): "htmx write of the board drag & drop",
 }
 

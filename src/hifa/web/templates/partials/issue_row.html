@@ -6,7 +6,27 @@
   <td class="cell-priority"><span class="glyph{% if row.is_urgent %} is-urgent{% endif %}">{{ row.priority_glyph }}</span></td>
   <td class="cell-state"><span class="dot" style="background: {{ row.state_color }}"></span><span class="state-name">{{ row.state_name }}</span></td>
   <td class="cell-assignee">{% if row.has_assignee %}<span class="avatar avatar-sm">{{ row.assignee_initials }}</span>{{ row.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</td>
-  <td class="cell-title"><a class="title" href="{{ row.url }}">{{ row.title }}</a>
+  <td class="cell-title">
+    {% if row.can_write %}
+    {#- Each inline control has `name` and `form`, and the form it names is a
+        hidden `<form method="post" action="/{team}/issue/{id}">` of its own — the no-JS
+        fallback, and the form Enter submits through. It sits inside the cell (a `<form>` as a
+        child of `<tr>` is foster-parented out of the table) and it is hidden, so the control is
+        associated by id and `hx-include` names that id instead of `closest form`. -#}
+    <form id="edit-{{ row.identifier }}" class="inline-edit" method="post" hidden
+          action="/{{ row.team_key }}/issue/{{ row.identifier }}"
+          hx-patch="/_/issues/{{ row.identifier }}?view=list"
+          hx-target="closest tr" hx-swap="outerHTML" hx-sync="closest tr:replace"></form>
+    <input type="text" name="title" form="edit-{{ row.identifier }}" value="{{ row.title }}" data-original="{{ row.title }}"
+           class="inline-input{% if row.title_invalid %} is-invalid{% endif %}"
+           aria-label="Title of {{ row.identifier }}" autocomplete="off"{% if row.title_invalid %} aria-invalid="true"{% endif %}
+           hx-patch="/_/issues/{{ row.identifier }}?view=list" hx-include="#edit-{{ row.identifier }}"
+           hx-target="closest tr" hx-swap="outerHTML"
+           hx-trigger="blur changed" hx-sync="closest tr:replace">
+    {% else %}
+    <a class="title" href="{{ row.url }}">{{ row.title }}</a>
+    {% endif %}
+    {% if row.form_error %}<span class="form-error" role="alert">{{ row.form_error }}</span>{% endif %}
     {% for label in row.labels %}<span class="chip chip-label" style="--label: {{ label.color }}">{{ label.name }}</span>{% endfor %}
   </td>
   <td class="cell-due">{% if row.has_due %}<span class="due{% if row.is_overdue %} is-overdue{% endif %}">{{ row.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</td>

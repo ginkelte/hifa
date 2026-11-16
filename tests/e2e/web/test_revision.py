@@ -284,12 +284,27 @@ def test_the_collection_fragment_carries_rows_and_not_the_page_s_form(
 ) -> None:
     """The quick add belongs to the page: shipping it with the rows replaces the form a person is
     typing into with an empty shell on every automatic reload, and the controls end up
-    foster-parented inside the table."""
+    foster-parented inside the table.
+
+    A row's **own** edit form (SPEC-070 §2.6.3) does not violate that property: it is the row's,
+    it is hidden, it travels with the row it belongs to and is replaced together with it. So the
+    assertion is not "no form at all" but "no form here is the page's": every form the fragment
+    ships must write the row back through the fragment route, and none may be the page's quick
+    add.
+    """
     rows = served.client.get("/_/issues", params={"team": "ENG", "view": "list"}, headers=HTMX)
     assert rows.status_code == 200
     assert 'id="quick-add"' not in rows.text, "the fragment carries rows, not the page's form"
-    assert "<form" not in rows.text
     assert "hx-swap-oob" not in rows.text, "nothing out of band travels with the rows"
+    row_forms = re.findall(r"<form\b[^>]*>", rows.text)
+    assert row_forms, "a writable row carries the edit form its control names (§2.6.3)"
+    for tag in row_forms:
+        assert 'hx-patch="/_/issues/' in tag, f"a form in the fragment writes its row: {tag}"
+        assert 'hx-post="/_/issues' not in tag, f"the quick add never travels with the rows: {tag}"
+        assert 'method="post"' in tag and 'action="/ENG/issue/' in tag, (
+            f"the row form keeps its no-JS fallback: {tag}"
+        )
+        assert " hidden" in tag, f"the row form is hidden, the control is the visible one: {tag}"
 
     page = served.client.get("/ENG/list")
     assert page.text.count('id="quick-add"') == 1, "the page keeps its one form"

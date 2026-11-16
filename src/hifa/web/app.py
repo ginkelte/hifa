@@ -11,7 +11,7 @@ this module.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -35,11 +35,11 @@ from hifa import __version__
 from hifa.adapters.clock import SystemClock
 from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database, RevisionWatch
-from hifa.adapters.sqlite.reads import ListFilters
+from hifa.adapters.sqlite.reads import IssueDetail, ListFilters
 from hifa.adapters.sqlite.uow import UnitOfWork
 from hifa.app import boards
-from hifa.app.commands import Actor, CreateIssue, UpdateState
-from hifa.app.issues import create_issue
+from hifa.app.commands import Actor, CreateIssue, UpdateIssue, UpdateState
+from hifa.app.issues import create_issue, update_issue
 from hifa.app.teams import list_states, update_state
 from hifa.domain.entities import Issue, Team, WorkflowState
 from hifa.domain.errors import Conflict, HifaError, InvalidTransition, NotFound, Validation
@@ -477,16 +477,18 @@ def list_page(request: Request, team: str) -> HTMLResponse:
 
 @router.get("/{team}/issue/{ref}")
 def issue_page(request: Request, team: str, ref: str) -> Response:
-    """One URL per issue: a ULID or a lowercase identifier redirects to the canonical one."""
+    """One URL per issue: a ULID or a lowercase identifier redirects to the canonical one.
+
+    Render the detail carrying the team's states and the archive flags, so the edit form offers
+    its `state` control and stays off an issue that cannot take a write.
+    """
     db = _database(request)
     entity = boards.require_team(db, team)
     detail = boards.issue_detail(db, ref, include=boards.DETAIL_INCLUDE)
     canonical = detail.issue.identifier
     if ref != canonical or detail.team.key != entity.key:
         return RedirectResponse(f"/{detail.team.key}/issue/{canonical}", status_code=303)
-    vm = readmodels.build_issue_vm(
-        detail, today=_today(), now=datetime.now(UTC), can_write=_can_write(request)
-    )
+    vm = _issue_detail_vm(request, detail)
     page = _page(
         request, title=f"{canonical} \u00b7 {detail.issue.title}", nav="issue", team=entity
     )
@@ -690,16 +692,60 @@ def issue_card_fragment(request: Request, identifier: str) -> HTMLResponse:
 
 @router.get("/_/issues/{identifier}/panel", dependencies=[HTMX])
 def issue_panel_fragment(request: Request, identifier: str) -> Response:
+    """Answer the panel of one issue, carrying the team's states and the archive flags.
+
+    The panel is where the description is edited, so it holds the same edit form as the detail
+    page; without the states its `state` control submitted nothing, and without the flags an
+    archived issue kept a form every write of which is refused.
+    """
     detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
-    vm = readmodels.build_issue_vm(
-        detail, today=_today(), now=datetime.now(UTC), can_write=_can_write(request)
-    )
+    vm = _issue_detail_vm(request, detail)
     response = _render(
         request,
         "partials/issue_panel.html",
         {"page": _page(request, title=vm["identifier"], nav="issue"), "vm": vm},
     )
     response.headers["HX-Push-Url"] = f"/{detail.team.key}/issue/{detail.issue.identifier}"
+    return response
+
+
+@router.patch("/_/issues/{identifier}", dependencies=[HTMX])
+def issue_edit_fragment(
+    request: Request, identifier: str, view: str = "list", body: bytes = Body(default=b"")
+) -> Response:
+    """One field write from the list, the board or the panel; the element comes back edited.
+
+    `view` picks the element that answers — the `<tr>` of the list (`outerHTML`), the card of
+    the board or the whole panel — and defaults to `list` when the caller does not say. The body
+    is `application/x-www-form-urlencoded`: a key that is absent keeps the stored value, an empty
+    string clears the field the command lets be cleared.
+
+    A refusal keeps the element: `422` re-renders the same row, card or panel with the control
+    marked and the message beside it, and `409` (a write to an archived issue) re-renders it with
+    the message and no control. `404` is the only answer that cannot keep it — the element the
+    client asked for does not exist, and `error.html`'s fragment says so in the toast area.
+    """
+    if not _can_write(request):
+        return _fragment_error(request, status_code=403, message="server is read-only")
+    fields = _parse_form(body)
+    try:
+        _update_from_form(request, identifier, fields)
+    except Validation as exc:
+        control, message = _refusal(exc)
+        return _issue_edit_fragment(
+            request,
+            identifier,
+            view=view,
+            status_code=422,
+            form_errors={control: message} if control else None,
+            form_error=None if control else message,
+        )
+    except InvalidTransition as exc:
+        return _issue_edit_fragment(
+            request, identifier, view=view, status_code=409, form_error=exc.message
+        )
+    response = _issue_edit_fragment(request, identifier, view=view, status_code=200)
+    response.headers["HX-Trigger"] = "issue-updated"
     return response
 
 
@@ -729,6 +775,38 @@ def issue_create_page(request: Request, team: str, body: bytes = Body(default=b"
     except Validation as exc:
         field = exc.field or "title"
         return _list_form_error(request, entity, {field: f"invalid value: {exc.message}"})
+    return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
+
+
+@router.post("/{team}/issue/{identifier}")
+def issue_edit_page(
+    request: Request, team: str, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """The edit form without JS: a plain form post, no `HX-Request` guard.
+
+    Success is a `303` to the canonical detail. A validation error re-renders
+    `issue_detail.html` with `422`, the refused control marked `.is-invalid` and the message
+    next to it — the form shows the **server's** current value, never the typed one, because
+    the read model reads the row again. With htmx enabled the same form is intercepted by
+    `hx-patch="/_/issues/{identifier}"` and never reaches this route.
+
+    `404` (unknown issue, state or member) and `409` (a write to an archived issue) travel to
+    the single handlers of `_install_error_handlers`: one HTTP mapping per error, in one place.
+    """
+    db = _database(request)
+    entity = boards.require_team(db, team)
+    if not _can_write(request):
+        return _error_page(
+            request,
+            status_code=403,
+            message="server in read-only mode",
+            back_url=f"/{entity.key}/issue/{identifier}",
+            title="Read-only",
+        )
+    try:
+        issue = _update_from_form(request, identifier, _parse_form(body))
+    except Validation as exc:
+        return _issue_page_error(request, entity, identifier, exc)
     return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
 
 
@@ -862,6 +940,223 @@ def _create_from_form(request: Request, team: str, fields: dict[str, str]) -> Is
         )
     finally:
         uow.close()
+
+
+# --- edit form -------------------------------------------------------------------------
+
+#: Form control -> the `UpdateIssue` field it writes. The two names coincide except for the
+#: assignee, which the form sends as a member reference and the command as `assignee_id`.
+EDIT_COMMAND_FIELDS: dict[str, str] = {
+    "title": "title",
+    "description": "description",
+    "priority": "priority",
+    "state": "state",
+    "assignee": "assignee_id",
+    "due_date": "due_date",
+    "estimate": "estimate",
+}
+#: Controls an empty string clears (the command writes `None`). `title` is not one of them —
+#: an empty title is a `422`, never a cleared column — and `state` is not either: an issue
+#: without a state does not exist, so an empty state means "unchanged".
+EDIT_CLEARABLE = frozenset({"description", "assignee", "due_date", "estimate"})
+#: The `field` a use case reports -> the control that carries it (only the ones that differ).
+EDIT_FIELD_ALIASES: dict[str, str] = {"assignee_id": "assignee"}
+
+
+def _parse_estimate(value: str) -> float | None:
+    """`"3"` -> `3.0`; empty -> `None` (clear); anything else is a `Validation` on `estimate`.
+
+    Only the syntax lives here: whether the number is part of the team's scale is
+    `rules.validate_estimate`, called by the use case inside the transaction.
+    """
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise Validation(
+            "estimate must be a number",
+            rule="ESTIMATE_INVALID",
+            field="estimate",
+            value=value,
+        ) from exc
+
+
+def _refusal(exc: Validation) -> tuple[str | None, str]:
+    """`(control, message)` of a refused field write: the control is `None` when it names none."""
+    reported = exc.field or ""
+    control = EDIT_FIELD_ALIASES.get(reported, reported)
+    field = control if control in readmodels.EDIT_FORM_FIELDS else None
+    return field, f"invalid value: {exc.message}"
+
+
+def _update_command(identifier: str, fields: dict[str, str]) -> UpdateIssue:
+    """`UpdateIssue` of one form post: a control that is absent stays `UNSET` (unchanged)."""
+    kwargs: dict[str, Any] = {"issue": identifier}
+    for name in readmodels.EDIT_FORM_FIELDS:
+        if name not in fields:
+            continue
+        raw = fields[name]
+        if name == "priority":
+            kwargs["priority"] = _parse_priority(raw)
+        elif name == "estimate":
+            kwargs["estimate"] = _parse_estimate(raw)
+        elif name == "state":
+            if raw.strip():
+                kwargs["state"] = raw.strip()
+        elif name in EDIT_CLEARABLE and not raw.strip():
+            kwargs[EDIT_COMMAND_FIELDS[name]] = None
+        else:
+            kwargs[EDIT_COMMAND_FIELDS[name]] = raw
+    return UpdateIssue(**kwargs)
+
+
+def _update_from_form(request: Request, identifier: str, fields: dict[str, str]) -> Issue:
+    """One `update_issue` from form fields, shared by the page and the fragment route.
+
+    raises: `NotFound` (issue, state, member), `Validation`, `InvalidTransition(ISSUE_ARCHIVED)`
+    """
+    uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        return update_issue(
+            uow,
+            _update_command(identifier, fields),
+            Actor(source="web", label="web"),
+        )
+    finally:
+        uow.close()
+
+
+def _issue_detail_extras(
+    request: Request, detail: IssueDetail
+) -> tuple[list[WorkflowState], bool, bool]:
+    """The three facts the detail read does not carry: team states, archived, trashed.
+
+    `IssueListItem` is a projection of `v_issue` without the archive columns, so the flags are
+    read from the entity in the same unit of work the states come from — the caller renders
+    one element, not three.
+
+    raises: `NotFound` (issue) when the issue is gone between the route's read and this one
+    """
+    uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        with uow.read() as tx:
+            issue = tx.issues.get(detail.issue.id)
+        states = [summary.state for summary in list_states(uow, detail.team.id)]
+    finally:
+        uow.close()
+    if issue is None:  # pragma: no cover - the detail was read from the same database
+        raise NotFound(resource="issue", key=detail.issue.identifier)
+    return states, issue.archived_at is not None, issue.trashed
+
+
+def _issue_detail_vm(
+    request: Request,
+    detail: IssueDetail,
+    *,
+    form_errors: Mapping[str, str] | None = None,
+    form_error: str | None = None,
+) -> dict[str, object]:
+    """Build the model of the detail page, the panel and a refused write: the single builder.
+
+    Resolve the team's workflow states and the issue's archive flags here, so that every render
+    of an issue — page, panel or refusal — carries them; a refused write arrives as
+    `form_errors`/`form_error` and is carried into the model, and both stay absent otherwise.
+    """
+    states, is_archived, is_trashed = _issue_detail_extras(request, detail)
+    return readmodels.build_issue_vm(
+        detail,
+        today=_today(),
+        now=datetime.now(UTC),
+        can_write=_can_write(request),
+        states=states,
+        is_archived=is_archived,
+        is_trashed=is_trashed,
+        form_errors=form_errors,
+        form_error=form_error,
+    )
+
+
+def _issue_page_error(
+    request: Request, entity: Team, identifier: str, exc: Validation
+) -> HTMLResponse:
+    """Re-render `issue_detail.html` with `422`: the control marked and the server's value."""
+    detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
+    control, message = _refusal(exc)
+    vm = _issue_detail_vm(
+        request,
+        detail,
+        form_errors={control: message} if control else None,
+        form_error=None if control else message,
+    )
+    page = _page(
+        request,
+        title=f"{detail.issue.identifier} \u00b7 {detail.issue.title}",
+        nav="issue",
+        team=entity,
+    )
+    return _render(request, "issue_detail.html", {"page": page, "vm": vm}, status_code=422)
+
+
+def _issue_edit_fragment(
+    request: Request,
+    identifier: str,
+    *,
+    view: str,
+    status_code: int,
+    form_errors: Mapping[str, str] | None = None,
+    form_error: str | None = None,
+) -> HTMLResponse:
+    """The element a `PATCH` answers — the row of the list, the card or the panel — refused or not.
+
+    The element is re-read after the write, so what comes back is the stored row: the client
+    swaps it in place and never has to merge the fields it did not send.
+    """
+    detail = boards.issue_detail(
+        _database(request),
+        identifier,
+        include=boards.DETAIL_INCLUDE if view == "panel" else frozenset(),
+    )
+    message = form_error or next((text for text in (form_errors or {}).values() if text), None)
+    control = next((name for name, text in (form_errors or {}).items() if text), None)
+    if view == "panel":
+        vm = _issue_detail_vm(request, detail, form_errors=form_errors, form_error=form_error)
+        response = _render(
+            request,
+            "partials/issue_panel.html",
+            {"page": _page(request, title=vm["identifier"], nav="issue"), "vm": vm},
+            status_code=status_code,
+        )
+        response.headers["HX-Push-Url"] = f"/{detail.team.key}/issue/{detail.issue.identifier}"
+        return response
+    if view == "board":
+        card = readmodels.build_card_vm(
+            detail.issue,
+            today=_today(),
+            can_write=_can_write(request),
+            form_error=message,
+            invalid_field=control,
+        )
+        return _render(
+            request,
+            "partials/issue_card.html",
+            {"page": _page(request, title="Card", nav="board"), "card": card},
+            status_code=status_code,
+        )
+    row = readmodels.build_row_vm(
+        detail.issue,
+        today=_today(),
+        can_write=_can_write(request),
+        form_error=message,
+        invalid_field=control,
+    )
+    return _render(
+        request,
+        "partials/issue_row.html",
+        {"page": _page(request, title="Row", nav="list"), "row": row},
+        status_code=status_code,
+    )
 
 
 def _install_error_handlers(app: FastAPI) -> None:
