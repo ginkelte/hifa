@@ -1090,7 +1090,9 @@ class IssueDetail:
     #: `states` is the team's **non-archived** workflow states ordered by `position, name` — the set
     #: and the order of SQL-7 row 16, which is the statement `TeamRepo.states` runs (§2.4).
     archived_at: datetime | None = None  # issue.archived_at: the archive layer
-    trashed: bool = False  # issue.trashed: False on every default read, True only with include_trashed
+    trashed: bool = (
+        False  # issue.trashed: False on every default read, True only with include_trashed
+    )
     states: tuple[WorkflowState, ...] = ()  # the team's non-archived states, by position then name
 
 

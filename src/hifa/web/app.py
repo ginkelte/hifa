@@ -749,7 +749,11 @@ def issue_edit_fragment(
         )
     except InvalidTransition as exc:
         return _issue_edit_fragment(
-            request, identifier, view=view, status_code=409, form_error=exc.message
+            request,
+            identifier,
+            view=view,
+            status_code=409,
+            form_error=refusal_sentence(exc, verb="edit", identifier=identifier),
         )
     response = _issue_edit_fragment(request, identifier, view=view, status_code=200)
     response.headers["HX-Trigger"] = "issue-updated"
@@ -781,7 +785,9 @@ def issue_create_page(request: Request, team: str, body: bytes = Body(default=b"
         issue = _create_from_form(request, entity.key, fields)
     except Validation as exc:
         field = exc.field or "title"
-        return _list_form_error(request, entity, {field: f"invalid value: {exc.message}"})
+        return _list_form_error(
+            request, entity, {field: refusal_sentence(exc, verb="create", identifier=None)}
+        )
     return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
 
 
@@ -825,9 +831,7 @@ def quick_add(request: Request, team: str, body: bytes = Body(default=b"")) -> R
     fields = _parse_form(body)
     title = (fields.get("title") or "").strip()
     if not title:
-        return _form_error(
-            request, team=team, status_code=422, message="invalid value: title is required"
-        )
+        return _form_error(request, team=team, status_code=422, message=_title_required())
     try:
         issue = _create_from_form(request, team, fields)
     except Validation as exc:
@@ -835,7 +839,7 @@ def quick_add(request: Request, team: str, body: bytes = Body(default=b"")) -> R
             request,
             team=team,
             status_code=422,
-            message=f"invalid value: {exc.message}",
+            message=refusal_sentence(exc, verb="create", identifier=None),
         )
     identifier = issue.identifier
     detail = boards.issue_detail(_database(request), identifier)
@@ -1041,9 +1045,7 @@ def _title_required() -> str:
     )
 
 
-def _refusal(
-    refusal: HifaError, *, identifier: str | None, verb: str
-) -> tuple[str | None, str]:
+def _refusal(refusal: HifaError, *, identifier: str | None, verb: str) -> tuple[str | None, str]:
     """`(control, message)` of a refused write: the control is `None` when it names none.
 
     The control is resolved here (the error names a command field, the form a control) and the
@@ -1228,10 +1230,14 @@ def _install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Validation)
     async def _validation(request: Request, exc: Validation) -> HTMLResponse:
+        # The last row of §6's catalogue, from the one builder: a `Validation` that reaches this
+        # handler is one no route handled, so no verb of this layer performed it and no issue was
+        # resolved for it — the naming rules cannot be selected without an identifier, and every
+        # writing route resolves the reference and handles its `Validation` before this runs.
         return _error_page(
             request,
             status_code=422,
-            message=f"invalid value: {exc.message}",
+            message=refusal_sentence(exc, verb="", identifier=None),
             back_url="/",
             title="Invalid request",
         )
@@ -1278,7 +1284,11 @@ def _install_security_headers(app: FastAPI) -> None:
         if not path.startswith("/static/"):
             _revision(request)
         response = await call_next(request)
-        if not path.startswith("/static/") and response.status_code in (200, 201):
+        # `204` is the fourth answer that carries the number: the bodyless writes of §2.1.3 render
+        # no element for it to land on, so nothing adopts it there, but the client reads the header
+        # of the write it just made and the answer must not be the one that omits it (§2.1.3,
+        # §5.7 step 5).
+        if not path.startswith("/static/") and response.status_code in (200, 201, 204):
             number = _revision(request)
             if request.method not in READ_METHODS:
                 # A write of this request moves the counter of a *different* connection, so the
