@@ -1,3 +1,10 @@
+# [0.9.0](https://github.com/ginkelte/hifa/compare/v0.8.1...v0.9.0) (2026-11-17)
+
+
+### Features
+
+* **web:** the dashboard moves, archives, deletes and restores an issue (HIFA-58) ([#26](https://github.com/ginkelte/hifa/issues/26)) ([b0bd4a9](https://github.com/ginkelte/hifa/commit/b0bd4a9d8acb5af720f5d52083b55954b63ffef5))
+
 ## [0.8.1](https://github.com/ginkelte/hifa/compare/v0.8.0...v0.8.1) (2026-11-17)
 
 
