@@ -13,6 +13,37 @@ Feature: Comments and attachments
     And there are 2 rows in "comment" for "ENG-30"
     And the second comment has parent_id equal to the id of the first one
 
+  @REQ-F022 @slow
+  Scenario: the third reply is the deepest one that lands
+    Given the issue "ENG-30" with a comment thread two deep
+    When I run "hifa issue comment ENG-30 'Third level' --parent $DEEPEST_COMMENT"
+    Then the exit code is 0
+    And there are 3 rows in "comment" for "ENG-30"
+
+  @REQ-F022 @slow
+  Scenario: a reply deeper than three is refused and nothing is written
+    Given the issue "ENG-30" with a comment thread three deep
+    When I run "hifa issue comment ENG-30 'Too deep' --parent $DEEPEST_COMMENT"
+    Then the exit code is 2
+    And stderr contains "COMMENT_DEPTH_EXCEEDED"
+    And there are 3 rows in "comment" for "ENG-30"
+
+  @REQ-F022 @slow
+  Scenario: an empty body is refused before anything is written
+    Given the issue "ENG-30" with no comments
+    When I run "hifa issue comment ENG-30 '   '"
+    Then the exit code is 2
+    And stderr contains "BODY_EMPTY"
+    And there are 0 rows in "comment" for "ENG-30"
+
+  @REQ-F022 @slow
+  Scenario: a parked issue takes no comment
+    Given the issue "ENG-30" in the trash
+    When I run "hifa issue comment ENG-30 'Anyone there?'"
+    Then the exit code is 2
+    And stderr contains "ISSUE_TRASHED"
+    And there are 0 rows in "comment" for "ENG-30"
+
   @REQ-F022 @smoke
   Scenario: resolving a comment hides it from the default listing
     Given the issue "ENG-30" with 2 comments

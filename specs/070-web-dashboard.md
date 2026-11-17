@@ -2514,6 +2514,46 @@ Feature: hifa web dashboard
     Then no fragment was swapped under the pointer
     And the drop completes against the position the server has
     And the board reloads after the drop's request returns
+
+  Scenario: the page and the panel both carry the composer for a visible issue
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "name=\"body\""
+    And the second response contains "name=\"body\""
+    And the first response contains "action=\"/ENG/issue/ENG-13/comment\""
+    And the second response contains "/_/comments/ENG-13"
+
+  Scenario: a parked issue offers no composer
+    Given the issue "ENG-13" in the trash
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "/ENG/issue/ENG-13/restore"
+    And the second response contains "/ENG/issue/ENG-13/restore"
+    And none of the answers contains "name=\"body\""
+
+  Scenario: a comment posted without JavaScript lands on the comments of the page
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/ENG/issue/ENG-13/comment" with the form {"body":"First look at this"}
+    Then the status is 303
+    And the location is "/ENG/issue/ENG-13#comments"
+    And the HTML of "/ENG/issue/ENG-13" contains "First look at this"
+
+  Scenario: the comment fragment answers the one list item it wrote
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/_/comments/ENG-13" with the form {"body":"From the panel"} and the header "HX-Request: true"
+    Then the status is 200
+    And the HTML contains "<li class=\"comment\""
+    And the HTML contains "From the panel"
+
+  Scenario: a comment with no body is refused and the box comes back
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/ENG/issue/ENG-13/comment" with the form {"body":"   "}
+    Then the status is 422
+    And the HTML contains "a comment needs a body"
+    And the HTML contains "name=\"body\""
 ```
 
 ## 8. Regeneration checklist
@@ -2540,7 +2580,7 @@ Feature: hifa web dashboard
 7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (61 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (66 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).

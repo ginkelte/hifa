@@ -72,6 +72,53 @@ Feature: HTTP dashboard
     And the HTML contains the "<strong>" tag
     And the HTML contains the body of the comment
 
+  @REQ-F013 @REQ-F035 @slow
+  Scenario: the page and the panel both carry the composer for a visible issue
+    # the positive that a page rendering no composer fails: the box is not decoration, it is the
+    # only way a comment is written from this edge (§2.6.10, D-060).
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "name=\"body\""
+    And the second response contains "name=\"body\""
+    And the first response contains "action=\"/ENG/issue/ENG-13/comment\""
+    And the second response contains "/_/comments/ENG-13"
+
+  @REQ-F013 @REQ-F035 @slow
+  Scenario: a parked issue offers no composer
+    Given the issue "ENG-13" in the trash
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "/ENG/issue/ENG-13/restore"
+    And the second response contains "/ENG/issue/ENG-13/restore"
+    And none of the answers contains "name=\"body\""
+
+  @REQ-F013 @slow
+  Scenario: a comment posted without JavaScript lands on the comments of the page
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/ENG/issue/ENG-13/comment" with the form {"body":"First look at this"}
+    Then the status is 303
+    And the location is "/ENG/issue/ENG-13#comments"
+    And the HTML of "/ENG/issue/ENG-13" contains "First look at this"
+
+  @REQ-F013 @slow
+  Scenario: the comment fragment answers the one list item it wrote
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/_/comments/ENG-13" with the form {"body":"From the panel"} and the header "HX-Request: true"
+    Then the status is 200
+    And the HTML contains "<li class=\"comment\""
+    And the HTML contains "From the panel"
+
+  @REQ-F013 @slow
+  Scenario: a comment with no body is refused and the box comes back
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/ENG/issue/ENG-13/comment" with the form {"body":"   "}
+    Then the status is 422
+    And the HTML contains "a comment needs a body"
+    And the HTML contains "name=\"body\""
+
   @REQ-F036 @smoke @slow
   Scenario: the palette returns at most 10 mixed results
     Given 30 issues with the word "log" in the title
