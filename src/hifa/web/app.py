@@ -42,12 +42,20 @@ from hifa.app.commands import (
     Actor,
     ArchiveIssue,
     CreateIssue,
+    MoveIssue,
     RestoreIssue,
     TrashIssue,
     UpdateIssue,
     UpdateState,
 )
-from hifa.app.issues import archive_issue, create_issue, restore_issue, trash_issue, update_issue
+from hifa.app.issues import (
+    archive_issue,
+    create_issue,
+    move_issue,
+    restore_issue,
+    trash_issue,
+    update_issue,
+)
 from hifa.app.teams import list_states, update_state
 from hifa.domain.entities import Issue, Team, WorkflowState
 from hifa.domain.errors import Conflict, HifaError, InvalidTransition, NotFound, Validation
@@ -895,6 +903,54 @@ def issue_restore_fragment(
     return _layer_fragment(request, identifier, body, verb="restore")
 
 
+@router.post("/{team}/issue/{identifier}/move")
+def issue_move_page(
+    request: Request, team: str, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Move one issue into another column from its own form: `303` to the detail.
+
+    The state the form names is the whole of the write; a state the team does not have is a
+    `404`, because the reference the reader sent names nothing this page can move between.
+    """
+    db = _database(request)
+    entity = boards.require_team(db, team)
+    if not _can_write(request):
+        return _error_page(
+            request,
+            status_code=403,
+            message="server in read-only mode",
+            back_url=f"/{entity.key}/issue/{identifier}",
+            title="Read-only",
+        )
+    try:
+        issue = _run_move(request, identifier, _parse_form(body))
+    except InvalidTransition as exc:
+        return _issue_page_error(request, entity, identifier, exc, verb="move", status_code=409)
+    except Validation as exc:
+        return _issue_page_error(request, entity, identifier, exc, verb="move")
+    return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
+
+
+@router.post("/_/issues/{identifier}/move", dependencies=[HTMX])
+def issue_move_fragment(
+    request: Request, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """The panel footer's move: `204`, bodyless, with the trigger the client acts on.
+
+    A refusal re-renders the panel and retargets it, because a bodyless answer with no target
+    would fetch the refusal and throw it away.
+    """
+    if not _can_write(request):
+        return _fragment_error(request, status_code=403, message="server is read-only")
+    try:
+        _run_move(request, identifier, _parse_form(body))
+    except InvalidTransition as exc:
+        return _layer_refusal(request, identifier, "move", exc, status_code=409)
+    except Validation as exc:
+        return _layer_refusal(request, identifier, "move", exc)
+    return Response(status_code=204, headers={"HX-Trigger": "issue-moved"})
+
+
 @router.post("/_/issues", dependencies=[HTMX])
 def quick_add(request: Request, team: str, body: bytes = Body(default=b"")) -> Response:
     """Quick add: one `create_issue` call and the new `<tr>` back."""
@@ -1189,6 +1245,23 @@ def _run_layer_write(request: Request, identifier: str, verb: str) -> Issue:
         uow.close()
 
 
+def _run_move(request: Request, identifier: str, fields: Mapping[str, str]) -> Issue:
+    """One `move_issue` from the body of a form: the state it names is the whole of the write.
+
+    raises: `NotFound` (issue, state), `Validation`, `InvalidTransition(ISSUE_ARCHIVED)`
+    """
+    target = (fields.get("state_id") or "").strip()
+    uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        return move_issue(
+            uow,
+            MoveIssue(issue=identifier, target_state=target or None),
+            Actor(source="web", label="web"),
+        )
+    finally:
+        uow.close()
+
+
 def _needs_confirmation(verb: str) -> bool:
     """Two of the three writes take an issue out of every listing, and ask before they do."""
     return verb != "restore"
@@ -1237,7 +1310,12 @@ def _layer_fragment(request: Request, identifier: str, body: bytes, *, verb: str
 
 
 def _layer_refusal(
-    request: Request, identifier: str, verb: str, exc: HifaError | None
+    request: Request,
+    identifier: str,
+    verb: str,
+    exc: HifaError | None,
+    *,
+    status_code: int = 422,
 ) -> HTMLResponse:
     """The panel, re-rendered with the refusal inside it and the block that refusal belongs to.
 
@@ -1252,7 +1330,7 @@ def _layer_refusal(
         request,
         identifier,
         view="panel",
-        status_code=422,
+        status_code=status_code,
         form_error=message,
         confirm_open=verb,
     )
@@ -1298,8 +1376,9 @@ def _issue_page_error(
     *,
     verb: str = "edit",
     confirm_open: str | None = None,
+    status_code: int = 422,
 ) -> HTMLResponse:
-    """Re-render `issue_detail.html` with `422`: the control marked and the server's value.
+    """Re-render `issue_detail.html` with the refusal: the control marked and the stored value.
 
     `exc` is the refusal a use case raised, or `None` for the one the edge refuses itself: a
     confirmation form posted without its confirmation. Either way the page comes back with the
@@ -1328,7 +1407,7 @@ def _issue_page_error(
         nav="issue",
         team=entity,
     )
-    return _render(request, "issue_detail.html", {"page": page, "vm": vm}, status_code=422)
+    return _render(request, "issue_detail.html", {"page": page, "vm": vm}, status_code=status_code)
 
 
 def _issue_edit_fragment(

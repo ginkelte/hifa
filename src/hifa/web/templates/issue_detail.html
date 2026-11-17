@@ -28,6 +28,13 @@
           {% include "partials/issue_form_fields.html" %}
           <div class="form-actions"><button type="submit" class="btn">Save</button></div>
         </form>
+        <form class="action-move" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/move">
+          <label class="visually-hidden" for="move-{{ vm.identifier }}">Move to state</label>
+          <select id="move-{{ vm.identifier }}" name="state_id">
+            {% for state in vm.states %}<option value="{{ state.id }}"{% if state.is_current %} selected{% endif %}>{{ state.name }}</option>{% endfor %}
+          </select>
+          <button type="submit" class="btn">Move</button>
+        </form>
         <details class="confirm"{% if vm.confirm_open == "archive" %} open{% endif %}>
           <summary class="btn">Archive</summary>
           <p class="confirm-line">This takes {{ vm.identifier }} out of every listing. Restore puts it back.</p>

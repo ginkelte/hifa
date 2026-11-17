@@ -91,6 +91,7 @@ def test_a_visible_issue_carries_the_edit_form_and_both_confirmation_blocks(seed
     for body in (page, panel):
         assert 'class="action-group"' in body
         assert 'action="/ENG/issue/ENG-1"' in body
+        assert 'name="state_id"' in body
         assert '<summary class="btn">Archive</summary>' in body
         assert '<summary class="btn">Delete</summary>' in body
         assert 'class="action-restore"' not in body
@@ -245,3 +246,82 @@ def test_restore_from_the_panel_answers_no_content(seeded) -> None:
     assert response.status_code == 204
     assert response.headers["HX-Trigger"] == "issue-restored"
     assert _column(seeded.db, "archived_at") is None
+
+
+# --- move ---------------------------------------------------------------------------------
+
+
+def _state_id(db: Path, name: str) -> str:
+    with sqlite3.connect(db) as conn:
+        (state_id,) = conn.execute(
+            "SELECT id FROM workflow_state WHERE name = ? AND team_id ="
+            " (SELECT id FROM team WHERE key = 'ENG')",
+            (name,),
+        ).fetchone()
+    return str(state_id)
+
+
+def test_move_from_the_page_lands_on_the_detail_with_the_state_written(seeded) -> None:
+    target = _state_id(seeded.db, "Done")
+
+    response = seeded.client.post(
+        "/ENG/issue/ENG-1/move", data={"state_id": target}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ENG/issue/ENG-1"
+    with sqlite3.connect(seeded.db) as conn:
+        (name,) = conn.execute(
+            "SELECT s.name FROM issue i JOIN workflow_state s ON s.id = i.state_id"
+            " WHERE i.identifier = 'ENG-1'"
+        ).fetchone()
+    assert name == "Done"
+
+
+def test_move_from_the_panel_answers_a_bodyless_no_content(seeded) -> None:
+    target = _state_id(seeded.db, "In Progress")
+
+    response = seeded.client.post("/_/issues/ENG-1/move", data={"state_id": target}, headers=HTMX)
+
+    assert response.status_code == 204
+    assert response.headers["HX-Trigger"] == "issue-moved"
+    assert response.headers["HX-Revision"]
+
+
+def test_a_state_that_names_nothing_is_a_not_found(seeded) -> None:
+    """The form carries ids the server offered; an id it did not offer names no column."""
+    response = seeded.client.post(
+        "/ENG/issue/ENG-1/move",
+        data={"state_id": "01J8ZQ7K3M4N5P6Q7R8S9T0V1W"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    # The catalogue words this refusal `workflow state does not exist`; the handler prints the
+    # domain's own message, which names the reference it could not resolve. The status is the
+    # contract here and the wording is the one the handler already gives every `NotFound`.
+    assert "does not exist" in response.text
+
+
+def test_an_archived_issue_cannot_be_moved(seeded) -> None:
+    _run("issue", "archive", "ENG-1", "--yes")
+    target = _state_id(seeded.db, "Done")
+
+    response = seeded.client.post(
+        "/ENG/issue/ENG-1/move", data={"state_id": target}, follow_redirects=False
+    )
+
+    assert response.status_code == 409
+    assert "ENG-1 is archived; restore it first" in response.text
+
+
+def test_the_panel_retargets_a_refused_move(seeded) -> None:
+    _run("issue", "delete", "ENG-1", "--yes")
+
+    response = seeded.client.post(
+        "/_/issues/ENG-1/move", data={"state_id": _state_id(seeded.db, "Done")}, headers=HTMX
+    )
+
+    assert response.status_code == 422
+    assert response.headers["HX-Retarget"] == "#panel"
+    assert "ENG-1 is in the trash; restore it first" in response.text

@@ -148,9 +148,8 @@ class Capability:
 # * HIFA-7  (T-11) brings full-text search and replaces the `/search` stub: `search.issues`.
 # * HIFA-42 is the dashboard form for a team and a workflow state from the UI: it closes
 #           `team.create` and `state.create`.
-# * HIFA-58 is the dashboard's write phase: `issue.edit` closed with it, `issue.archive`,
-#           `issue.delete` and `issue.restore` closed in its first slice, and `issue.move` is
-#           what the same ticket still owes — a done ticket is not honest debt.
+# * HIFA-58 is the dashboard's write phase: with it, `issue.edit`, `issue.move`,
+#           `issue.archive`, `issue.delete` and `issue.restore` all have both edges.
 
 CAPABILITIES: tuple[Capability, ...] = (
     # --- operational: they build or run an edge, they are not a capability of one ---------
@@ -180,7 +179,14 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     # Each of these is one capability with two transports: the no-JS form post and the htmx
     # fragment of the panel. `move` is the one still CLI-only, and it is the ticket's own debt.
-    Capability(name="issue.move", cli="issue move", web=None, debt="HIFA-58"),
+    Capability(
+        name="issue.move",
+        cli="issue move",
+        web=(
+            ("POST", "/{team}/issue/{identifier}/move"),
+            ("POST", "/_/issues/{identifier}/move"),
+        ),
+    ),
     Capability(
         name="issue.archive",
         cli="issue archive",
@@ -249,6 +255,7 @@ FRAGMENT_ALLOWLIST: Mapping[Route, str] = {
     ("GET", "/_/counts"): "htmx partial of the dashboard counters",
     ("GET", "/_/revision"): "htmx read of the change signal: one number, no HTML to swap",
     ("POST", "/_/issues/{identifier}/archive"): "htmx bodyless write of the panel's archive",
+    ("POST", "/_/issues/{identifier}/move"): "htmx bodyless write of the panel footer's move",
     ("POST", "/_/issues/{identifier}/delete"): "htmx bodyless write of the panel's delete",
     ("POST", "/_/issues/{identifier}/restore"): "htmx bodyless write of the panel's restore",
     ("POST", "/_/issues"): "htmx quick-add: the web transport of `issue create`",

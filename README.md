@@ -212,12 +212,18 @@ Dark, keyboard-driven, and it opens no socket to anywhere but `127.0.0.1`.
 | `GET /` | `303` to `/{default_team}/board`; with 2+ teams and no default, `200` renders the team picker |
 | `GET /{team}/board` | board grouped by `workflow_state`; filters `state`, `assignee`, `label`, `cycle`, `project`, `q` |
 | `GET /{team}/list` | dense keyset table (`sort`, `cursor`, `offset`, `limit`), same filters |
-| `GET /{team}/issue/{identifier}` | full detail; a ULID or lowercase identifier answers `303` to the canonical URL |
+| `GET /{team}/issue/{identifier}` | full detail; a ULID or lowercase identifier answers `303` to the canonical URL. An archived or trashed issue answers `200` with `Restore` and nothing else |
 | `GET /_/issues?view=list\|board` | htmx fragment (requires `HX-Request: true`, else `400`) |
 | `GET /_/issues/{id}/row\|card\|panel` | one row, one card, or the detail panel |
 | `POST /_/issues` | quick add: `201` with the new `<tr>` and `HX-Trigger: issue-created` |
 | `POST /{team}/issue` | the same quick add as a plain form post: `303` to the detail, `422` re-renders (works with no JavaScript) |
 | `POST /_/states/{id}/position` | drag & drop persistence: `204` + `HX-Trigger: board-reordered`, `403` in read-only, `422` for a neighbour from another team |
+| `POST /{team}/issue/{identifier}` | the edit form without JavaScript: `303` to the detail, `422` re-renders the control |
+| `POST /{team}/issue/{identifier}/move` | move to another column: `303` to the detail (fragment `POST /_/issues/{id}/move` answers `204` + `HX-Trigger: issue-moved`) |
+| `POST /{team}/issue/{identifier}/archive` | archive, after `confirm=1`: `303` to the list (fragment answers `204` + `issue-archived`) |
+| `POST /{team}/issue/{identifier}/delete` | send to the trash, after `confirm=1`: `303` to the list (fragment answers `204` + `issue-deleted`) |
+| `POST /{team}/issue/{identifier}/restore` | bring it back out of both layers: `303` to the detail (fragment answers `204` + `issue-restored`) |
+| `GET /_/revision` | the page's change signal: one number, `204` bodies carry it too |
 | `GET /healthz` | `{"status":"ok"}` |
 
 Pages are `Cache-Control: no-store`; `static/vendor/*` is immutable for a year; the hand-written
