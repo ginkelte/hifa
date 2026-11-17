@@ -37,7 +37,7 @@ from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database, RevisionWatch
 from hifa.adapters.sqlite.reads import IssueDetail, ListFilters
 from hifa.adapters.sqlite.uow import UnitOfWork
-from hifa.app import boards
+from hifa.app import boards, members
 from hifa.app.commands import (
     Actor,
     ArchiveIssue,
@@ -1377,10 +1377,12 @@ def _write_comment(request: Request, identifier: str, fields: Mapping[str, str])
     parent = (fields.get("parent") or "").strip() or None
     uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
     try:
+        with uow.read() as repos:
+            author = members.local_member(repos)
         return comment_on_issue(
             uow,
             CommentOnIssue(issue=identifier, body=fields.get("body", ""), parent_id=parent),
-            Actor(source="web", label="web"),
+            Actor(member_id=author, source="web", label="web"),
         )
     finally:
         uow.close()

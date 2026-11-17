@@ -28,6 +28,7 @@ from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database
 from hifa.adapters.sqlite.reads import IssueListItem, IssuePage, ListFilters, OrderKey
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
+from hifa.app import members
 from hifa.app.boards import issue_detail, list_blocked, list_issues
 from hifa.app.commands import (
     UNSET,
@@ -1123,6 +1124,11 @@ def _resolve_assignee(repos: Repos, ref: str | None) -> str | None:
     return member.id
 
 
+def _active_members(repos: Repos) -> list[Member]:
+    """Every active member of the workspace: the app-layer rule, asked by the assignee resolver."""
+    return members.active_members(repos)
+
+
 def _member_by_display_name(repos: Repos, value: str) -> Member | None:
     """Member whose display name or email equals `value` ignoring case."""
     workspace = repos.teams.workspace()
@@ -1138,19 +1144,8 @@ def _member_by_display_name(repos: Repos, value: str) -> Member | None:
 
 
 def _local_member(repos: Repos) -> str | None:
-    ref = (os.environ.get("HIFA_MEMBER") or "").strip()
-    if ref:
-        member = repos.members.get(ref) or repos.members.get_by_email(ref)
-        return member.id if member is not None else None
-    members = _active_members(repos)
-    return members[0].id if len(members) == 1 else None
-
-
-def _active_members(repos: Repos) -> list[Member]:
-    workspace = repos.teams.workspace()
-    if workspace is None:
-        return []
-    return [member for member in repos.members.list(workspace.id) if member.is_active]
+    """Who writes: the local member of the workspace, resolved by the layer that owns that rule."""
+    return members.local_member(repos)
 
 
 # --- writes -----------------------------------------------------------------------------

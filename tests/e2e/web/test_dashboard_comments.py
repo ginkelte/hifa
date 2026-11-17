@@ -149,11 +149,11 @@ def test_a_comment_from_the_page_redirects_to_the_section_that_holds_it(seeded) 
     assert len(rows) == 1
     assert rows[0]["body"] == "First look at this"
     assert rows[0]["parent_id"] is None
-    # The web edge writes as `Actor(source="web")` and carries no member, so a comment typed in
-    # the dashboard has no author row behind it. The list renders that as an absent author; it
-    # is the same actor every other dashboard write uses, and a member identity at this edge is
-    # not part of the contract yet.
-    assert rows[0]["author_id"] is None
+    # The dashboard has no sessions, so the author is the local member — the one member the
+    # workspace holds, the same answer the CLI gives.
+    with sqlite3.connect(seeded.db) as conn:
+        (member_id,) = conn.execute("SELECT id FROM member").fetchone()
+    assert rows[0]["author_id"] == member_id
     assert "First look at this" in _page(seeded).text
 
 
