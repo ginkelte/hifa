@@ -474,6 +474,14 @@ textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
 @media (max-width: 900px) {
   .sidebar { display: none; }
   .shell { margin-left: 0; }
+  /* The detail's two columns become one. Side by side, the 260 px side leaves the description
+     58 px wide on a 390 px phone — every word on its own line — and nothing at 320 px. */
+  .detail { padding: 16px; }
+  .detail-body { flex-direction: column; gap: 20px; align-items: stretch; }
+  .detail-side { width: auto; flex: 1 1 auto; }
+  /* A wide table or a long code block scrolls inside its own box instead of pushing the page. */
+  .description table,
+  .description pre { display: block; max-width: 100%; overflow-x: auto; }
   /* The panel covers the whole screen at this width: the heading stays put so the way out is
      always under the thumb, however far the issue has been scrolled. */
   .panel { width: 100vw; border-left: 0; padding: 0; }
