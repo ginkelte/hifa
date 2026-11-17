@@ -183,11 +183,25 @@ def list_blocked(db: Database, *, team: str | None = None) -> tuple[IssueListIte
         conn.close()
 
 
-def issue_detail(db: Database, ref: str, *, include: frozenset[str] = frozenset()) -> IssueDetail:
-    """Detail by identifier or ULID; `NotFound(issue, key=ref)` when it does not exist."""
+def issue_detail(
+    db: Database,
+    ref: str,
+    *,
+    include: frozenset[str] = frozenset(),
+    include_trashed: bool = False,
+) -> IssueDetail:
+    """Detail by identifier or ULID; `NotFound(issue, key=ref)` when it does not exist.
+
+    `include_trashed` is the visibility argument of a caller that answers for an issue the
+    trash layer holds (SPEC-070 §2.1.1, D-059): the default keeps the read's own predicate
+    `i.trashed = 0`, so a trashed reference is a `NotFound`, and `True` drops that one
+    predicate and nothing else — same statements, same order, same count — so the answer may
+    carry `trashed = True`. The detail page and the panel are its only consumers; every
+    listing, every count and the row/card fragments keep the default.
+    """
     conn = db.ro_connection()
     try:
-        detail = reads.issue_detail(conn, ref, include=include)
+        detail = reads.issue_detail(conn, ref, include=include, include_trashed=include_trashed)
     finally:
         conn.close()
     if detail is None:

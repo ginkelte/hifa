@@ -13,14 +13,50 @@
   </dl>
   <div class="description">{{ vm.description_html | safe }}</div>
   {% if vm.form_error %}{% if not vm.invalid_field %}<p class="form-error" role="alert">{{ vm.form_error }}</p>{% endif %}{% endif %}
-  {% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
-  <form class="issue-edit" method="post" action="{{ vm.edit_action }}"
-        hx-patch="{{ vm.edit_fragment }}?view=panel" hx-target="#panel" hx-swap="innerHTML"
-        hx-disabled-elt="find button">
-    <h3 class="form-title">Edit</h3>
-    {% include "partials/issue_form_fields.html" %}
-    <div class="form-actions"><button type="submit" class="btn">Save</button></div>
-  </form>
+  {% if vm.can_write %}
+  <div class="action-group">
+    {% if vm.is_archived or vm.is_trashed %}
+    <form class="action-restore" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/restore">
+      <button type="submit" class="btn">Restore</button>
+    </form>
+    {% else %}
+    <form class="issue-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=panel" hx-target="#panel" hx-swap="innerHTML"
+          hx-disabled-elt="find button">
+      <h3 class="form-title">Edit</h3>
+      {% include "partials/issue_form_fields.html" %}
+      <div class="form-actions"><button type="submit" class="btn">Save</button></div>
+    </form>
+    <form class="action-move" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/move"
+          hx-post="/_/issues/{{ vm.identifier }}/move" hx-swap="none">
+      <label class="visually-hidden" for="panel-move-{{ vm.identifier }}">Move to state</label>
+      <select id="panel-move-{{ vm.identifier }}" name="state_id">
+        {% for state in vm.states %}<option value="{{ state.id }}"{% if state.is_current %} selected{% endif %}>{{ state.name }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="btn">Move</button>
+    </form>
+    <details class="confirm"{% if vm.confirm_open == "archive" %} open{% endif %}>
+      <summary class="btn">Archive</summary>
+      <p class="confirm-line">This takes {{ vm.identifier }} out of every listing. Restore puts it back.</p>
+      <form method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/archive"
+            hx-post="/_/issues/{{ vm.identifier }}/archive" hx-swap="none">
+        <input type="checkbox" id="panel-confirm-archive-{{ vm.identifier }}" name="confirm" value="1" required>
+        <label for="panel-confirm-archive-{{ vm.identifier }}"{% if vm.confirm_open == "archive" and vm.form_error %} class="is-invalid"{% endif %}>Yes, archive {{ vm.identifier }}</label>
+        <button type="submit" class="btn btn-danger">Archive</button>
+      </form>
+    </details>
+    <details class="confirm"{% if vm.confirm_open == "delete" %} open{% endif %}>
+      <summary class="btn">Delete</summary>
+      <p class="confirm-line">This sends {{ vm.identifier }} to the trash. Restore brings it back.</p>
+      <form method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/delete"
+            hx-post="/_/issues/{{ vm.identifier }}/delete" hx-swap="none">
+        <input type="checkbox" id="panel-confirm-delete-{{ vm.identifier }}" name="confirm" value="1" required>
+        <label for="panel-confirm-delete-{{ vm.identifier }}"{% if vm.confirm_open == "delete" and vm.form_error %} class="is-invalid"{% endif %}>Yes, delete {{ vm.identifier }}</label>
+        <button type="submit" class="btn btn-danger">Delete</button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
   {% endif %}
   {% if vm.comments %}
   <section class="comments">

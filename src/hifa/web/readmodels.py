@@ -376,6 +376,7 @@ def build_issue_vm(
     is_trashed: bool = False,
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
+    confirm_open: str | None = None,
 ) -> dict[str, object]:
     """Template model of one issue detail: `row_vm` plus the detail collections.
 
@@ -388,6 +389,9 @@ def build_issue_vm(
     entry per `EDIT_FORM_FIELDS`, `None` where the field is fine, so the template can ask for a
     key that is always there and still fail in CI on a real omission. `form_error` stands on
     its own because a refusal is not always about a control (`ISSUE_ARCHIVED` names no field).
+
+    `confirm_open` says which of the two `<details>` blocks a refusal must re-render **open** —
+    the form asked for no confirmation, so the block it refused is the one the reader has to see.
     """
     item = detail.issue
     try:
@@ -515,6 +519,7 @@ def build_issue_vm(
             "created_label": _stamp(item.created_at),
             "updated_label": _relative(item.updated_at, now),
             "can_write": can_write,
+            "confirm_open": confirm_open,
             "is_archived": is_archived,
             "is_trashed": is_trashed,
             "form_errors": errors,

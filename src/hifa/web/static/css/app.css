@@ -389,6 +389,55 @@ textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
 .panel-title { font-size: 15px; font-weight: 600; margin: 6px 0 12px; }
 .panel-foot { margin-top: 16px; }
 
+/* --- the action group -------------------------------------------------------------- */
+/* One container for every write the reader can perform on the issue, whatever layer it is
+   in: the layer chooses which controls it holds, never whether it exists. */
+.action-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.action-group form { margin: 0; }
+.action-move { display: flex; gap: 8px; align-items: center; }
+.action-move select { flex: 1; min-width: 0; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.action-restore { display: flex; }
+.action-restore .btn { flex: 1; justify-content: center; }
+.confirm {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+.confirm summary {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font: 12px var(--ui);
+  color: var(--text-muted);
+}
+.confirm-line { margin: 6px 0 8px; font: 12px var(--ui); color: var(--text); }
+.confirm .form-actions { display: flex; gap: 8px; }
+.btn-danger { border-color: var(--urgent); color: var(--urgent); }
+.btn-danger:hover { background: var(--urgent); color: var(--bg); }
+@media (max-width: 900px) {
+  /* A finger needs a target it can hit: the group's controls grow to the 44 px floor. */
+  .action-group .btn,
+  .confirm summary { min-height: 44px; }
+}
+
 /* --- search, error, toasts --------------------------------------------------------- */
 .search-page { display: flex; gap: 8px; padding: 16px; }
 .search-page input {

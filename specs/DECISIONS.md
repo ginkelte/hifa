@@ -2469,3 +2469,129 @@ existing-team path as a scenario, so the one-command route cannot rot into a cla
 pin it (`tests/unit/app/test_create_team.py`, `tests/integration/app/test_state_reorder_db.py`, whose
 position list is `[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]` today). This branch is the spec change only; the drift
 is the reason for the `spec_revision` bump and closes when T-21 lands.
+
+## D-059 — A trashed issue is served by its own detail page and its panel, and `issue_detail` gains the one declared way to read it
+
+**Date:** 2026-11-17 · **Wins:** SPEC-070 §2.1.1, §4 (R29) · **Touches:** SPEC-070 §1, §2.1.1, §2.1.2,
+§2.1.3, §2.1.4, §2.3.4, §2.6.4, §2.6.9, §4 (R27, R29), §5.7, §5.7.1, §6, §7, §11; SPEC-030 §2.5 (SQL-7
+row 1), §2.6 (`issue_detail`, `IssueDetail.trashed`); SPEC-040 §2.2 (the `issue_detail` signature), §4.1
+(R21), §11; `specs/001-mvp-v1.tasks.md` (T-20.1); `specs/INDEX.md`;
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`
+
+**Prior state.** SPEC-070 §2.6.9 states the rule for the two layers in one sentence: "the panel of an
+archived or trashed issue renders `Restore` and nothing else". For the archive layer that sentence is
+true and its control has a page to live on — `archived_at` is carried by the detail read, so
+`GET /{team}/issue/{identifier}` answers `200` for an archived issue and renders the one write it
+accepts. For the trash layer the same sentence has nothing behind it: `issue_detail`'s statement 1
+filters `i.trashed = 0` (SPEC-030 §2.6, SQL-7 row 1), `tests/integration/db/test_reads_detail.py`
+pins that a trashed reference answers `None` (`test_a_trashed_issue_has_no_detail`), and the edge turns
+that `None` into a `404` — so the panel and the detail of a trashed issue are both `404`, and the
+`Restore` the corpus promises is markup no route can produce. The corpus is not silent about the trash
+elsewhere: three refusals give the reader an instruction, `ENG-13 is in the trash; restore it first`
+(the `422` of §6, produced by `ISSUE_TRASHED` in SPEC-040 §6), and the CLI has the verb that carries it
+out, `hifa issue restore` (exit `0`, never prompting, SPEC-050 §2.5.3). What the dashboard lacked was
+the page the instruction sends the reader to: with the identifier in hand — the identifier the refusal
+itself prints — there was no URL that showed the issue and no control that undid the layer. The CLI could
+already do it (`hifa issue restore ENG-13`), so this is a P2 parity hole and not a new capability.
+
+**Resolution: a trashed issue is served by its detail page and by its panel, and by nothing else, and the
+detail read gains one keyword that is the only way to return one.**
+
+- **The two routes that serve it.** `GET /{team}/issue/{identifier}` and
+  `GET /_/issues/{identifier}/panel` answer `200` for a trashed issue and render the issue with
+  `Restore` as its only control — no edit form, no move `<select>`, no other layer write (§2.6.9). The
+  `/{team}/issue/{ulid}` alias answers `303` to the same page, because R6 declares the identifier URL
+  canonical and an alias that `404`s while its canonical URL answers `200` is two URLs disagreeing about
+  one row.
+- **Everything else keeps the trash out.** The board, the list, the search page, the palette, the
+  counters, and the `row` and `card` fragments never return a trashed issue: these are collections and
+  collection members, no collection contains a trashed row, and a `<tr>`/`<article>` for a trashed issue
+  would be a row the collection does not have. The row and card fragments keep the read's default and
+  answer `404` (§4 R29), which is also what keeps their answer unchanged by this decision.
+- **Why the panel and not only the page.** They are one read model (§2.3.4, R13) and one route pair; a
+  panel that `404`s where the page answers `200` would make the same reference mean two things depending
+  on which fragment was asked, and it would leave the "open this identifier" path — `hx-get` on a row,
+  `HX-Push-Url` — able to load a page whose panel cannot be rendered. The panel is not a collection: it
+  is the sheet next to one, and it is the place the write it offers lives.
+
+**The collision this decision had to resolve, and how.** SPEC-040 R21 (spec_revision 23, the same day)
+says the opposite of the paragraph above, in its own words: "`issue_detail` still answers `None` for an
+issue the trash layer hides, so `archived_at` is the only flag a render can find set, and `trashed` is
+therefore **always `False`** on a detail this read returns". A test pins it. Two clauses of the corpus
+cannot both stand, so one of them is revised, by name, here:
+
+- **The detail read gains `include_trashed: bool = False`** (SPEC-040 §2.2), a keyword-only parameter with
+  a default, and R21's sentence is rewritten to say what is true after it: the default read hides the
+  trash exactly as before — every existing caller, every listing and the pinned test are untouched — and
+  `include_trashed=True` is the single declared exception, which changes statement 1's predicate and
+  nothing else. The statement count of SQL-7 does not move (**12** with `DETAIL_INCLUDE`, **8** with an
+  empty `include`): the keyword buys a predicate, not a statement. `trashed` is `False` on every detail
+  returned by the default and may be `True` only on one returned with the keyword.
+- **Why the read and not a second read.** The alternative was a `trashed_detail` (or a `layers=` variant)
+  next to `issue_detail`: sixteen statements — SQL-7 — duplicated, kept in step by hand, with two
+  functions whose answers must agree on fifteen of them, to serve one page whose content is the issue plus
+  one button. It would also re-open the exact drift the previous revision of this spec closed: R21 exists
+  because a render that composes its model from two reads can see the issue change between them
+  (spec_revision 23 of SPEC-040), and two detail reads that differ in one predicate are the same trap one
+  layer down. The corpus already names this axis: `ListFilters.include_trashed` (SPEC-030 §2.6) is the
+  listing's word for it, and `hifa issue list --trashed` is the CLI's (SPEC-050 §2.5.3). The keyword reuses
+  the name rather than inventing a second vocabulary for one predicate.
+- **What R21 keeps.** Its rule is that a render of an issue is served by one call on one connection and
+  that a fact a render needs and the read does not carry is a defect of the read. This decision adds a
+  fact the read could not previously carry (`trashed = 1` on the row it already loads) and hands it to the
+  render through the same call. Nothing about the "one read, one connection" rule moves, and no render
+  opens a second read to learn which layer it is looking at.
+
+**The alternatives rejected.**
+
+- **A `/trash` view.** The obvious third surface: a page under `/{team}/trash` listing the trash, with the
+  same filters and counts as the list. It was rejected on cost and on fit. On cost, it is a page route, a
+  read model, a template, a fragment, its own filter and pagination rules, a place in the sidebar, and a
+  new rule telling every other count and listing to keep excluding rows the new page shows — and it still
+  does not answer the question the refusal message asks ("I know the identifier, take me back"), which is
+  the only question the trash is asked in practice. On fit, the CLI's answer to "enumerate the trash" is a
+  flag on the existing listing (`hifa issue list --trashed`, SPEC-050 §2.5.3), not a second listing, and a
+  page of its own would be the dashboard's second way of enumerating issues where the reference surface
+  has one. It remains the honest answer to a different requirement — *enumerating* the trash — and that
+  requirement is priced below, not built here.
+- **Leaving the trash unreachable and documenting the CLI as the only way back.** Cheapest, and it was the
+  state of the tree: the dashboard tells the reader `ENG-13 is in the trash; restore it first` and then
+  hands them a terminal. It was rejected because the corpus already publishes the control (§2.6.9's
+  sentence covers the trashed panel), because it makes the dashboard the one surface where a write can be
+  undone only by leaving it, and because the asymmetry is invisible in the spec — the sentence reads as if
+  the panel worked. A corpus that documents a control it does not serve is how the next reader concludes
+  the trash is a rendering bug.
+
+**The price, stated.**
+
+- **The trash is reachable only by identifier.** No page of the dashboard enumerates it, counts it, or
+  links to it: a reader who does not know `ENG-13` cannot find a trashed issue from the browser.
+  `hifa issue list --trashed` can (SPEC-050 §2.5.3), so this is a **P2 gap this decision does not close**
+  and does not hide — enumerating the trash is a listing with its own filters, its own empty state and its
+  own rule against every count, and it needs its own ticket before it is contracted. The mitigation is the
+  one that matters for the flow that exists: the refusals that mention the trash print the identifier
+  (`ENG-13 is in the trash; restore it first`), so the reader who is told to restore has the address.
+- **Two reads of one route pair now differ from the other two.** The detail and the panel pass the
+  keyword; the row and the card do not. That asymmetry is deliberate (a collection member versus a
+  standalone render) and it is the one thing the next implementer can get wrong, which is why R29 states
+  it in §4 and one scenario asserts the `404` of the row fragment for the same identifier whose page
+  answers `200`.
+- **The trash does not become a place to work.** The page renders the issue and one button: a trashed
+  issue cannot be edited, moved, commented or relabelled from it, because those writes refuse with
+  `ISSUE_TRASHED` anyway (§6), and a page of read-only fields with an edit form that always fails would be
+  a page that lies about what it can do.
+- **The two edges now disagree about one row, in this direction.** The dashboard serves a trashed issue on
+  its page and its panel while `hifa issue show ENG-13` still answers exit `3` `not_found` — the read's
+  default, which this decision does not touch (SPEC-050 §2.5.3) — so P2 is restored for the page a refusal
+  sends the reader to and **not** for the CLI's read, and D-059 is not the record of a trash that closed
+  parity on both edges.
+
+**Verification.** The contract is asserted by four scenarios of
+`specs/acceptance/001-mvp-v1/16-dashboard.feature` — the detail page of a trashed issue answers `200` and
+its only form is `Restore`, the panel of the same issue answers `200` with the same single control, the
+row fragment of the same identifier stays `404`, and the archived detail keeps answering `200` after the
+archive sent the reader to the list. The read's default is pinned by the test that already exists
+(`tests/integration/db/test_reads_detail.py::test_a_trashed_issue_has_no_detail`, which this decision does
+not touch) and the keyword's other side belongs to T-20.1. **This branch is the spec change only**: the
+keyword, the two routes and the `404` of the row fragment are not in `src/`, and the drift is the reason
+SPEC-040 goes to `spec_revision` 24 and SPEC-070 to 23.

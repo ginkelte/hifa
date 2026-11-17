@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 2
-spec_revision: 11
+spec_revision: 12
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -16,7 +16,7 @@ implements:
 acceptance: specs/acceptance/030-sqlite-adapter.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # SPEC-030 — SQLite adapter
@@ -584,11 +584,12 @@ i.board_order`; for `group_by='project'` a `LEFT JOIN project p` is added and it
 Python **after** grouping, and each `BoardGroup` reports `total` (all) and `issues` (trimmed).
 
 **SQL-7 — `issue_detail`.** The statements the read executes, **in order**. The `include` set of §2.6
-gates the three heavy collections and nothing else; no statement of this read is a `COUNT(*)`:
+gates the three heavy collections and nothing else, and `include_trashed` (§2.6, D-059) binds a parameter
+of row 1 instead of adding a statement; no statement of this read is a `COUNT(*)`:
 
 | # | Statement | Result | Runs when |
 |---|---|---|---|
-| 1 | `SELECT <the SQL-4 projection> FROM v_issue i JOIN workflow_state s ON s.id = i.state_id JOIN team t ON t.id = i.team_id LEFT JOIN member m ON m.id = i.assignee_id WHERE (i.identifier = :ref OR i.id = :ref) AND i.trashed = 0` | header (`IssueListItem`); the archive columns are not in this projection | always |
+| 1 | `SELECT <the SQL-4 projection> FROM v_issue i JOIN workflow_state s ON s.id = i.state_id JOIN team t ON t.id = i.team_id LEFT JOIN member m ON m.id = i.assignee_id WHERE (i.identifier = :ref OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)` | header (`IssueListItem`); the archive columns are not in this projection | always |
 | 2 | `SELECT * FROM issue WHERE id = ?` | the entity row: `description`, `archived_at`, `trashed` | always |
 | 3 | `SELECT * FROM team WHERE id = ?` | `team` | always |
 | 4 | `SELECT * FROM workflow_state WHERE id = ?` | `state` | always |
@@ -611,6 +612,25 @@ revision added row 16). With `include=frozenset()`: **8 statements** (7 before).
 add one each only when the row carries the id they look up, and row 9 adds one per relation: those are
 the only statements the data can add, and R5 counts them. Labels add none — they ride in statement 1's
 projection as a `json_group_array` subselect, so there is no `issue_label` statement to enumerate.
+
+**The keyword moves neither total, and the default answers exactly as row 1 did.** `include_trashed` is a
+keyword-only argument of `issue_detail` with a default (§2.6, D-059). `False` — the default — binds
+`:include_trashed = 0`, which reduces row 1's predicate to `i.trashed = 0`, so the **answer** a default read
+gives is byte-identical to row 1 as it stood before `spec_revision` 12: the same rows in the same order,
+from the same sixteen statements — **12** with `DETAIL_INCLUDE` and **8** with an empty `include`. `True`
+binds `1`, the `OR` short-circuits and the trash predicate drops: still one statement with a wider `WHERE`,
+never an extra one. **No count moves, because a predicate is not a statement**, and no other row of this
+table is reached by the keyword.
+
+**Row 1 is the read's only visibility test, which is why the keyword is a predicate and not a second
+read.** The header's projection is not pre-filtered: `v_issue` computes `visible` as a *column*
+(SPEC-010 §3), so this read inherits no trash filter it would have to work around — `i.trashed = 0` in row
+1 is the whole exclusion, and dropping it is the whole change (D-059). Its "Runs when" stays **always**: a
+trashed issue is the only row the default cannot reach, not a row of a different shape. Two surfaces do
+**not** take the keyword and keep the default, so a trashed row stays unreachable through them: the row and
+card fragments (the `include=frozenset()` render that answers `404` for a trashed reference, SPEC-070 §4
+R29) and every listing, board and count. The one caller that passes it is the detail page and the panel of
+a trashed issue (SPEC-070 §2.1.1).
 
 Row 16 is **the statement the render needs and the one `TeamRepo.states` already runs** (§2.4): the
 same SQL — non-archived, `ORDER BY position, name` — so the `<select>` this read feeds offers exactly
@@ -1060,13 +1080,19 @@ class IssueDetail:
     #: additive since spec_revision 11, defaulted (D-026): the layer the row sits in and the columns a
     #: render offers, so that one read of one issue serves the whole page (HIFA-55). `archived_at` and
     #: `trashed` come from the `issue` row this read already loads (SQL-7 row 2) and cost no statement.
-    #: `trashed` is **always `False`** on a detail this function returns: SQL-7 row 1 filters
-    #: `i.trashed = 0`, so a trashed issue answers `None` instead. The field is carried for shape
-    #: parity with the row model, not because this read can ever report a trashed issue.
+    #: `trashed` is `False` on **every default read**: SQL-7 row 1 filters `i.trashed = 0`, so a trashed
+    #: issue answers `None` instead (the pinned answer of `test_a_trashed_issue_has_no_detail`). It is
+    #: `True` only on a detail asked for with `include_trashed=True`, the one keyword that drops that
+    #: predicate and nothing else (§2.6, D-059). What carries it is `issue_detail` and, above it, the
+    #: detail page and the panel of a trashed issue (SPEC-070 §2.1.1); what does not is every listing,
+    #: board and count, and the row and card fragments, which keep the default — so a trashed row is
+    #: still unreachable through them (SPEC-070 §4 R29).
     #: `states` is the team's **non-archived** workflow states ordered by `position, name` — the set
     #: and the order of SQL-7 row 16, which is the statement `TeamRepo.states` runs (§2.4).
     archived_at: datetime | None = None  # issue.archived_at: the archive layer
-    trashed: bool = False  # issue.trashed: always False for a returned detail
+    trashed: bool = (
+        False  # issue.trashed: False on every default read, True only with include_trashed
+    )
     states: tuple[WorkflowState, ...] = ()  # the team's non-archived states, by position then name
 
 
@@ -1112,17 +1138,25 @@ def blocked_view(
 
 
 def issue_detail(
-    conn: sqlite3.Connection, ref: str, *, include: frozenset[str] = frozenset()
+    conn: sqlite3.Connection,
+    ref: str,
+    *,
+    include: frozenset[str] = frozenset(),
+    include_trashed: bool = False,
 ) -> IssueDetail | None:
-    """ref = ULID or identifier. None if it does not exist (and is not trashed).
+    """ref = ULID or identifier. None if it does not exist — and, on a default read, if it is trashed.
     `include` gates the heavy collections (`comments`, `history`, `attachments`): empty means
     base only, which is what the row/card fragments ask for; the panel asks for the comments too
     (D-027, D-029). Any other name is `Validation(field="include", rule="INCLUDE_INVALID")`.
     `states` always carries the team's **non-archived** workflow states, ordered by
     `position, name` — the set and the order `TeamRepo.states` returns (§2.4), the same statement
     as SQL-7 row 16 — so an edge renders the state `<select>` from this model instead of reading
-    the database again (SPEC-040 R21). `trashed` is always `False` here: a trashed issue answers
-    `None`."""
+    the database again (SPEC-040 R21). `include_trashed` is the one declared way to read an issue the
+    trash layer holds (D-059): `False` keeps SQL-7 row 1's `i.trashed = 0`, so a trashed reference
+    answers `None` and `trashed` is `False`; `True` drops that single predicate and nothing else —
+    the same statements in the same order, so the totals of §2.5 do not move — and it is the only way
+    a returned detail carries `trashed = True`. Its consumer is the detail page and the panel of a
+    trashed issue (SPEC-070 §2.1.1, §4 R29 keeps the row and card fragments on the default)."""
 
 
 def team_by_ref(conn: sqlite3.Connection, ref: str) -> Team | None:
@@ -1797,6 +1831,30 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 12 (2026-11-17): **the read carries the trash as a keyword, and the spec that owns the
+  read says so (D-059).** `issue_detail` gains `include_trashed: bool = False` — keyword-only, defaulted,
+  additive (§2.6) — and SQL-7 row 1's `WHERE` becomes `… AND (:include_trashed = 1 OR i.trashed = 0)`
+  while its "Runs when" stays **always**. `False` binds `0`, the `OR` reduces to the predicate row 1
+  already had, so a default read answers exactly what it answered before: `trashed` is `False`, a trashed
+  reference answers `None`, and `tests/integration/db/test_reads_detail.py::test_a_trashed_issue_has_no_detail`
+  keeps passing unchanged — the implementer **adds** the case for the other side instead of editing that
+  one. `True` drops that one predicate and nothing else: the same sixteen statements in the same order,
+  **12** with `DETAIL_INCLUDE` and **8** with an empty `include`, because **a predicate is not a
+  statement**. What keeps the default is every surface that must not see the trash — every listing, the
+  board, every count, and the row and card fragments (SPEC-070 §4 R29 answers `404` for a trashed
+  reference); what passes the keyword is the detail page and the panel of a trashed issue (SPEC-070
+  §2.1.1). **Nothing is removed:** no parameter leaves a signature, no statement leaves SQL-7, no row
+  changes its "Runs when", and no existing caller has to change. `version` stays **2** because the change
+  is additive and defaulted under D-026 — the shape `spec_revision` 11 ("`version` stays 2") and 5 both
+  kept; rev 4 is the revision that *established* `version` 2, not one that kept it, so it is cited here
+  for the D-026 rule and not as a precedent for the number. **Why this revision exists:** SPEC-040 R21
+  (rev 24) and SPEC-070 (rev 23) were rewritten to promise the keyword, but this spec — the one that
+  specifies `adapters/sqlite/reads.py`, and therefore the one an implementer follows — still declared
+  `trashed` unconditionally `False` (the `IssueDetail` comment and the `issue_detail` docstring) and
+  SQL-7 row 1 without a keyword, so the two halves of the corpus contradicted each other and no code
+  could satisfy both. The owner carries the contract now, and
+  D-059's **Touches** line names this spec so that the next revision of that decision cannot omit it
+  again.
 - spec_revision 11 (2026-11-16): **the detail read carries the archive flags and the team's states
   (HIFA-55).** `IssueDetail` gains `archived_at`, `trashed` and `states`, appended after `members` and
   defaulted (`None`, `False`, `()`), so the shape stays additive under D-026 and `version` stays 2.
@@ -1808,10 +1866,13 @@ Feature: SQLite adapter
   (row 16), the statement `list_states` already ran through `StateRepo.list_for_team`, so the `<select>`
   offers the same columns in the same order. SQL-7 is rewritten as the statements the code executes, so
   REQ-F030-12, R5, §5.3, the §7 scenario and the §8 checklist each name the `include` they count. The
-  flags are the layers of a row, not a visibility rule: `issue_detail` still answers `None` for an issue
-  the trash layer hides, so `archived_at` is the layer a render can see, while `trashed` is **always
-  `False`** on a returned detail — the stored value is carried for shape parity with the row model, so
-  that the render's gate reads one model instead of two.
+  flags are the layers of a row, not a visibility rule: `issue_detail` answers `None` for an issue the
+  trash layer hides on **every default read**, so `archived_at` is the layer a render can see without
+  asking, while `trashed` is `False` on every default read and may be `True` only on a read that passes
+  `include_trashed=True` — the keyword `spec_revision` 12 adds above (D-059). The stored value is what
+  makes that flag readable at all, so the render's gate reads one model instead of two; and the surfaces
+  that keep the default — the row and card fragments, every listing, board and count — still cannot reach
+  a trashed row.
   **Why a revision and not a `D-0NN`:** the three fields are read-model internals
   of this layer — no use case signature, endpoint, command, envelope or enum moves, and the two specs
   that consume them already say an edge takes a read model as §2.6 declares it (SPEC-040 R19) and
