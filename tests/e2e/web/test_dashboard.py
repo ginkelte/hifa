@@ -350,7 +350,13 @@ def test_one_read_of_the_issue_serves_a_render(
     assert (
         sum(TEAM_COLUMNS_ROW in statement for statements in opened for statement in statements) == 1
     ), (label, opened)
-    assert '<option value="' in response.text, label
+    # The state control, not "some option": the priority select renders five options of its own,
+    # so a bare `<option value=` passed even with no states at all. The current state's own
+    # option and the count of the team's seven columns are what only the state control answers.
+    control = re.search(r'<select name="state".*?</select>', response.text, re.S)
+    assert control is not None, label
+    assert control.group(0).count('<option value="') == 7, (label, control.group(0))
+    assert ">Triage</option>" in control.group(0), (label, control.group(0))
     if status == 422:
         # The answer is the panel it refused, marked: the control and the message beside it.
         assert '<aside id="panel"' in response.text, label
