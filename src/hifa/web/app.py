@@ -738,7 +738,7 @@ def issue_edit_fragment(
     try:
         _update_from_form(request, identifier, fields)
     except Validation as exc:
-        control, message = _refusal(exc)
+        control, message = _refusal(exc, identifier=identifier, verb="edit")
         return _issue_edit_fragment(
             request,
             identifier,
@@ -990,12 +990,70 @@ def _parse_estimate(value: str) -> float | None:
         ) from exc
 
 
-def _refusal(exc: Validation) -> tuple[str | None, str]:
-    """`(control, message)` of a refused field write: the control is `None` when it names none."""
-    reported = exc.field or ""
+# --- refusals --------------------------------------------------------------------------
+
+#: The verbs a closed parent names in a sentence of its own. A write that raises the same rule
+#: under any other verb is a control this layer has no sentence for, and it falls back instead
+#: of borrowing the word of a write it did not perform.
+CLOSE_VERBS = frozenset({"move", "archive"})
+
+
+def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | None) -> str:
+    """Compose the one line a refused write shows the reader.
+
+    `refusal` is the error a route caught, or `None` for the one refusal no use case produces:
+    the missing confirmation of the two forms that take an issue out of every listing. The
+    sentence is selected by the rule the error carries and by nothing else — two of those rules
+    arrive as `Validation` and one as `InvalidTransition`, so the class of the exception says
+    nothing the rule does not.
+
+    `verb` is the route's own word. One rule reads it (a parent closed with open sub-issues is
+    worded per verb), and so does the confirmation; a write that raises that rule under another
+    verb falls back rather than claim a verb it did not perform.
+
+    `identifier` is the identifier of the issue the route resolved, never the reference it was
+    asked with and never the value the error carries: those rules put three different things in
+    that value — an identifier, an internal id and a workflow-state type — so a sentence built
+    from it would name the wrong subject twice out of three times.
+
+    A rule outside the catalogue is the last row of the table: the fallback prefix and the
+    error's own message, which is the only sentence of this layer that quotes the domain.
+    """
+    if refusal is None:
+        return f"confirm the {verb} of {identifier}"
+    rule = getattr(refusal, "rule", None)
+    if rule == "ISSUE_ARCHIVED":
+        return f"{identifier} is archived; restore it first"
+    if rule == "ISSUE_TRASHED":
+        return f"{identifier} is in the trash; restore it first"
+    if rule == "CLOSE_WITH_OPEN_CHILDREN" and verb in CLOSE_VERBS:
+        count = refusal.details.get("open_children", 0)
+        return f"cannot {verb} {identifier}: it has {count} open sub-issues"
+    return f"invalid value: {refusal.message}"
+
+
+def _title_required() -> str:
+    """The create form's own precondition, in the catalogue's fallback wording."""
+    return refusal_sentence(
+        Validation("title is required", rule="TITLE_REQUIRED", field="title"),
+        verb="create",
+        identifier=None,
+    )
+
+
+def _refusal(
+    refusal: HifaError, *, identifier: str | None, verb: str
+) -> tuple[str | None, str]:
+    """`(control, message)` of a refused write: the control is `None` when it names none.
+
+    The control is resolved here (the error names a command field, the form a control) and the
+    message is not: it comes from the module's one builder, so the fallback prefix is written
+    once and the page, the panel and the inline edit cannot drift apart.
+    """
+    reported = refusal.field or ""
     control = EDIT_FIELD_ALIASES.get(reported, reported)
     field = control if control in readmodels.EDIT_FORM_FIELDS else None
-    return field, f"invalid value: {exc.message}"
+    return field, refusal_sentence(refusal, verb=verb, identifier=identifier)
 
 
 def _update_command(identifier: str, fields: dict[str, str]) -> UpdateIssue:
@@ -1067,7 +1125,7 @@ def _issue_page_error(
 ) -> HTMLResponse:
     """Re-render `issue_detail.html` with `422`: the control marked and the server's value."""
     detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
-    control, message = _refusal(exc)
+    control, message = _refusal(exc, identifier=identifier, verb="edit")
     vm = _issue_detail_vm(
         request,
         detail,
