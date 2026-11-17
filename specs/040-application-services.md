@@ -2254,7 +2254,7 @@ Feature: Application use cases
   same issue — measured on this tree with `set_trace_callback`: `_issue_detail_extras` added a
   connection and 6 statements per render, on top of the detail read's **11 → 12** with
   `DETAIL_INCLUDE` and **7 → 8** with an empty `include` (row 16 is the statement this revision
-  adds), on top of the one a project, a cycle, a parent or an assignee adds when the row carries its
+  adds), on top of the one a project, a cycle, a parent, an assignee or a creator adds when the row carries its
   id and the one each relation adds — and the issue could change between the two snapshots. The
   fields themselves are SPEC-030 §2.6's (rev 11) and the shape there is additive and defaulted; no
   signature, command field, envelope, exit code or HTTP status moves, so `version` stays at 3.
