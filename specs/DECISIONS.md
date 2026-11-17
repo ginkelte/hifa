@@ -2595,3 +2595,168 @@ archive sent the reader to the list. The read's default is pinned by the test th
 not touch) and the keyword's other side belongs to T-20.1. **This branch is the spec change only**: the
 keyword, the two routes and the `404` of the row fragment are not in `src/`, and the drift is the reason
 SPEC-040 goes to `spec_revision` 24 and SPEC-070 to 23.
+
+## D-060 — A comment is a write to a parked issue, so it waits: the composer, the depth and the one anchor
+
+**Date:** 2026-11-17 · **Wins:** SPEC-020 §2.5 · **Touches:** SPEC-020 §2 (the `rules` and `constants` rows of
+the symbol table, §2.5's block), §4.2 (REQ-F020-21), §7 (its scenario), §8 (the symbol count), Notes;
+SPEC-040 §2.2 (`comment_on_issue`'s `raises:` line), §4.1 (R20), §4.2 (REQ-F040-35/36), §6 (three tables,
+including the two producer cells), §7 (four scenarios), Notes; SPEC-050 §2.4.1, §2.4.4, §2.5.3 (the row,
+its exit set and its notes), §2.6.1 (the exit-5 condition), §5.1, §5.2, §11; SPEC-070 §2.1.2, §2.1.3,
+§2.3.4, §2.6.2, §2.6.9, §2.6.10 (new), §4 (R27, R29), §6, §7, §11; SPEC-001 REQ-F022;
+`specs/001-mvp-v1.tasks.md` (T-20.2);
+`specs/acceptance/001-mvp-v1/08-comments-attachments.feature`,
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`; `specs/INDEX.md`
+
+**Prior state: creating a comment is contracted on three edges and implemented on none of them above the
+adapter.** The row exists — `comment` with `parent_id`, `resolved_at` and `edited_at` (SPEC-010 §3) —, the
+rule exists (`validate_comment_body`, SPEC-020 §2.5), the entity exists (`Comment`), the port exists
+(`CommentRepo.insert` / `CommentRepo.get`), the use case is declared (`comment_on_issue`, SPEC-040 §2.2,
+with `CommentOnIssue` in §2.1 and its row in §3.1), the verb is published (`hifa issue comment REF [BODY]`,
+SPEC-050 §2.5.3, and the `ID ISSUE AUTHOR CREATED BODY` table of §2.4.1), and the dashboard reserves two
+page/fragment pairs (`POST /{team}/issue/{identifier}/comment`, `GET|POST /_/comments/{identifier}`,
+SPEC-070 §2.1.2/§2.1.3). `src/hifa/app/issues.py` has no `comment_on_issue`, `src/hifa/cli/commands/issue.py`
+has no `comment` leaf, and `src/hifa/web/app.py` registers no comment route. A surface that is declared and
+not served is the one kind of hole the corpus cannot see: nothing fails, because nothing runs.
+
+An audit of the three edges against those declarations found six blocking holes (a comment on a parked
+issue has no declared answer on any edge; the depth bound REQ-F022 promises has no producer; the page has
+nowhere to put a composer; the two fragment rows target one element with two different node types; the
+`422` catalogue has no sentence for either refusal a comment can raise; `COMMENT_PARENT_MISMATCH` carries no
+`field`, so the web's per-field map has no key to file it under) and five surface ones (§2.4.1 says one
+column is truncated and the comment table needs a second; `--quiet` promises the affected *identifier* and
+a comment has none; a NULL author has no rendering; the `CREATED` format is not pinned; §5.1-§5.2 are still
+Spanish against D-024). **The decisions below are the answers; the corpus is what changes.**
+
+### (a) A comment on a parked issue is refused, and the composer is not rendered for it
+
+`comment_on_issue` gains the same two refusals every other write carries, and it gains them first — before
+it reads the parent, writes the row or opens anything:
+
+- `trashed = 1` ⇒ `Validation(rule='ISSUE_TRASHED', field='trashed')` ⇒ exit `2` / `422`, the message the
+  catalogue already prints (`ENG-13 is in the trash; restore it first`).
+- `archived_at IS NOT NULL` ⇒ `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` ⇒ exit `5` / `409`,
+  the one condition of D-014's bucket 5 (SPEC-040 §6, R20).
+
+This is the answer D-059 already assumed in prose. Its price paragraph says "a trashed issue cannot be
+edited, moved, commented or relabelled from it, because those writes refuse with `ISSUE_TRASHED` anyway
+(§6)" — and that "anyway" was false of `comment_on_issue`, which refused nothing: a trashed issue's page
+would have accepted a comment through a form the page did not render, and a client could have posted one.
+R20 is the same shape one layer up: it lists the eight writes that refuse on `archived_at` and then says
+`comment_on_issue` is "outside this rule in v1 … the product has no declared semantics for them under
+archive yet". After this decision that sentence stops excluding it, and the sentence above it — "the two
+operations that stay available are the ones that change the layer itself" — becomes true of the comment
+too.
+
+**The composer is not rendered where the write always fails.** §2.6.9's group renders `Restore` alone for
+an issue in either layer, and the composer is not one of the group's controls (§2.6.9 states the group's
+content exhaustively); it is gated on `vm.can_write and not vm.is_archived and not vm.is_trashed`, so the
+page that says `Restore` is the page that offers `Restore` and nothing else. A control that is rendered
+and always refused is the page lying about what it can do — the same reason D-059 removed the edit form
+from the trashed page.
+
+**The alternative rejected: allow commenting on an archived issue, because Linear does.** It costs a
+second gate that says "this issue is parked, so you may do exactly one thing, unless it is that thing":
+R20's list becomes eight writes plus one exception, the `Restore`-alone branch of §2.6.9 becomes
+`Restore`-plus-a-composer, and the rule that a layer takes a row out of every listing "so a row that
+accepts edits while nobody can find it is a row whose history is written where no one reads it" loses its
+one-line form. Price accepted: **to comment you restore first, exactly as to edit.** The refusals print
+the way back (`restore it first`), and `hifa issue restore ENG-13` is one command.
+
+### (b) Depth is a rule with a home: `MAX_COMMENT_DEPTH = 3`, a root is depth 1
+
+`MAX_COMMENT_DEPTH = 3` joins the constants of SPEC-020 §2.5 (`MAX_TITLE`, `MAX_BODY`, `MAX_DESCRIPTION`,
+`MAX_SUBISSUE_DEPTH`) and `validate_comment_parent_depth(parent_chain_length: int) -> None` joins its
+validators, with the naming of its neighbours: the caller counts, the validator decides.
+
+- **A root comment is depth 1.** A reply to a depth-1 comment is depth 2, a reply to that is depth 3, and a
+  reply to a depth-3 comment is refused — so the deepest reachable comment is depth 3 and the fourth link
+  of a chain is `COMMENT_DEPTH_EXCEEDED`.
+- **The caller counts by walking `parent_id` with the existing `CommentRepo.get`.** No adapter change, no
+  new statement in any declared SQL of SPEC-030, and no column: the chain is read one row at a time,
+  bounded by the constant, and the count enters the domain as an `int` — the split §1 already draws
+  (`app/` reads and counts, `domain/` decides, SPEC-020 R6's `subtree_height` precedent).
+- **The refusal is `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')`** ⇒ exit `2` / `422`,
+  message `the thread is 3 deep; reply to a shallower comment` (the number formatted from the constant, so
+  it cannot drift from it). Two edges print it as §6 says: CLI `hifa: <message> (field: parent_id)`, HTTP
+  `422` with `field: "parent_id"` and the sentence as the composer's `form_error`.
+
+**Why this is a rule and not a convention.** REQ-F022 promised "maximum depth 3" from the first revision of
+the vertical, T-10 repeated it ("maximum depth 3"), and nothing in the tree produced, counted or refused
+it: `validate_comment_body` looks at a body, `Comment.parent_id` accepts any ULID, and the DDL has no
+`CHECK` that could see a chain. A bound that is not a rule is a promise nobody keeps — the exact failure
+mode this repository's P8 exists for. The alternative — a `CHECK` or a trigger in SPEC-010 — was rejected
+because the depth of a row is not a property of the row: it is a walk, and A3 gives walks to the adapter by
+statement, not assertions to the schema by trigger.
+
+### (c) The dashboard's composer is flat, and threading is CLI-only until its debt lands
+
+The composer posts `body` **only**. It has no `parent` field, no "reply" control, and
+`issue_vm["comments"]` stays the flat list §2.3.4 declares — no `parent_id`, no `depth`, no nested
+`replies` — because a page that cannot ask for a thread cannot indent one. The list is rendered in
+creation order (`created_at`, then `id`), which is the order the read returns.
+
+`comment.reply` enters `CAPABILITIES` of `scripts/check_edge_parity.py` as a **single-edge row with
+`debt="HIFA-59"`** — `cli="issue comment"`, `web=None` — next to a `comment.create` row that carries both
+edges (the page form and the `/_/` fragment). The map exists to show exactly this: a capability the
+reference surface has and the dashboard does not, printed as `DEBT` with the ticket that closes it, so the
+next round cannot forget it and no route has to be invented to silence it.
+
+**The price, stated.** An agent or a human can thread from the CLI (`--parent`) and cannot from the page;
+and the page renders a thread started elsewhere as a flat list, in creation order — **a lie about shape,
+not about content**. It is declared here and in §2.3.4 rather than discovered by the first reader who
+wonders why the replies are not indented, and the ticket is what removes it: indentation needs a `depth`
+key the read model does not carry (SPEC-030 §2.6's `Comment` row is the stored row) and a composer per
+comment, which is a second form per row and a second target in §2.1.3.
+
+### (d) One anchor, one swap target, two shapes, both valid HTML
+
+The comment section of the detail page and of the panel is one structure with two node levels:
+
+```html
+<section id="comments">
+  <ol id="comment-list" class="comment-list">
+    <li class="comment" data-comment-id="…">…</li>
+  </ol>
+  <!-- the composer of §2.6.10, gated on can_write and neither layer -->
+</section>
+```
+
+- `GET /_/comments/{identifier}` returns the **whole `<ol id="comment-list" class="comment-list">`** and the
+  client swaps it in **`outerHTML`** at `#comment-list`; `hx-target="#comment-list"`, `hx-swap="outerHTML"`.
+- `POST /_/comments/{identifier}` returns **one `<li>`** with status **`200`** and the client appends it
+  `beforeend` into **`#comment-list`**; `hx-target="#comment-list"`, `hx-swap="beforeend"`. `200` and not
+  `201`: this layer's answers are HTML the client puts somewhere, and the only `201` of the tree is the
+  REST edge's `POST /api/v1/issues` (SPEC-060).
+- The no-JS form's `303` lands on `…/issue/{identifier}#comments`, which is the section, so a browser
+  scrolled to that fragment shows the list and the composer the write changed.
+
+**The alternative rejected: both routes targeting `#comments` with `innerHTML`.** It nests an `<ol>` inside
+an `<ol>` on the `POST` (the answer is one `<li>`) and appends an `<li>` into a `<section>` on the `GET` if
+the anchors are swapped — the collision the old §2.1.3 rows had, where `GET` and `POST` named the same
+element with different node types and only one of the two could be right.
+
+**And the second alternative, rejected after the first was written:** the `GET` swapping the **`innerHTML`
+of `#comments`** with the `<ol>`. It is valid HTML and it is still wrong, because the section also holds
+the `<h2>` and the composer of §2.6.10: a refresh would delete the box the reader is typing in. The list is
+the node that changes, so the list is the node the swap names — `outerHTML` on the `<ol>`, which leaves the
+heading and the box in place. `#comments` keeps its job as the URL fragment a `303` lands on, and stops
+being a swap target; a reader following the anchor is not the same event as a client replacing the list.
+
+**What this decision does not do.** It adds no verb, no endpoint, no column, no table and no enum value: a
+comment is still one `INSERT` into `comment` with `author_id` from the actor (SPEC-040 §3.1), the history
+table still does not see it (the comment **is** the record, §4.1 R3), and the depth bound is computed from
+rows that already exist. It does not publish `comment resolve` or `comment edit` either: resolving and
+editing a comment stay in the open questions of SPEC-001 §10.1 point 8, and `update_comment` /
+`resolve_comment` stay declared-not-implemented in SPEC-040 §2.2.
+
+**Verification.** SPEC-020 gains the constant, the validator and one scenario (`REQ-F020-21`), SPEC-040's
+matrix names three rules for `comment_on_issue` where it named two, SPEC-050's exit set for the verb
+becomes `0,2,3,5`, and `specs/acceptance/001-mvp-v1/` asserts the two refusals on both edges: the depth-3
+reply and the empty body in `08-comments-attachments.feature` (exit `2`, no row inserted), the `303` to
+`#comments`, the `200` with one `<li>`, the `422` with `a comment needs a body` and the two absences of the
+composer (archived, trashed) in `16-dashboard.feature`. **This branch is the spec change only**: the use
+case, the verb, the two routes and the composer are not in `src/`, and the drift is the reason SPEC-020
+goes to `version: 3` (a name enters the `rules` row of §2, which is the public contract), SPEC-040 to
+`spec_revision` 25, SPEC-050 to 22, SPEC-070 to 25 and SPEC-001 to 12. The parity rows of (c) are T-20.2's
+step, in the same PR as the routes, because `CAPABILITIES` may not name a verb the tree does not have.

@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 4
-spec_revision: 24
+spec_revision: 25
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -608,6 +608,10 @@ def unrelate_issues(uow: UnitOfWork, cmd: UnrelateIssues, actor: Actor) -> None:
 
 
 # raises: NotFound(issue|relation), Validation(COMMAND_FIELD)
+
+
+# raises: NotFound(issue|comment), Validation(BODY_EMPTY|COMMENT_PARENT_MISMATCH|COMMENT_DEPTH_EXCEEDED),
+#         Validation(ISSUE_TRASHED), InvalidTransition(ISSUE_ARCHIVED)
 
 
 def comment_on_issue(uow: UnitOfWork, cmd: CommentOnIssue, actor: Actor) -> Comment: ...
@@ -1302,9 +1306,11 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   nobody can find it is a row whose history is written where no one reads it; the two operations that stay
   available are the ones that change the layer itself: `restore_issue` (clears the flag) and `trash_issue`
   (a deeper layer). `archive_issue` is **not** part of the rule — on an already-archived issue it is the
-  no-op of R12, not an error. `rebalance_board`, `comment_on_issue`, `relate_issues` and
-  `add_issues_to_cycle` are outside this rule in v1: they change other tables and the product has no
-  declared semantics for them under archive yet. This rule is the **single producer of `InvalidTransition`** in the
+  no-op of R12, not an error. `rebalance_board`, `relate_issues` and `add_issues_to_cycle` are outside this rule in v1:
+  they change other tables and the product has no declared semantics for them under archive yet.
+  `comment_on_issue` was among them and is not any more: a comment is a write to the row, it is read
+  on the page that just said the issue is parked, and a page that renders `Restore` and nothing else
+  cannot also offer a composer (D-060). This rule is the **single producer of `InvalidTransition`** in the
   system (§6).
 - **R21 — The detail read is complete for a render, and the issue's own model costs one connection
   (HIFA-55).** `issue_detail` returns everything a render of one issue decides from: the header, the
@@ -1376,6 +1382,8 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-32** | `update_issue` with `state` set behaves as `move_issue` with `position="last"` for the state axis: same `validate_transition`, same R7 milestones, and the issue is appended to the target column so that no two issues of one column share a `board_order`; `state_id` and `board_order` are both recorded |
 | **REQ-F040-33** | `archive_issue` refuses a parent with open children with `Validation(rule='CLOSE_WITH_OPEN_CHILDREN')`, is a no-op when the issue is already archived, and `restore_issue` clears `archived_at` and/or `trashed` writing one row per column cleared |
 | **REQ-F040-34** | `update_issue`, `move_issue`, `reorder_issue` and the field-level writes reject an issue with `archived_at` not null with `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` (R20); `archive_issue`, `trash_issue` and `restore_issue` do not |
+| **REQ-F040-35** | A comment thread stops at three: `comment_on_issue` refuses the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')` and inserts nothing, and the reply that lands at depth 3 is stored | 2 scenarios, one at the boundary and one past it |
+| **REQ-F040-36** | `comment_on_issue` refuses a trashed issue with `Validation(rule='ISSUE_TRASHED')` and an archived one with `InvalidTransition(rule='ISSUE_ARCHIVED')`, both before a parent is read, and writes no row either way | 2 scenarios, one per layer |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -1766,9 +1774,9 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `TEAM_HAS_OPEN_ISSUES` | `Validation` | archiving a team with open issues | `archive_team` | 2 | 422 |
 | `TEAM_ALREADY_ARCHIVED` | `Conflict` | archiving twice | `archive_team` | 4 | 409 |
 | `TEAM_KEY_INVALID` | `Validation` | key that does not match `identifier.KEY_PATTERN` | `create_team`, `update_team` | 2 | 422 |
-| `ISSUE_TRASHED` | `Validation` | operating on an issue with `trashed = 1` | `update_issue`, `move_issue`, `assign_issue`, `add_label` | 2 | 422 |
+| `ISSUE_TRASHED` | `Validation` | operating on an issue with `trashed = 1` | `update_issue`, `move_issue`, `assign_issue`, `add_label`, `comment_on_issue` | 2 | 422 |
 | `CLOSE_WITH_OPEN_CHILDREN` | `Validation` | closing/canceling/archiving a parent with open sub-issues | `move_issue`, `update_issue`, `archive_issue` | 2 | 422 |
-| `ISSUE_ARCHIVED` | `InvalidTransition` | writing an issue with `archived_at` not null (R20), `field='ref'` | `update_issue`, `assign_issue`, `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `add_label`, `remove_label` | **5** | 409 |
+| `ISSUE_ARCHIVED` | `InvalidTransition` | writing an issue with `archived_at` not null (R20), `field='ref'` | `update_issue`, `assign_issue`, `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `add_label`, `remove_label`, `comment_on_issue` | **5** | 409 |
 | `POSITION_NEIGHBOR` | `Validation` | nonexistent anchor, from another team or from another state | `move_issue`, `reorder_issue` | 2 | 422 |
 | `POSITION_OUT_OF_ORDER` | `Validation` | edge `sort_order` does not fall strictly between its neighbors | `move_issue` | 2 | 422 |
 | `RANKING_EXHAUSTED` | `Validation` | no float gap left even after rebalancing once | `move_issue`, `reorder_issue` | 2 | 422 |
@@ -1793,8 +1801,9 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `MEMBER_INACTIVE` | `Validation` | assigning to a member with `is_active = 0` | `assign_issue`, `create_issue` | 2 | 422 |
 | `MEMBER_ALREADY_INACTIVE` | `Conflict` | deactivating twice | `deactivate_member` | 4 | 409 |
 | `PRIORITY_OUT_OF_RANGE` / `DUE_DATE_FORMAT` / `ESTIMATE_*` | `Validation` | range and format (SPEC-020 §2.4) | `set_priority`, `set_due_date`, `create_issue`, `update_issue` | 2 | 422 |
-| `COMMENT_PARENT_MISMATCH` | `Validation` | `parent_id` from another issue | `comment_on_issue` | 2 | 422 |
-| `BODY_EMPTY` | `Validation` | empty comment or only spaces | `comment_on_issue`, `update_comment` | 2 | 422 |
+| `COMMENT_PARENT_MISMATCH` | `Validation` | `parent_id` from another issue (`field='parent_id'`) | `comment_on_issue` | 2 | 422 |
+| `BODY_EMPTY` | `Validation` | empty comment or only spaces (`field='body'`) | `comment_on_issue`, `update_comment` | 2 | 422 |
+| `COMMENT_DEPTH_EXCEEDED` | `Validation` | the reply would sit deeper than `MAX_COMMENT_DEPTH` (`field='parent_id'`) | `comment_on_issue` | 2 | 422 |
 | `ATTACHMENT_URL_INVALID` / `ATTACHMENT_URL_SCHEME` | `Validation` | empty URL or scheme outside `http/https/file` | `add_attachment` | 2 | 422 |
 | `PROJECT_TEAM_MISMATCH` | `Validation` | project from another team (and not cross-team) | `create_issue`, `update_issue`, `create_project` | 2 | 422 |
 | `MILESTONE_PROJECT_MISMATCH` | `Validation` | milestone from another project | `create_issue`, `update_issue`, `add_milestone` | 2 | 422 |
@@ -1833,7 +1842,7 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `add_label` / `remove_label` | issue, label, label_link | `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND` | `LABEL_RETIRED` | `ISSUE_ARCHIVED` |
 | `relate_issues` | issue (×2) | `COMMAND_FIELD`, `RELATION_SELF`, `RELATION_WORKSPACE_MISMATCH` | `RELATION_DUPLICATE` | — |
 | `unrelate_issues` | issue, relation | `COMMAND_FIELD` | — | — |
-| `comment_on_issue` | issue, comment (parent) | `BODY_EMPTY`, `COMMENT_PARENT_MISMATCH` | — | — |
+| `comment_on_issue` | issue, comment (parent) | `BODY_EMPTY`, `COMMENT_PARENT_MISMATCH`, `COMMENT_DEPTH_EXCEEDED`, `ISSUE_TRASHED` | — | `ISSUE_ARCHIVED` |
 | `update_comment` / `resolve_comment` | comment | `BODY_EMPTY` | — | — |
 | `add_attachment` | issue | `ATTACHMENT_URL_INVALID`, `ATTACHMENT_URL_SCHEME` | — | — |
 | `create_team` | — | `TEAM_KEY_INVALID` | `UNIQUE_TEAM_KEY` | — |
@@ -1961,7 +1970,35 @@ Feature: Application use cases
   Scenario: a comment cannot reply to an hifa from another issue
     Given the comment C1 of ENG-1
     When comment_on_issue is run on ENG-2 with parent_id C1
-    Then Validation is raised with rule "COMMENT_PARENT_MISMATCH"
+    Then Validation is raised with rule "COMMENT_PARENT_MISMATCH" and field "parent_id"
+    And no comment is inserted
+
+  @REQ-F040-35
+  Scenario: a reply that would sit deeper than three is refused
+    Given the issue ENG-1 with a comment thread three deep
+    When comment_on_issue is run on ENG-1 with the deepest comment as parent
+    Then Validation is raised with rule "COMMENT_DEPTH_EXCEEDED" and field "parent_id"
+    And no comment is inserted
+
+  @REQ-F040-35
+  Scenario: the last accepted depth is the third
+    Given the issue ENG-1 with a comment thread two deep
+    When comment_on_issue is run on ENG-1 with the deepest comment as parent
+    Then the comment is stored with parent_id naming that comment
+    And comment depth of the stored comment is 3
+
+  @REQ-F040-36
+  Scenario: a parked issue takes no comment
+    Given the issue ENG-1 in the trash
+    When comment_on_issue is run on ENG-1
+    Then Validation is raised with rule "ISSUE_TRASHED"
+    And no comment is inserted
+
+  @REQ-F040-36
+  Scenario: an archived issue answers the transition and not the validation
+    Given the issue ENG-1 archived
+    When comment_on_issue is run on ENG-1
+    Then InvalidTransition is raised with rule "ISSUE_ARCHIVED"
     And no comment is inserted
 
   @REQ-F040-13
@@ -2264,6 +2301,24 @@ Feature: Application use cases
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 25 (2026-11-17): **a comment is a write, so it obeys the two rules a write obeys (D-060).**
+  This spec declared `comment_on_issue` and then said nothing about the two things that decide whether
+  it can run: the layer the issue is in, and how deep a thread may go. R20 excluded it by name from the
+  archive rule — "the product has no declared semantics for them under archive yet" — while D-059 already
+  asserted in prose that a trashed issue "cannot be edited, moved, commented or relabelled, because those
+  writes refuse with `ISSUE_TRASHED`", a refusal this §6 did not carry. One of the two had to give. The
+  comment now carries the same pair as every other write to the row: `Validation(rule='ISSUE_TRASHED')`
+  for the trash and `InvalidTransition(rule='ISSUE_ARCHIVED')` for the archive, raised before the parent
+  is resolved, and the dashboard stops rendering its composer for an issue in either layer — a page that
+  says `Restore` and nothing else cannot also offer a box to type into. Depth was the other half:
+  `REQ-F022` promised a thread "maximum depth 3" and no rule anywhere produced, counted or refused it.
+  `comment_on_issue` now counts the chain with the parent it already reads, and refuses the reply that
+  would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')`, inserting nothing;
+  a root comment is depth 1, so the deepest reply that lands is depth 3. `COMMENT_PARENT_MISMATCH` and
+  `BODY_EMPTY` also gain the `field` the web's per-field refusal needs to key on. `spec_revision` 25;
+  `version` stays 4, because no signature and no new use case moved — what a caller learns is that two
+  refusals it could always have received are now declared.
 
 - spec_revision 24 (2026-11-17): **the detail read can be asked to look through the trash, and that
   argument is the only thing that changed (D-059).** R21 said `issue_detail` "still answers `None` for an

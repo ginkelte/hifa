@@ -3,8 +3,8 @@ id: SPEC-020
 title: Domain core
 component: domain
 status: review
-version: 2
-spec_revision: 8
+version: 3
+spec_revision: 9
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/020-domain-core.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-13
+updated: 2026-11-17
 ---
 
 # SPEC-020 — Domain core
@@ -58,8 +58,8 @@ here.
 | `format`, `parse`, `validate_key`, `normalize_key`, `is_valid_key`, `KEY_PATTERN`, `IDENTIFIER_PATTERN` | `identifier` | functions / constants | yes |
 | `between`, `needs_rebalance`, `rebalance`, `first`, `last` | `ranking` | functions | yes |
 | `INITIAL_GAP`, `MIN_GAP` | `ranking` | stable constants | yes |
-| `validate_title`, `validate_priority`, `validate_due_date`, `validate_date_range`, `validate_estimate`, `validate_state_team`, `validate_parent`, `validate_close`, `validate_transition`, `validate_relation`, `validate_relation_scope`, `validate_label_scope`, `validate_archive_team`, `validate_comment_body` | `rules` | functions | yes |
-| `MAX_TITLE`, `MAX_BODY`, `MAX_DESCRIPTION`, `MAX_SUBISSUE_DEPTH` | `rules` | stable constants | yes |
+| `validate_title`, `validate_priority`, `validate_due_date`, `validate_date_range`, `validate_estimate`, `validate_state_team`, `validate_parent`, `validate_close`, `validate_transition`, `validate_relation`, `validate_relation_scope`, `validate_label_scope`, `validate_archive_team`, `validate_comment_body`, `validate_comment_parent_depth` | `rules` | functions | yes |
+| `MAX_TITLE`, `MAX_BODY`, `MAX_DESCRIPTION`, `MAX_SUBISSUE_DEPTH`, `MAX_COMMENT_DEPTH` | `rules` | stable constants | yes |
 | `HifaError`, `NotFound`, `Conflict`, `Validation`, `InvalidTransition` | `errors` | exceptions | yes |
 
 ### 2.1 `domain/enums.py`
@@ -583,6 +583,7 @@ MAX_TITLE = 255
 MAX_BODY = 50_000
 MAX_DESCRIPTION = 100_000
 MAX_SUBISSUE_DEPTH = 5  # a root issue is level 1; the deepest descendant is level 5
+MAX_COMMENT_DEPTH = 3  # a root comment is depth 1; the deepest reply is depth 3
 
 
 def validate_title(title: str) -> str:
@@ -591,6 +592,14 @@ def validate_title(title: str) -> str:
 
 def validate_comment_body(body: str) -> str:
     """strip(); rejects empty (rule='BODY_EMPTY'); len > MAX_BODY (rule='BODY_TOO_LONG')."""
+
+
+def validate_comment_parent_depth(depth: int) -> None:
+    """The chain from a root comment, 1 for a root.
+
+    raises: Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id') when the reply the
+    caller is about to insert would sit deeper than MAX_COMMENT_DEPTH.
+    """
 
 
 def validate_priority(priority: int) -> Priority:
@@ -924,6 +933,7 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-18** | Every DDL table with a writer has a model: `team_membership` → `TeamMembership` and `team_previous_key` → `TeamPreviousKey`, with field names identical to the columns; `schema_migration` is left out by explicit decision (§10) | test comparing `model_fields` with `PRAGMA table_info` of both tables |
 | **REQ-F020-19** | `validate_transition` rejects a target state with non-null `archived_at` with `Validation(rule='STATE_ARCHIVED', field='state_id')`, and accepts the same non-archived state type | 2 tests |
 | **REQ-F020-20** | `RelationType` answers the four facts of §2.1 for its four values: `is_symmetric`, `is_hard`, `canonical_pair` (unchanged for `blocks`, sorted by ULID for the symmetric ones) and `name_as_seen` (`blocks` when the issue is the source, `blocked_by` when it is the target of a `blocks` row, own value for the rest); `parse` accepts `blocked_by` as the inverse input and rejects any other name with `Validation(COMMAND_FIELD)` | table-driven over the 4 values + 2 parse cases |
+| **REQ-F020-21** | `validate_comment_parent_depth(depth)` accepts a root comment (`depth = 1`) and a reply that still lands at or above `MAX_COMMENT_DEPTH`, and rejects the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')`; the boundary is stated once, in one place | 3 tests: the last accepted depth, the first refused one, and a root |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -988,6 +998,7 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `Validation` | `STATE_TEAM_MISMATCH` / `LABEL_TEAM_MISMATCH` / `PARENT_TEAM_MISMATCH` | cross-team reference | exit 2 | 422 |
 | `Validation` | `PARENT_CYCLE` / `RELATION_SELF` / `PARENT_SELF` | relation with itself or hierarchy cycle | exit 2 | 422 |
 | `Validation` | `PARENT_DEPTH_EXCEEDED` | the tree would exceed `MAX_SUBISSUE_DEPTH` levels (root = 1), counting the moved subtree | exit 2 | 422 |
+| `Validation` | `BODY_EMPTY` / `COMMENT_DEPTH_EXCEEDED` / `COMMENT_PARENT_MISMATCH` | a comment with no body, a reply that would sit deeper than `MAX_COMMENT_DEPTH` (root = 1), or a parent that belongs to another issue | exit 2 | 422 |
 | `Validation` | `RELATION_WORKSPACE_MISMATCH` | an edge between two workspaces | exit 2 | 422 |
 | `Validation` | `RANKING_EXHAUSTED` | no float gap between two positions | exit 2 | 422 |
 | `Validation` | `STATE_ARCHIVED` | move/create against a `workflow_state` with `archived_at` | exit 2 | 422 |
@@ -1265,6 +1276,13 @@ Feature: Pure domain core
     Given a workflow_state of the ENG team of type started and archived_at NULL
     When rules.validate_transition is called with that state as target and 0 open children
     Then it raises no exception
+
+  @REQ-F020-21
+  Scenario: the third reply is accepted and the fourth is not
+    Given validate_comment_parent_depth and MAX_COMMENT_DEPTH = 3
+    When it is called with depth 3 and then with depth 4
+    Then the first call returns without raising
+    And the second raises Validation with rule "COMMENT_DEPTH_EXCEEDED" and field "parent_id"
 ```
 
 ## 8. Regeneration checklist
@@ -1287,7 +1305,7 @@ Executable from top to bottom; every step has a verification command.
    python scripts/spec_contract_check.py --spec specs/020-domain-core.md
    ```
    The check compares: names and values of the 8 enums, the 5 public functions of `identifier`,
-   the 5 of `ranking`, the 13 of `rules`, the `errors` hierarchy and the `model_fields` of each
+   the 5 of `ranking`, the 14 of `rules`, the `errors` hierarchy and the `model_fields` of each
    entity against the tables of §2.
 5. Write the tests with one file per module and one test per `REQ-F`:
    ```bash
@@ -1399,5 +1417,14 @@ Executable from top to bottom; every step has a verification command.
 
 New requirements: `REQ-F020-18` (model coverage for `team_membership`/`team_previous_key`) and
 `REQ-F020-19` (`STATE_ARCHIVED`).
+
+`spec_revision` 9 lifts the comment bound out of prose. `REQ-F022` promised a thread "maximum depth 3"
+and nothing in this spec produced, counted or refused it: there was no constant, no validator, and
+`validate_comment_body` — the only comment rule here — never looks at a parent. The bound arrives as
+`MAX_COMMENT_DEPTH = 3` beside `MAX_SUBISSUE_DEPTH`, with `validate_comment_parent_depth` as its one
+producer and `COMMENT_DEPTH_EXCEEDED` as its one rule, and a root comment is depth 1 so the deepest
+reply that lands is depth 3 (D-060). `version` moves to 3 because the name enters the `rules` row of
+§2, which is the public contract; `REQ-F020-21` is its acceptance criterion and §8's symbol count
+follows.
 
 

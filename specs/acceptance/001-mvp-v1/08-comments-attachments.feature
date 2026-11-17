@@ -2,8 +2,9 @@
 Feature: Comments and attachments
 
   # Comments with threads (parent_id) and attachments as links with metadata.
-  # There are no `comment *` verbs in SPEC-050 §2.5: resolving a comment
-  # is expressed at the domain level until 050 publishes the verb (Open Questions).
+  # SPEC-050 §2.5 publishes `hifa issue comment REF [BODY]` and nothing else under `comment`;
+  # resolving or editing a comment is still expressed at the domain level until a verb lands
+  # (Open Questions 001 §10.1).
 
   @REQ-F022 @smoke
   Scenario: comment with a thread through parent_id
@@ -12,6 +13,38 @@ Feature: Comments and attachments
     Then the exit code is 0
     And there are 2 rows in "comment" for "ENG-30"
     And the second comment has parent_id equal to the id of the first one
+
+  @REQ-F022 @slow
+  Scenario: the third reply is the deepest one that lands
+    Given the issue "ENG-30" with a comment thread two deep
+    When I run "hifa issue comment ENG-30 'Third level' --parent $LAST_COMMENT"
+    Then the exit code is 0
+    And there are 3 rows in "comment" for "ENG-30"
+
+  @REQ-F022 @slow
+  Scenario: a reply deeper than three is refused and nothing is written
+    Given the issue "ENG-30" with a comment thread three deep
+    When I run "hifa issue comment ENG-30 'Too deep' --parent $LAST_COMMENT"
+    Then the exit code is 2
+    And stderr contains "the thread is 3 deep; reply to a shallower comment"
+    And stderr contains "field: parent_id"
+    And there are 3 rows in "comment" for "ENG-30"
+
+  @REQ-F022 @slow
+  Scenario: an empty body is refused before anything is written
+    Given the issue "ENG-30" with no comments
+    When I run "hifa issue comment ENG-30 '   '"
+    Then the exit code is 2
+    And stderr contains "a comment needs a body"
+    And there are 0 rows in "comment" for "ENG-30"
+
+  @REQ-F022 @slow
+  Scenario: a parked issue takes no comment
+    Given the issue "ENG-30" in the trash
+    When I run "hifa issue comment ENG-30 'Anyone there?'"
+    Then the exit code is 2
+    And stderr contains "ENG-30 is in the trash; restore it first"
+    And there are 0 rows in "comment" for "ENG-30"
 
   @REQ-F022 @smoke
   Scenario: resolving a comment hides it from the default listing

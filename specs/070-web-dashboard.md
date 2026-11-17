@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 5
-spec_revision: 24
+spec_revision: 25
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -87,8 +87,10 @@ here — the `400` applies only to `/search`, where `q` is required.
 
 #### 2.1.2 Forms (full page, they work without JS)
 
-One form per write, and every one of them has a fragment counterpart in §2.1.3. With htmx the form
-posts **to its fragment** (`hx-post`/`hx-patch`); the page route is the no-JS path (R4). A page route
+One form per write, and every one of them has a fragment counterpart in §2.1.3. With htmx the form on a
+fragment-bearing surface posts **to its fragment** (`hx-post`/`hx-patch`); the page route is the no-JS
+path (R4). The detail page's own forms carry `method`/`action` and no `hx-*`: they are the no-JS path by
+design, and the panel is where the same writes go out as fragments. A page route
 is never the `hx-*` target of a fragment: its answer is a `303`, and a redirect followed inside an
 htmx request swaps a whole document into the element the fragment was meant for.
 
@@ -167,8 +169,8 @@ Failed validation in a form without JS ⇒ `422` + template with the errors next
 | POST | `/_/states/{state_id}/position` | `204` with no body | — | — | column drop (2.6.5) |
 | POST | `/_/issues/{identifier}/labels` | `<span class="chip">` chip | `#labels-{identifier}` | `beforeend` | picking a label |
 | DELETE | `/_/issues/{identifier}/labels/{label_id}` | `200` empty body (htmx removes the node) | the chip | `outerHTML swap:120ms` | click on the chip's `×` |
-| GET | `/_/comments/{identifier}` | `<ol>` of comments | `#comments` | `innerHTML` | refresh |
-| POST | `/_/comments/{identifier}` | one `<li>` | `#comments` | `beforeend` | composer submit |
+| GET | `/_/comments/{identifier}` | the whole `<ol id="comment-list">` of §2.6.10 | `#comment-list` (the `<ol>`) | `outerHTML` | refresh |
+| POST | `/_/comments/{identifier}` | one `<li>` with `HX-Trigger: comment-created` — `200`, not `204`, because the element is the answer | `#comment-list` (the `<ol>`) | `beforeend` | composer submit |
 | GET | `/_/palette?q=` | `<ul role="listbox">` of results | `#palette-results` | `innerHTML` | `input` with `delay:120ms` |
 | GET | `/_/counts?team={team}` | `<span>` of counters | `#counts` | `outerHTML` | `every 30s` |
 | GET | `/_/board/{team}` | full board (recovery) | `#board` | `innerHTML` | after a drop error |
@@ -200,7 +202,7 @@ Headers the server must read or emit:
 | Header | Direction | Use |
 |---|---|---|
 | `HX-Request: true` | input | if missing on a `/_/*`, respond `400` (`fragment requires htmx`) |
-| `HX-Trigger` | output | events of §2.6.4/§2.6.5 and of the layer writes (`issue-created`, `issue-updated`, `issue-moved`, `issue-archived`, `issue-deleted`, `issue-restored`, `board-reordered`) |
+| `HX-Trigger` | output | events of §2.6.4/§2.6.5, of the layer writes and of the comment write (`issue-created`, `issue-updated`, `issue-moved`, `issue-archived`, `issue-deleted`, `issue-restored`, `board-reordered`, `comment-created`) |
 | `HX-Retarget` | output | on `422` of an inline edit: re-targets the `<form>` that failed |
 | `HX-Push-Url` | output | when opening the panel: pushes `/{team}/issue/{identifier}` |
 | `HX-Reswap` | output | `none` when the fragment only updates counters |
@@ -621,6 +623,9 @@ issue_vm = {
         }
     ],
     "assignees": [{"id": "…", "name": "Ginkelte", "initials": "VI", "is_current": True}],
+    # Flat, in creation order: the dashboard's composer cannot ask for a parent, so the list it
+    # renders carries no tree (D-060). A thread started from the CLI reads here as its comments in
+    # the order they were written.
     "comments": [
         {
             "id": "…",
@@ -1040,7 +1045,7 @@ Normative behavior:
 | `Esc` | panel open, no overlay | closes the confirmation block of §2.6.9 if it is open, otherwise closes the panel |
 | `Esc` | no overlay, no panel, with filter chips | removes the last filter chip |
 | `Enter` | focused row | navigates to the detail (`location.assign`) |
-| `Cmd/Ctrl+Enter` | comment composer or quick-add | submits the form |
+| `Cmd/Ctrl+Enter` | the comment composer of §2.6.10, or the quick-add of §2.6.3 | submits the form it is focused in |
 
 Implementation rules:
 
@@ -1579,6 +1584,99 @@ and the 320 px layout are **verified by hand in a browser**, because this host h
 drag & drop debt): open `/ENG/list`, open a panel, tab to the action group, open both blocks, archive,
 delete and restore, and check the focus lands where the table above says at 1280 px and at 320 px.
 
+#### 2.6.10 The comment composer: one box, on both surfaces, and the list it appends to (D-060)
+
+Writing a comment had a route and no element: §2.1.2 declared the form, §2.6.2 named `Cmd/Ctrl+Enter`
+for "the comment composer", and no template carried one, so the only writer of the `comment` table in
+the whole tree was a repository no use case called. This section gives it a home, a shape and a gate.
+
+**Where it lives.** Both surfaces that render `issue_vm` render it, from the two templates that share
+that view model (`R13`): `issue_detail.html` and `partials/issue_panel.html`. There is no third place,
+and a surface that renders comments without it is a surface where a comment cannot be written.
+
+**The gate.** It renders when `vm.can_write` is true **and** the issue is in neither layer:
+
+```jinja
+{% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
+```
+
+An archived or trashed issue offers `Restore` and nothing else (§2.6.9), and a comment is a write to the
+row like any other: it is refused there by the same rule (§6), so the page must not offer it. The
+composer is **not** a member of the action group of §2.6.9 — it does not sit in the footer beside
+`Move`, it sits under the comments it adds to, because that is the element it is about.
+
+**The markup, on the detail page** — a plain form, so it works with no JavaScript:
+
+```html
+<section id="comments">
+  <h2>Comments</h2>
+  <ol id="comment-list" class="comment-list">
+    <!-- one <li class="comment"> per comment, in creation order (§2.3.4) -->
+  </ol>
+  <form class="comment-composer" method="post" action="/ENG/issue/ENG-13/comment">
+    <label class="visually-hidden" for="comment-body">Comment</label>
+    <textarea id="comment-body" name="body" rows="3" required></textarea>
+    <button type="submit" class="btn">Comment</button>
+  </form>
+</section>
+```
+
+**The markup, on the panel** — the same box, posting the fragment and appending to the list:
+
+```html
+<form class="comment-composer" method="post" action="/ENG/issue/ENG-13/comment"
+      hx-post="/_/comments/ENG-13" hx-target="#comment-list" hx-swap="beforeend">
+  <label class="visually-hidden" for="panel-comment-body">Comment</label>
+  <textarea id="panel-comment-body" name="body" rows="3" required></textarea>
+  <button type="submit" class="btn">Comment</button>
+</form>
+```
+
+The panel's `method`/`action` are not decoration: with JavaScript off, or with the fragment failing,
+the browser posts the same form to the same route and lands on the detail page at `#comments`.
+
+**The box empties itself, on the event, not with `hx-on`.** The `POST` fragment answers `200` with the
+`<li>` and `HX-Trigger: comment-created` (R12), and `app.js` resets `.comment-composer` on that event —
+exactly the shape it already uses for the quick-add, which empties `#quick-add` on `issue-created` and on
+nothing else. Resetting on the event and not on `htmx:afterRequest` is what makes "on a `200` and not on a
+`422`" true by construction: the trigger is emitted by the success path, and a refusal has no event to
+listen for. A comment appended with its text still in the box would be a comment written twice by the next
+click, and a refused one whose text was cleared would be a paragraph the reader has to type again.
+
+It cannot be an `hx-on::after-request` attribute: htmx compiles `hx-on` with `new Function`, and R14's
+`script-src 'self'` without `unsafe-eval` forbids it. §2.6.8 records the same trap for the trigger filters,
+and §8 step 7 for the build.
+
+**The panel renders the same wrapper.** `partials/issue_panel.html` wraps its comments in
+`<section id="comments">` with `<ol id="comment-list" class="comment-list">` inside, exactly as the page
+does — the fragment's `hx-target="#comment-list"` needs that `<ol>` to exist on the surface that hosts the
+composer, and it is the only `id` in the panel that a swap may name. A panel that rendered a bare `<ol>`
+would append nowhere.
+
+**Two shapes, one target, both valid HTML.** `#comments` is the `<section>` and `#comment-list` is the
+`<ol>` inside it. Both fragments target **`#comment-list`**, and each uses the swap its node allows:
+`GET` answers the whole `<ol>` and swaps it `outerHTML`, so the list is replaced where it stands; `POST`
+answers one `<li>` with status `200` and appends it `beforeend`, so the item joins the list. The no-JS
+`303` lands on `/{team}/issue/{identifier}#comments`, which is the section — the anchor a reader follows,
+not a swap target.
+
+Two older texts were wrong and are worth naming, because each looked reasonable: both routes targeting
+`#comments` swapped an `<ol>` into an `<ol>` and appended an `<li>` into a `<section>`; and the `GET`
+swapping the **innerHTML of `#comments`** deleted the `<h2>` and the composer that sit in that section
+beside the list — a refresh that empties the box you are typing in. The list is the thing that changes,
+so the list is what the swap names.
+
+**The keys it reads.** `vm.can_write`, `vm.is_archived`, `vm.is_trashed`, `vm.comments` and
+`vm.identifier` from §2.3.4, and `page.team.key` — the team key lives on the common context (§2.3.1),
+not on `issue_vm`, because every URL the page builds reads it from there. All of them are already
+declared, so the composer adds no key to the view model. Its `form_error`, when a refusal re-renders
+it, is the one §6 names.
+
+**Verification.** The markup, the gate, the `303` and the `#comments` fragment of the location, the
+`422` with its sentence and the absence of the box on a layered issue are pytest-assertable (§7 and
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`). The `Cmd/Ctrl+Enter` submission and the 44 px
+target are verified by hand in a browser at 1280 px and at 320 px, like the rest of §2.6.9.
+
 ## 3. Data it touches
 
 The dashboard does not execute SQL: the read models are built by `hifa/adapters/sqlite/reads.py`
@@ -1647,9 +1745,9 @@ transactions and locks, and this connection holds neither between probes.
 | **R24** | **`default_team` is never absent, and the root never guesses.** `config.py` always resolves `[cli].default_team` — the configured value, else `[team].key`, which itself defaults to `DEFAULT_TEAM_KEY` (SPEC-100 §2.3) — so "2+ teams and no default" is **not** a reachable state and is not what the picker is for. What `GET /` does, in this order: (1) the resolved default names a team that exists ⇒ `303` to `/{key}/board`; (2) exactly one non-archived team ⇒ `303` to it (this is the fresh-database case, where the default key exists); (3) **canonical picker case** — the default names a team that is **not in the database** (a second team created under another key, a regenerated `.bak`, a `.hifa.toml` copied from another workspace) and there are 2+ non-archived teams ⇒ `200` `team_picker.html` (§2.3.8) listing every team and linking to `/{team}/board`, with `reason = "several_teams"`; (4) **secondary case** — the caller passed no default at all (`create_app(default_team=None)`: embedding, tests, a bootstrap that skipped config) and there are 2+ teams ⇒ the same `200` picker, with `reason = "no_default_team"`; (5) no teams ⇒ `404` `error.html`. It never picks by `created_at`, alphabetical order, cookie or session, and never answers `404` when a usable answer exists. → **REQ-F070-14** |
 | **R25** | **Reordering the columns changes the presentation order, nothing else.** `POST /_/states/{id}/position` writes `workflow_state.position` and **only** that: no issue changes `state_id` or `board_order`, no `issue_history` row is written and no counter moves. The payload is `{before, after}` with **state ids** (`null` at the edge), never a float; the new `position` is `domain.ranking.between(prev, next)` computed on the server and persisted by `update_state`. The response is `204` + `HX-Trigger: board-reordered` with no swap (the DOM already moved), `403` in `--read-only`, `404` for an unknown state and `422` for neighbours from another team. The canonical order a **new** team is seeded with is `DEFAULT_STATES` (SPEC-100 §2.5, D-034); an existing team is reordered with this route or with `hifa state update` (SPEC-050 §2.5.6), never with a migration. → **REQ-F070-06** |
 | **R26** | **The page notices a foreign write by a change signal, never by a timer.** `GET /_/revision` answers `{"revision": <n>}` read from `PRAGMA data_version` on the process's single long-lived read connection (§2.1.3.1, §3, D-049); the number changes iff another connection committed since the previous read — which is what the CLI is, and what the process's own per-request connections are. The page carries the number it was rendered with (`<body data-revision>`, `page["revision"]`) and adopts the `HX-Revision` of an answer that replaced the collection; a panel, a row, the palette or the counters do not adopt (D-050); the poller (`hx-trigger="every {{ page.revision_poll }}"`, `hx-swap="none"`, visibility enforced in the client by cancelling `htmx:beforeRequest` while the tab is hidden — never as a `[condition]` filter, which the CSP's `script-src 'self'` makes unrunnable) reloads `page["refresh_url"]` into `#board`/`#issues-tbody` **only when the numbers differ**, so no request and no swap happens while nothing changed. The reload is **deferred, never forced**, while a detail panel is open, the quick add holds unsaved text or a drag is in flight; the last revision seen is applied as soon as the interaction ends (§2.6.8). The number is opaque — compared for equality, never ordered, never arithmetic, never displayed. Without JS nothing of this runs and a reload shows the new data (P5). The probe is a read: `--read-only` neither blocks it nor changes it. → **REQ-F070-15** |
-| **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The five capabilities of §2.1.2 are seven page forms and their five fragments (§2.1.3), and each form's `hx-*` points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card or the panel after an edit (`?view=panel` answers the panel, for the description editor of §2.6.3), `204` with no body after a move, an archive, a delete or a restore, `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
+| **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The **seven** page forms of §2.1.2 — the quick add, the edit, `move`, the comment and the three layer writes — each have the `/_/` fragment of §2.1.3 that answers them, and each form on a fragment-bearing surface carries the `hx-*` that points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card or the panel after an edit (`?view=panel` answers the panel, for the description editor of §2.6.3), `204` with no body after a move, an archive, a delete or a restore, `200` with the one `<li>` a comment writes (§2.6.10), `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
 | **R28** | **A state-changing request from another origin is refused before the route runs, and a request with no origin information is allowed.** Every request whose method is outside `GET`/`HEAD`/`OPTIONS` is answered `403`, `text/plain` `cross-site write refused`, `Cache-Control: no-store` — returned by one middleware installed by `create_app` inside `_headers`, never raised as an exception — when `Sec-Fetch-Site` is `cross-site` or `same-site`, or when that header is absent and `Origin` names another authority or is `null`; `same-origin`, `none`, an `Origin` whose authority is `Host`'s, and a request with neither header are served. The comparison is the authority (host and port, compared case-insensitively, the scheme dropped), so a browser whose `Origin` says `https` behind a plain `http` tunnel still writes, and `Origin: null` — which names no authority — is refused. The guard reads no path, no route table, no table and no body, so it precedes the `HX-Request` `400` (R5), the read-only `403` (R18) and the use case, and a cross-site write to an unknown identifier is `403` rather than `404`. It does not authenticate, does not close the tunnel and does not make a header a credential — a client that sets its own headers can set any, and a same-origin page can write by definition; and it covers no read, because a cross-site read is served and its bytes are unreadable to the other origin (REQ-S005). → **REQ-F070-16** |
-| **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind the two surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **they are its only consumers**; the row and the card never pass the keyword, and the asymmetry — page and panel pass it, collection members do not — is the rule and not an implementation detail. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write and `archive` refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the four controls (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
+| **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block, no comment composer (§2.6.10) — and every write but `restore` refuses it, the comment included — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind the two surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **they are its only consumers**; the row and the card never pass the keyword, and the asymmetry — page and panel pass it, collection members do not — is the rule and not an implementation detail. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write, `archive` and a comment refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the four controls (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
 
 Component-specific requirements:
 
@@ -1902,11 +2000,14 @@ differ in exactly the step above, not in the route, the status or the header.
 | `InvalidTransition` (drop on an archived issue, R20) | 409 | the panel re-rendered + `form_error`, the same body as the row above (§2.1.3, §5.4) | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `archive` / `delete` without `confirm=1` | 422 | the page (or the panel) with the `<details>` block rendered `open` and `form_error` | nothing is written; the block stays open |
 | `archive` of a parent with open sub-issues (`CLOSE_WITH_OPEN_CHILDREN`) | 422 | the page (or the panel) with the message | nothing is written; `archived_at` unchanged |
-| `edit`, `move`, a label or `assignee` write, or `archive` of an issue in the trash (`ISSUE_TRASHED`) | 422 | the page (or the panel) with the message | nothing is written |
+| `edit`, `move`, a label or `assignee` write, a comment, or `archive` of an issue in the trash (`ISSUE_TRASHED`) | 422 | the page (or the panel) with the message; a comment sent by a client that still holds a stale form gets the message and **no** composer, because the gate of §2.6.10 renders none for a trashed issue | nothing is written |
 | `delete` of an issue already in the trash | 204 (`/`), 303 (page) | no body; `/{team}/list` | a no-op: no history row, `trashed` and `updated_at` unchanged (SPEC-040 §5.5, §5.7 step 7) |
-| `move` or an edit of an archived issue (`InvalidTransition`, R20) | 409 | the page (or the panel) with the message and the way out | nothing is written; the panel offers `Restore` |
+| `move`, an edit or a comment on an archived issue (`InvalidTransition`, R20) | 409 | the page (or the panel) with the message and the way out | nothing is written; the panel offers `Restore` |
 | `restore` of a visible issue | 204 (`/`), 303 (page) | no body; the detail | a no-op: no row, no history (SPEC-050 §2.5.3) |
 | `archive` of an already-archived issue | 204 (`/`), 303 (page) | no body; `/{team}/list` | a no-op: no history row, `archived_at` unchanged (SPEC-040 §5.5, REQ-F040-33) |
+| A comment with no body, or only spaces (`BODY_EMPTY`) | 422 | the composer with `a comment needs a body` as its `form_error`, the textarea marked `.is-invalid` | nothing is written |
+| A reply that would sit deeper than three (`COMMENT_DEPTH_EXCEEDED`, `field="parent_id"`) | 422 | the composer with `the thread is 3 deep; reply to a shallower comment`, the parent control marked `.is-invalid` | nothing is written; the dashboard's own composer sends no parent (D-060), so this row is the fragment's contract, not a path its UI can take |
+| A comment whose `parent` names a comment of another issue (`COMMENT_PARENT_MISMATCH`) | 422 | the composer with `that comment belongs to another issue`, the parent control marked `.is-invalid` | nothing is written; the dashboard's own composer sends no parent (D-060), so this row is the fragment's contract, not a path its UI can take |
 | Unknown `{state_id}` on `/_/states/{id}/position` | 404 | `text/plain` `workflow state does not exist` | the client reloads `/_/board/{team}` |
 | Unknown `{state_id}` on the `move` drop (`/_/issues/{identifier}/move`) | 404 | `text/plain` `workflow state does not exist` | the client reloads `/_/board/{team}`; the card returns to its place + toast |
 | Neighbour of the column drop from another team, or the moved state itself | 422 | `text/plain` `invalid neighbour` | same reload; the columns return to the server order |
@@ -2441,6 +2542,56 @@ Feature: hifa web dashboard
     Then no fragment was swapped under the pointer
     And the drop completes against the position the server has
     And the board reloads after the drop's request returns
+
+  Scenario: the page and the panel both carry the composer for a visible issue
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "name=\"body\""
+    And the second response contains "name=\"body\""
+    And the first response contains "action=\"/ENG/issue/ENG-13/comment\""
+    And the second response contains "/_/comments/ENG-13"
+
+  Scenario: a parked issue offers no composer
+    Given the issue "ENG-13" in the trash
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "/ENG/issue/ENG-13/restore"
+    And the second response contains "/ENG/issue/ENG-13/restore"
+    And none of the answers contains "name=\"body\""
+
+  Scenario: an archived issue offers no composer either
+    Given the issue "ENG-13" in the state "Todo" archived at "2026-11-10T12:00:00Z"
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "/ENG/issue/ENG-13/restore"
+    And the second response contains "/ENG/issue/ENG-13/restore"
+    And none of the answers contains "name=\"body\""
+
+  Scenario: a comment posted without JavaScript lands on the comments of the page
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/ENG/issue/ENG-13/comment" with the form {"body":"First look at this"}
+    Then the status is 303
+    And the location is "/ENG/issue/ENG-13#comments"
+    And the HTML of "/ENG/issue/ENG-13" contains "First look at this"
+
+  Scenario: the comment fragment answers the one list item it wrote
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/_/comments/ENG-13" with the form {"body":"From the panel"} and the header "HX-Request: true"
+    Then the status is 200
+    And the response carries the header "HX-Trigger" with "comment-created"
+    And the HTML contains "<li class=\"comment\""
+    And the HTML contains "From the panel"
+
+  Scenario: a comment with no body is refused and the box comes back
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a POST to "/ENG/issue/ENG-13/comment" with the form {"body":"   "}
+    Then the status is 422
+    And the HTML contains "a comment needs a body"
+    And the HTML contains "name=\"body\""
 ```
 
 ## 8. Regeneration checklist
@@ -2467,7 +2618,7 @@ Feature: hifa web dashboard
 7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (61 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (67 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).
@@ -2511,6 +2662,18 @@ Feature: hifa web dashboard
   §2.6.9; the whole-page floor is T-19.
 
 ## 11. Notes
+
+- spec_revision 25 (2026-11-17): **the comment composer exists as markup, and its two fragments have
+  two shapes** (D-060). §2.6.10 is new: the box, on both templates that render `issue_vm`, gated on
+  `can_write` and neither layer, outside the action group of §2.6.9 because it belongs to the comments
+  under it rather than to the footer. §2.1.3's two comment rows were the defect this round was opened
+  for — both named `#comments`, one swapping an `<ol>` in by `innerHTML` and the other appending an
+  `<li>` by `beforeend`, which is invalid whichever way the browser is told to do it. Now `#comments` is
+  the `<section>` and `#comment-list` the `<ol>`, both fragments target the list — the `GET` swapping it
+  `outerHTML` so the heading and the composer beside it survive a refresh — the `POST` answers one item
+  with `200`, and the no-JS `303` lands on the section. §6 gains the depth refusal the new rule raises
+  and names the comment write in the two layer rows, and the `HX-Trigger` row of §2.1.3 finally lists
+  `comment-created`, the event R12 already counted and the table did not name.
 
 - spec_revision 24 (2026-11-17): **the refusals say where their sentences are built, the confirmation says
   whose it is, and the `204` keeps the header it already had.** Three description gaps closed before the
