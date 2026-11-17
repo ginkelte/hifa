@@ -297,7 +297,7 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 | `count_open_issues` | `(team_id: str) -> int` | counts `v_issue.is_open AND visible` |
 | `workspace` | `() -> Workspace \| None` | first row of `workspace` |
 | `ensure_workspace` | `(*, name: str, url_key: str) -> Workspace` | idempotent by `url_key` |
-| `states` | `(team_id: str, *, include_archived: bool = False) -> list[WorkflowState]` | order `position` |
+| `states` | `(team_id: str, *, include_archived: bool = False) -> list[WorkflowState]` | order `position, name`; SQL-7 row 16 is this statement |
 | `get_state` | `(state_id: str) -> WorkflowState \| None` | |
 | `get_state_by_name` | `(team_id: str, name: str) -> WorkflowState \| None` | `UNIQUE(team_id,name)` |
 | `default_state` | `(team_id: str) -> WorkflowState \| None` | `is_default = 1` and not archived |
@@ -583,19 +583,39 @@ i.board_order`; for `group_by='project'` a `LEFT JOIN project p` is added and it
 `p.name IS NULL, p.name, i.board_order`. The per-column limit (`limit_per_group`) is applied in
 Python **after** grouping, and each `BoardGroup` reports `total` (all) and `issues` (trimmed).
 
-**SQL-7 — `issue_detail`.** A **fixed** set of 8 queries, independent of the number of children,
-labels, comments or history:
+**SQL-7 — `issue_detail`.** The statements the read executes, **in order**. The `include` set of §2.6
+gates the three heavy collections and nothing else; no statement of this read is a `COUNT(*)`:
 
-| # | Query | Result |
-|---|---|---|
-| 1 | `v_issue` + `team` + `workflow_state` + `project` + `cycle` + `member` (assignee) + `member` (creator) + `issue` (parent) by `LEFT JOIN` | header |
-| 2 | `SELECT * FROM issue WHERE parent_id = ? ORDER BY sub_issue_sort_order, number` | children |
-| 3 | `issue_label JOIN label WHERE issue_id = ?` | labels |
-| 4 | `issue_relation WHERE issue_id = ? OR related_issue_id = ?` | relations |
-| 5 | `comment WHERE issue_id = ? ORDER BY created_at, id` | comments |
-| 6 | `issue_history WHERE issue_id = ? ORDER BY created_at DESC, id DESC LIMIT 100` | history |
-| 7 | `attachment WHERE issue_id = ? ORDER BY created_at` | attachments |
-| 8 | `workflow_state WHERE team_id = ? ORDER BY position` | the team's states |
+| # | Statement | Result | Runs when |
+|---|---|---|---|
+| 1 | `SELECT <the SQL-4 projection> FROM v_issue i JOIN workflow_state s ON s.id = i.state_id JOIN team t ON t.id = i.team_id LEFT JOIN member m ON m.id = i.assignee_id WHERE (i.identifier = :ref OR i.id = :ref) AND i.trashed = 0` | header (`IssueListItem`); the archive columns are not in this projection | always |
+| 2 | `SELECT * FROM issue WHERE id = ?` | the entity row: `description`, `archived_at`, `trashed` | always |
+| 3 | `SELECT * FROM team WHERE id = ?` | `team` | always |
+| 4 | `SELECT * FROM workflow_state WHERE id = ?` | `state` | always |
+| 5 | `SELECT * FROM project WHERE id = ?` | `project` | the row has a `project_id` |
+| 6 | `SELECT * FROM cycle WHERE id = ?` | `cycle` | the row has a `cycle_id` |
+| 7 | statement 1's projection with `WHERE i.id = :parent` | `parent` | the row has a `parent_id` |
+| 8 | statement 1's projection with `WHERE i.parent_id = :parent ORDER BY i.sub_issue_sort_order, i.number` | `children` | always |
+| 9 | `SELECT * FROM issue_relation WHERE issue_id = ? OR related_issue_id = ?`, then statement 1's projection `WHERE i.id = :other` **once per relation row** | `relations` | always; one statement when the issue has no relation |
+| 10 | `SELECT * FROM comment WHERE issue_id = ? ORDER BY created_at, id` | `comments` | `comments` ∈ `include` |
+| 11 | `SELECT * FROM issue_history WHERE issue_id = ? ORDER BY created_at DESC, id DESC LIMIT 100` | `history` | `history` ∈ `include` |
+| 12 | `SELECT * FROM attachment WHERE issue_id = ? ORDER BY created_at` | `attachments` | `attachments` ∈ `include` |
+| 13 | `SELECT id, display_name FROM member WHERE id IN (SELECT author_id FROM comment WHERE issue_id = ? AND author_id IS NOT NULL UNION SELECT actor_id FROM issue_history WHERE issue_id = ? AND actor_id IS NOT NULL)` | `members` | `comments` ∈ `include` or `history` ∈ `include` |
+| 14 | `SELECT * FROM member WHERE id = ?` | `assignee` | the row has an `assignee_id` |
+| 15 | `SELECT * FROM member WHERE id = ?` | `creator` | the row has a `creator_id` |
+| 16 | `SELECT id, team_id, name, type, color, position, is_default, archived_at FROM workflow_state WHERE team_id = ? AND archived_at IS NULL ORDER BY position, name` | `states` | always |
+
+**The two totals, and what they count.** For the issue §7's scenario declares — a creator, no
+assignee, no parent and no relations — with `include=DETAIL_INCLUDE`: **12 statements** (11 before this
+revision added row 16). With `include=frozenset()`: **8 statements** (7 before). Rows 5, 6, 7 and 14
+add one each only when the row carries the id they look up, and row 9 adds one per relation: those are
+the only statements the data can add, and R5 counts them. Labels add none — they ride in statement 1's
+projection as a `json_group_array` subselect, so there is no `issue_label` statement to enumerate.
+
+Row 16 is **the statement the render needs and the one `TeamRepo.states` already runs** (§2.4): the
+same SQL — non-archived, `ORDER BY position, name` — so the `<select>` this read feeds offers exactly
+the columns that list offers, in exactly that order. An archived state is not one of them, and two
+states at the same `position` come back by `name`, not in whatever order the page happens to hold them.
 
 **SQL-8 — history in batch:**
 
@@ -1039,10 +1059,15 @@ class IssueDetail:
     members: Mapping[str, str] = field(default_factory=dict)
     #: additive since spec_revision 11, defaulted (D-026): the layer the row sits in and the columns a
     #: render offers, so that one read of one issue serves the whole page (HIFA-55). `archived_at` and
-    #: `trashed` are columns of the `issue` row this read already loads.
+    #: `trashed` come from the `issue` row this read already loads (SQL-7 row 2) and cost no statement.
+    #: `trashed` is **always `False`** on a detail this function returns: SQL-7 row 1 filters
+    #: `i.trashed = 0`, so a trashed issue answers `None` instead. The field is carried for shape
+    #: parity with the row model, not because this read can ever report a trashed issue.
+    #: `states` is the team's **non-archived** workflow states ordered by `position, name` — the set
+    #: and the order of SQL-7 row 16, which is the statement `TeamRepo.states` runs (§2.4).
     archived_at: datetime | None = None  # issue.archived_at: the archive layer
-    trashed: bool = False  # issue.trashed: the trash layer
-    states: tuple[WorkflowState, ...] = ()  # the team's workflow states, by position
+    trashed: bool = False  # issue.trashed: always False for a returned detail
+    states: tuple[WorkflowState, ...] = ()  # the team's non-archived states, by position then name
 
 
 @dataclass(frozen=True, slots=True)
@@ -1092,7 +1117,12 @@ def issue_detail(
     """ref = ULID or identifier. None if it does not exist (and is not trashed).
     `include` gates the heavy collections (`comments`, `history`, `attachments`): empty means
     base only, which is what the row/card fragments ask for; the panel asks for the comments too
-    (D-027, D-029). Any other name is `Validation(field="include", rule="INCLUDE_INVALID")`."""
+    (D-027, D-029). Any other name is `Validation(field="include", rule="INCLUDE_INVALID")`.
+    `states` always carries the team's **non-archived** workflow states, ordered by
+    `position, name` — the set and the order `TeamRepo.states` returns (§2.4), the same statement
+    as SQL-7 row 16 — so an edge renders the state `<select>` from this model instead of reading
+    the database again (SPEC-040 R21). `trashed` is always `False` here: a trashed issue answers
+    `None`."""
 
 
 def team_by_ref(conn: sqlite3.Connection, ref: str) -> Team | None:
@@ -1260,7 +1290,10 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
   attempts are exhausted the `Conflict(code='DB_BUSY')` is propagated. A commit that fails is **never** retried
   without a previous rollback.
 - **R5 — No N+1.** `list_view` is 1 query; `board_view` is 1 query; `blocked_view` is 1 query;
-  `issue_detail` is exactly 8; `agenda` is 1. Executing SQL inside a loop over rows is forbidden.
+  `agenda` is 1. `issue_detail` is **12** statements with `include=DETAIL_INCLUDE` and **8** with an
+  empty `include` (SQL-7, §2.5), independent of the number of children, labels, comments and history —
+  its relations are the one count that follows a collection, at one statement each (SQL-7 row 9).
+  Executing SQL inside a loop over rows is forbidden anywhere else.
 - **R6 — Reading does not write.** The repos obtained from `read()` raise `Conflict(code='READ_ONLY_UOW')`
   in any write method. `reads.py` only receives read-only connections.
 - **R7 — Bound parameters.** Zero value interpolation in SQL (REQ-S002). The only
@@ -1299,7 +1332,7 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
 | **REQ-F030-09** | `list_view` obtains the labels with `json_group_array` in a single query; the number of statements does not depend on the number of issues |
 | **REQ-F030-10** | `ListFilters` combines its families with AND, resolves the repeated values of the `state`/`state_type`/`priority` families as **OR** and `label_ids` as **AND** (§2.6), respects `limit` (default 50, max 200, D-011) and `offset`, orders by the `SORT_KEYS` expression of `order` with `i.id` as the tie-breaker in the same direction, and returns `next_cursor`/`has_more` without a `COUNT(*)` |
 | **REQ-F030-11** | `board_view` groups by `state`, `assignee`, `priority` or `project`, orders the groups by `state.position`/`priority.rank`/name, and respects `limit_per_group` reporting `total` |
-| **REQ-F030-12** | `issue_detail` executes exactly 8 queries, regardless of how many children, labels or comments the issue has |
+| **REQ-F030-12** | `issue_detail` executes a fixed number of statements — **12** with `include=DETAIL_INCLUDE`, **8** with an empty `include` — regardless of how many children, labels, comments or history the issue has; only an assignee, a parent and each relation add one (SQL-7, §2.5) |
 | **REQ-F030-13** | `agenda` returns the issues with `due_date` in `[start, start+days-1]` sorted by date and priority, and includes overdue open ones if `include_overdue=True` |
 | **REQ-F030-14** | `migrate` applies the pending `00X_*.sql` in order, leaves `user_version` at the last version and is idempotent (a second run applies nothing) |
 | **REQ-F030-15** | `migrate` creates a verifiable `<stem>-<ts>.db.bak` before applying and aborts without touching the database if the backup fails |
@@ -1442,7 +1475,8 @@ contract is consumed by SPEC-040 §5.
 ```
 
 For a view that needs consistency across several queries (`issue_detail`), `UnitOfWork.read()` is used:
-a deferred `BEGIN` keeps the same snapshot across the 8 queries.
+a deferred `BEGIN` keeps the same snapshot across the 12 statements of the render read (8 with an empty
+`include`), SQL-7 included.
 
 ## 6. Errors
 
@@ -1583,10 +1617,15 @@ Feature: SQLite adapter
 
   @REQ-F030-12
   Scenario: the detail has a fixed number of queries
-    Given an issue with 20 children, 4 labels, 30 comments and 40 history events
-    When issue_detail is run counting SQL statements
+    Given an issue with a creator, 20 children, 4 labels, 30 comments and 40 history events,
+      no assignee, no parent and no relations
+    When issue_detail is run with include=DETAIL_INCLUDE counting SQL statements
+    Then exactly 12 statements are executed
+    And the detail brings the 20 children, the 4 labels, the 30 comments, the team's states
+      and the archive flags of the row
+    When issue_detail is run with include=frozenset() counting SQL statements
     Then exactly 8 statements are executed
-    And the detail brings the 20 children, the 4 labels, the 30 comments and the team's states
+    And no comment, no history entry and no attachment is loaded
 
   @REQ-F030-13
   Scenario: the agenda covers the requested window and includes overdue
@@ -1699,8 +1738,10 @@ Feature: SQLite adapter
    Each test creates `tmp_path/"hifa.db"`, runs `migrate()` and closes the connections in a fixture with
    `yield`.
 6. Verify the "single query" requirements with `sqlite3.Connection.set_trace_callback`:
-   count statements in `list_view` (1), `board_view` (1), `issue_detail` (8) and `agenda` (1). It is the
-   only cheap way to test R5/REQ-F030-09/REQ-F030-12.
+   count statements in `list_view` (1), `board_view` (1), `agenda` (1) and `issue_detail` — **12** with
+   `include=DETAIL_INCLUDE` and **8** with an empty `include`, on an issue with a creator and no
+   assignee, no parent and no relations (SQL-7). It is the only cheap way to test
+   R5/REQ-F030-09/REQ-F030-12, and a count without its `include` proves nothing.
 7. Verify concurrency with real processes (`multiprocessing` with `spawn`), not with threads: the
    SQLite lock is between connections and threads of the same process share the GIL but not
    necessarily connections. The REQ-F030-07 test must launch 10 processes.
@@ -1759,15 +1800,19 @@ Feature: SQLite adapter
 - spec_revision 11 (2026-11-16): **the detail read carries the archive flags and the team's states
   (HIFA-55).** `IssueDetail` gains `archived_at`, `trashed` and `states`, appended after `members` and
   defaulted (`None`, `False`, `()`), so the shape stays additive under D-026 and `version` stays 2.
-  Two of them cost nothing: `archived_at` and `trashed` are columns of the `issue` row
-  `issue_detail` already loads (query 2 of SQL-7) and were being fetched and dropped, which is why
-  the base read is 7 statements on this tree and the flags were only reachable through a second
-  connection. The third is one statement: SQL-7's fixed set goes 7 → 8, `ORDER BY position` over the
-  team's `workflow_state` rows, and REQ-F030-12, R5, §5.3, the §7 scenario and the §8 checklist move
-  with it. The flags are the layers of a row, not a visibility rule: `issue_detail` still answers
-  `None` for an issue the trash layer hides, so `archived_at` is the layer a render can see — `trashed`
-  is the stored value, carried so that a render decides the layer actions from one model instead of
-  from a second read. **Why a revision and not a `D-0NN`:** the three fields are read-model internals
+  Two of them cost nothing: `archived_at` and `trashed` are columns of the `issue` row the read loads
+  with `SELECT * FROM issue WHERE id = ?` (SQL-7 row 2) and were being fetched and dropped, so the flags
+  were only reachable through a second connection. The third is one statement: SQL-7's set goes
+  **11 → 12** with `include=DETAIL_INCLUDE` and **7 → 8** with an empty one — the twelfth statement is
+  `SELECT … FROM workflow_state WHERE team_id = ? AND archived_at IS NULL ORDER BY position, name`
+  (row 16), the statement `list_states` already ran through `StateRepo.list_for_team`, so the `<select>`
+  offers the same columns in the same order. SQL-7 is rewritten as the statements the code executes, so
+  REQ-F030-12, R5, §5.3, the §7 scenario and the §8 checklist each name the `include` they count. The
+  flags are the layers of a row, not a visibility rule: `issue_detail` still answers `None` for an issue
+  the trash layer hides, so `archived_at` is the layer a render can see, while `trashed` is **always
+  `False`** on a returned detail — the stored value is carried for shape parity with the row model, so
+  that the render's gate reads one model instead of two.
+  **Why a revision and not a `D-0NN`:** the three fields are read-model internals
   of this layer — no use case signature, endpoint, command, envelope or enum moves, and the two specs
   that consume them already say an edge takes a read model as §2.6 declares it (SPEC-040 R19) and
   never reads the database itself (A1/A3, P4). The corpus has resolved this exact shape twice already,
