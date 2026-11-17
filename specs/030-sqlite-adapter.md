@@ -607,7 +607,7 @@ gates the three heavy collections and nothing else; no statement of this read is
 
 **The two totals, and what they count.** For the issue §7's scenario declares — a creator, no
 assignee, no parent and no relations — with `include=DETAIL_INCLUDE`: **12 statements** (11 before this
-revision added row 16). With `include=frozenset()`: **8 statements** (7 before). Rows 5, 6, 7 and 14
+revision added row 16). With `include=frozenset()`: **8 statements** (7 before). Rows 5, 6, 7, 14 and 15
 add one each only when the row carries the id they look up, and row 9 adds one per relation: those are
 the only statements the data can add, and R5 counts them. Labels add none — they ride in statement 1's
 projection as a `json_group_array` subselect, so there is no `issue_label` statement to enumerate.
