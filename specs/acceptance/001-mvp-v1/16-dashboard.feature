@@ -120,6 +120,7 @@ Feature: HTTP dashboard
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a POST to "/_/comments/ENG-13" with the form {"body":"From the panel"} and the header "HX-Request: true"
     Then the status is 200
+    And the response carries the header "HX-Trigger" with "comment-created"
     And the HTML contains "<li class=\"comment\""
     And the HTML contains "From the panel"
 

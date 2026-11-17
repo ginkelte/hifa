@@ -170,7 +170,7 @@ Failed validation in a form without JS ⇒ `422` + template with the errors next
 | POST | `/_/issues/{identifier}/labels` | `<span class="chip">` chip | `#labels-{identifier}` | `beforeend` | picking a label |
 | DELETE | `/_/issues/{identifier}/labels/{label_id}` | `200` empty body (htmx removes the node) | the chip | `outerHTML swap:120ms` | click on the chip's `×` |
 | GET | `/_/comments/{identifier}` | the whole `<ol id="comment-list">` of §2.6.10 | `#comment-list` (the `<ol>`) | `outerHTML` | refresh |
-| POST | `/_/comments/{identifier}` | one `<li>` — `200`, not `204`, because the element is the answer | `#comment-list` (the `<ol>`) | `beforeend` | composer submit |
+| POST | `/_/comments/{identifier}` | one `<li>` with `HX-Trigger: comment-created` — `200`, not `204`, because the element is the answer | `#comment-list` (the `<ol>`) | `beforeend` | composer submit |
 | GET | `/_/palette?q=` | `<ul role="listbox">` of results | `#palette-results` | `innerHTML` | `input` with `delay:120ms` |
 | GET | `/_/counts?team={team}` | `<span>` of counters | `#counts` | `outerHTML` | `every 30s` |
 | GET | `/_/board/{team}` | full board (recovery) | `#board` | `innerHTML` | after a drop error |
@@ -1635,13 +1635,17 @@ composer is **not** a member of the action group of §2.6.9 — it does not sit 
 The panel's `method`/`action` are not decoration: with JavaScript off, or with the fragment failing,
 the browser posts the same form to the same route and lands on the detail page at `#comments`.
 
-**The box empties itself, and not with `hx-on`.** `app.js` listens for `htmx:afterRequest` on
-`.comment-composer` and calls `reset()` when the request succeeded — the shape `app.js` already uses for
-the quick-add. It cannot be an `hx-on::after-request` attribute: htmx compiles `hx-on` with
-`new Function`, and R14's `script-src 'self'` without `unsafe-eval` forbids it (§8 step 7 records the same
-trap for the trigger filters). The reset happens on a `200` and not on a `422`: a comment appended with
-its text still in the box is a comment written twice by the next click, and a refused one whose text was
-cleared is a paragraph the reader has to type again.
+**The box empties itself, on the event, not with `hx-on`.** The `POST` fragment answers `200` with the
+`<li>` and `HX-Trigger: comment-created` (R12), and `app.js` resets `.comment-composer` on that event —
+exactly the shape it already uses for the quick-add, which empties `#quick-add` on `issue-created` and on
+nothing else. Resetting on the event and not on `htmx:afterRequest` is what makes "on a `200` and not on a
+`422`" true by construction: the trigger is emitted by the success path, and a refusal has no event to
+listen for. A comment appended with its text still in the box would be a comment written twice by the next
+click, and a refused one whose text was cleared would be a paragraph the reader has to type again.
+
+It cannot be an `hx-on::after-request` attribute: htmx compiles `hx-on` with `new Function`, and R14's
+`script-src 'self'` without `unsafe-eval` forbids it. §2.6.8 records the same trap for the trigger filters,
+and §8 step 7 for the build.
 
 **The panel renders the same wrapper.** `partials/issue_panel.html` wraps its comments in
 `<section id="comments">` with `<ol id="comment-list" class="comment-list">` inside, exactly as the page
@@ -2578,6 +2582,7 @@ Feature: hifa web dashboard
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a POST to "/_/comments/ENG-13" with the form {"body":"From the panel"} and the header "HX-Request: true"
     Then the status is 200
+    And the response carries the header "HX-Trigger" with "comment-created"
     And the HTML contains "<li class=\"comment\""
     And the HTML contains "From the panel"
 
