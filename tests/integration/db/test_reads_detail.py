@@ -194,6 +194,33 @@ def test_the_detail_carries_the_archive_flags_of_the_row(world) -> None:
     assert archived.trashed is False
 
 
+def test_a_trashed_issue_has_no_detail(world) -> None:
+    """`trashed` is `False` on every detail because a trashed row is never a detail.
+
+    The header filters `i.trashed = 0`, so the field of the model can only ever be `False`:
+    the answer for a trashed identifier is `None`. The row is trashed on the database and its
+    own column is read beside the call, so this pins the mechanism and not only the answer —
+    drop the filter from the header and this is the test that goes red. The live sibling is
+    read too: `None` is the trashed row's answer, not a reference that resolved to nothing.
+    """
+    now = world.clock.now()
+    with world.uow.write() as tx:
+        trashed = make_issue(tx, world)
+        make_issue(tx, world)
+        tx.issues.trash(trashed.id, now)
+
+    with world.uow.read() as tx:
+        stored = tx.issues.connection.execute(
+            "SELECT trashed FROM issue WHERE id = ?", (trashed.id,)
+        ).fetchone()
+        assert stored is not None and stored[0] == 1
+        assert issue_detail(tx.issues.connection, "ENG-1") is None
+        assert issue_detail(tx.issues.connection, trashed.id) is None
+        sibling = issue_detail(tx.issues.connection, "ENG-2")
+
+    assert sibling is not None and sibling.trashed is False
+
+
 def test_the_detail_states_leave_an_archived_state_out(world) -> None:
     """An archived column is not offered, and two columns at one position come back by name."""
     with world.uow.write() as tx:
