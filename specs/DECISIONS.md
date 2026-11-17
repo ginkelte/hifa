@@ -2580,6 +2580,11 @@ cannot both stand, so one of them is revised, by name, here:
   issue cannot be edited, moved, commented or relabelled from it, because those writes refuse with
   `ISSUE_TRASHED` anyway (§6), and a page of read-only fields with an edit form that always fails would be
   a page that lies about what it can do.
+- **The two edges now disagree about one row, in this direction.** The dashboard serves a trashed issue on
+  its page and its panel while `hifa issue show ENG-13` still answers exit `3` `not_found` — the read's
+  default, which this decision does not touch (SPEC-050 §2.5.3) — so P2 is restored for the page a refusal
+  sends the reader to and **not** for the CLI's read, and D-059 is not the record of a trash that closed
+  parity on both edges.
 
 **Verification.** The contract is asserted by four scenarios of
 `specs/acceptance/001-mvp-v1/16-dashboard.feature` — the detail page of a trashed issue answers `200` and

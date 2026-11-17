@@ -99,7 +99,7 @@ Feature: HTTP dashboard
   # --- the dashboard write paths (T-20.1; SPEC-070 §2.1.2, §2.1.3, §2.6.9, §5.7; D-053, D-054) ------
   #
   # Fixtures this block assumes, declared once instead of in every scenario:
-  #   * an initialized database: team ENG (key ENG) with the 6 seeded states of SPEC-100 §2.5, member
+  #   * an initialized database: team ENG (key ENG) with the seven seeded states of SPEC-100 §2.5, member
   #     Ginkelte as the viewer, and every issue a scenario names, created with `hifa issue create`;
   #   * `<id of STATE>` is the ULID the fixture holds for that workflow state, and it is what a move
   #     payload carries (`state_id`), never a name and never a position;
@@ -501,11 +501,14 @@ Feature: HTTP dashboard
   Scenario: the row and card fragments keep the trash out while the page serves it
     # the asymmetry R29 declares and the one an implementer gets wrong: the page and the panel pass
     # `include_trashed=True`, the collection members never do, so the same identifier is a 404 as a
-    # member and a 200 as a page.
-    Given the issue "ENG-13" in the state "Todo" in trash and not archived
-    When I execute a GET to "/_/issues/ENG-13/row?view=list" with the header "HX-Request: true" and then a GET to "/_/issues/ENG-13/card" with the header "HX-Request: true"
+    # member and a 200 as a page. The page's status is the positive half of that sentence: two `404`s
+    # alone also pass on a tree where the detail answers `404` as well, which is the bug D-059 closed.
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login" in trash and not archived
+    When I execute a GET to "/_/issues/ENG-13/row?view=list" with the header "HX-Request: true" and then a GET to "/_/issues/ENG-13/card" with the header "HX-Request: true" and then a GET to "/ENG/issue/ENG-13"
     Then the first status is 404
     And the second status is 404
+    And the third status is 200
+    And the third response contains "Fix login"
 
   @REQ-F015 @REQ-F035
   Scenario: a move naming no state of the team answers the catalogue's 404
@@ -589,3 +592,16 @@ Feature: HTTP dashboard
     And the second status is 200
     And the second response contains "/ENG/issue/ENG-12/restore"
     And the second response does not contain "name=\"state_id\""
+
+  @REQ-F013 @REQ-F015 @REQ-F035
+  Scenario: a visible issue's page and panel carry the four controls of the action group
+    # the positive the two trashed scenarios above are the absence of (`vm.can_write` is the group's
+    # one gate, and the layer picks the branch inside it): a visible issue renders the four controls on
+    # the page and on the panel, and no `Restore`, which a trashed issue alone offers (§2.6.9, D-059).
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then both answers contain "name=\"state_id\""
+    And both answers contain "/ENG/issue/ENG-13/archive"
+    And both answers contain "/ENG/issue/ENG-13/delete"
+    And both answers contain "action=\"/ENG/issue/ENG-13\""
+    And neither answer contains "/ENG/issue/ENG-13/restore"
