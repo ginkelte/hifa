@@ -613,6 +613,7 @@ def unrelate_issues(uow: UnitOfWork, cmd: UnrelateIssues, actor: Actor) -> None:
 # raises: NotFound(issue|comment), Validation(BODY_EMPTY|COMMENT_PARENT_MISMATCH|COMMENT_DEPTH_EXCEEDED),
 #         Validation(ISSUE_TRASHED), InvalidTransition(ISSUE_ARCHIVED)
 
+
 def comment_on_issue(uow: UnitOfWork, cmd: CommentOnIssue, actor: Actor) -> Comment: ...
 
 
