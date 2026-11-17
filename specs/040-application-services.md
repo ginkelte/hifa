@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 3
-spec_revision: 22
+spec_revision: 23
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -1294,6 +1294,18 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   `add_issues_to_cycle` are outside this rule in v1: they change other tables and the product has no
   declared semantics for them under archive yet. This rule is the **single producer of `InvalidTransition`** in the
   system (§6).
+- **R21 — The detail read is complete for a render, and a render opens one connection (HIFA-55).**
+  `issue_detail` returns everything a render of one issue decides from: the header, the team and its
+  state, the collections `include` asked for, **the archive flags of the row** (`archived_at`,
+  `trashed`) and **the team's workflow states** — the three fields SPEC-030 §2.6 declares on
+  `IssueDetail`. Every render of an issue — the page, the panel and the `422`/`409` that re-renders
+  the refused write — is therefore served by **one** call of `issue_detail` over **one** connection:
+  the edge composes the model and never opens a second read to learn whether the issue may be
+  written (`archived_at`, the input R20 decides on) or which columns the state `<select>` offers.
+  A fact a render needs and the read does not carry is a defect of this read, not a reason for the
+  edge to read again. This widens no visibility: `issue_detail` still answers `None` for an issue the
+  trash layer hides, so `archived_at` is the only layer a render can find set, and `trashed` is the
+  stored value that makes the render's gate one model instead of two.
 
 ### 4.2 Functional requirements (REQ-F)
 
@@ -2222,6 +2234,21 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 23 (2026-11-16): **a render of an issue is served by one read on one connection
+  (HIFA-55).** R21 states it: `issue_detail` carries the archive flags and the team's workflow
+  states, so the page, the panel and the refusal that re-renders a write compose their model from the
+  one call the route already makes. Before it, every one of those renders opened a second read of the
+  same issue — measured on this tree with `set_trace_callback`: `_issue_detail_extras` added a
+  connection and 6 statements per render, on top of the detail read's 7, and the issue could change
+  between the two snapshots. The fields themselves are SPEC-030 §2.6's (rev 11) and the shape there is
+  additive and defaulted; no signature, command field, envelope, exit code or HTTP status moves, so
+  `version` stays at 3. **Why a revision and not a `D-0NN`:** this layer adds no rule and settles no
+  conflict. R19 already says the read models are consumed as SPEC-030 declares them and P4/A1/A3
+  already forbid an edge reading the database, so the helper was a violation of existing rules rather
+  than a trade-off nobody had taken; the correction is one paragraph in the spec that was wrong and
+  the fields are declared by their owner. A decision entry is for the day an edge needs a fact the
+  read does not carry and the corpus has to choose between widening the read and moving the rule —
+  not for a read that was simply incomplete.
 - spec_revision 22 (2026-11-16): **the seed `create_team` writes is seven states wide (D-058).**
   REQ-F040-14 counts seven, and the §7 scenario stops claiming "one per type": the shared `In Review`
   carries `started`, the same type as `In Progress`, so a team seeded by this layer holds one type twice

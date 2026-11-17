@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 2
-spec_revision: 10
+spec_revision: 11
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -16,7 +16,7 @@ implements:
 acceptance: specs/acceptance/030-sqlite-adapter.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-13
+updated: 2026-11-16
 ---
 
 # SPEC-030 — SQLite adapter
@@ -583,7 +583,7 @@ i.board_order`; for `group_by='project'` a `LEFT JOIN project p` is added and it
 `p.name IS NULL, p.name, i.board_order`. The per-column limit (`limit_per_group`) is applied in
 Python **after** grouping, and each `BoardGroup` reports `total` (all) and `issues` (trimmed).
 
-**SQL-7 — `issue_detail`.** A **fixed** set of 7 queries, independent of the number of children,
+**SQL-7 — `issue_detail`.** A **fixed** set of 8 queries, independent of the number of children,
 labels, comments or history:
 
 | # | Query | Result |
@@ -595,6 +595,7 @@ labels, comments or history:
 | 5 | `comment WHERE issue_id = ? ORDER BY created_at, id` | comments |
 | 6 | `issue_history WHERE issue_id = ? ORDER BY created_at DESC, id DESC LIMIT 100` | history |
 | 7 | `attachment WHERE issue_id = ? ORDER BY created_at` | attachments |
+| 8 | `workflow_state WHERE team_id = ? ORDER BY position` | the team's states |
 
 **SQL-8 — history in batch:**
 
@@ -1036,6 +1037,12 @@ class IssueDetail:
     #: additive since spec_revision 5, defaulted (D-026): member.id → display_name for the authors
     #: of the loaded comments and history, so the edge renders authors without an N+1 query.
     members: Mapping[str, str] = field(default_factory=dict)
+    #: additive since spec_revision 11, defaulted (D-026): the layer the row sits in and the columns a
+    #: render offers, so that one read of one issue serves the whole page (HIFA-55). `archived_at` and
+    #: `trashed` are columns of the `issue` row this read already loads.
+    archived_at: datetime | None = None  # issue.archived_at: the archive layer
+    trashed: bool = False  # issue.trashed: the trash layer
+    states: tuple[WorkflowState, ...] = ()  # the team's workflow states, by position
 
 
 @dataclass(frozen=True, slots=True)
@@ -1253,7 +1260,7 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
   attempts are exhausted the `Conflict(code='DB_BUSY')` is propagated. A commit that fails is **never** retried
   without a previous rollback.
 - **R5 — No N+1.** `list_view` is 1 query; `board_view` is 1 query; `blocked_view` is 1 query;
-  `issue_detail` is exactly 7; `agenda` is 1. Executing SQL inside a loop over rows is forbidden.
+  `issue_detail` is exactly 8; `agenda` is 1. Executing SQL inside a loop over rows is forbidden.
 - **R6 — Reading does not write.** The repos obtained from `read()` raise `Conflict(code='READ_ONLY_UOW')`
   in any write method. `reads.py` only receives read-only connections.
 - **R7 — Bound parameters.** Zero value interpolation in SQL (REQ-S002). The only
@@ -1292,7 +1299,7 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
 | **REQ-F030-09** | `list_view` obtains the labels with `json_group_array` in a single query; the number of statements does not depend on the number of issues |
 | **REQ-F030-10** | `ListFilters` combines its families with AND, resolves the repeated values of the `state`/`state_type`/`priority` families as **OR** and `label_ids` as **AND** (§2.6), respects `limit` (default 50, max 200, D-011) and `offset`, orders by the `SORT_KEYS` expression of `order` with `i.id` as the tie-breaker in the same direction, and returns `next_cursor`/`has_more` without a `COUNT(*)` |
 | **REQ-F030-11** | `board_view` groups by `state`, `assignee`, `priority` or `project`, orders the groups by `state.position`/`priority.rank`/name, and respects `limit_per_group` reporting `total` |
-| **REQ-F030-12** | `issue_detail` executes exactly 7 queries, regardless of how many children, labels or comments the issue has |
+| **REQ-F030-12** | `issue_detail` executes exactly 8 queries, regardless of how many children, labels or comments the issue has |
 | **REQ-F030-13** | `agenda` returns the issues with `due_date` in `[start, start+days-1]` sorted by date and priority, and includes overdue open ones if `include_overdue=True` |
 | **REQ-F030-14** | `migrate` applies the pending `00X_*.sql` in order, leaves `user_version` at the last version and is idempotent (a second run applies nothing) |
 | **REQ-F030-15** | `migrate` creates a verifiable `<stem>-<ts>.db.bak` before applying and aborts without touching the database if the backup fails |
@@ -1435,7 +1442,7 @@ contract is consumed by SPEC-040 §5.
 ```
 
 For a view that needs consistency across several queries (`issue_detail`), `UnitOfWork.read()` is used:
-a deferred `BEGIN` keeps the same snapshot across the 7 queries.
+a deferred `BEGIN` keeps the same snapshot across the 8 queries.
 
 ## 6. Errors
 
@@ -1578,8 +1585,8 @@ Feature: SQLite adapter
   Scenario: the detail has a fixed number of queries
     Given an issue with 20 children, 4 labels, 30 comments and 40 history events
     When issue_detail is run counting SQL statements
-    Then exactly 7 statements are executed
-    And the detail brings the 20 children, the 4 labels and the 30 comments
+    Then exactly 8 statements are executed
+    And the detail brings the 20 children, the 4 labels, the 30 comments and the team's states
 
   @REQ-F030-13
   Scenario: the agenda covers the requested window and includes overdue
@@ -1692,7 +1699,7 @@ Feature: SQLite adapter
    Each test creates `tmp_path/"hifa.db"`, runs `migrate()` and closes the connections in a fixture with
    `yield`.
 6. Verify the "single query" requirements with `sqlite3.Connection.set_trace_callback`:
-   count statements in `list_view` (1), `board_view` (1), `issue_detail` (7) and `agenda` (1). It is the
+   count statements in `list_view` (1), `board_view` (1), `issue_detail` (8) and `agenda` (1). It is the
    only cheap way to test R5/REQ-F030-09/REQ-F030-12.
 7. Verify concurrency with real processes (`multiprocessing` with `spawn`), not with threads: the
    SQLite lock is between connections and threads of the same process share the GIL but not
@@ -1749,6 +1756,24 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 11 (2026-11-16): **the detail read carries the archive flags and the team's states
+  (HIFA-55).** `IssueDetail` gains `archived_at`, `trashed` and `states`, appended after `members` and
+  defaulted (`None`, `False`, `()`), so the shape stays additive under D-026 and `version` stays 2.
+  Two of them cost nothing: `archived_at` and `trashed` are columns of the `issue` row
+  `issue_detail` already loads (query 2 of SQL-7) and were being fetched and dropped, which is why
+  the base read is 7 statements on this tree and the flags were only reachable through a second
+  connection. The third is one statement: SQL-7's fixed set goes 7 → 8, `ORDER BY position` over the
+  team's `workflow_state` rows, and REQ-F030-12, R5, §5.3, the §7 scenario and the §8 checklist move
+  with it. The flags are the layers of a row, not a visibility rule: `issue_detail` still answers
+  `None` for an issue the trash layer hides, so `archived_at` is the layer a render can see — `trashed`
+  is the stored value, carried so that a render decides the layer actions from one model instead of
+  from a second read. **Why a revision and not a `D-0NN`:** the three fields are read-model internals
+  of this layer — no use case signature, endpoint, command, envelope or enum moves, and the two specs
+  that consume them already say an edge takes a read model as §2.6 declares it (SPEC-040 R19) and
+  never reads the database itself (A1/A3, P4). The corpus has resolved this exact shape twice already,
+  additively and at this level: rev 4 (D-026) and rev 5 (`members`). A decision entry settles a
+  conflict between specs or a trade-off a future reader must be able to re-derive; the second read
+  was a violation of rules that exist, not a missing rule, so the correction is recorded here.
 - spec_revision 10 (2026-11-13): **the blocked read is one query, and its predicate is cited, not
   restated (D-048).** §2.6 gains `blocked_view` and §2.5 gains SQL-10: the live issues that are the
   target of a `blocks` edge whose source's `state.type` is neither `completed` nor `canceled`. The
