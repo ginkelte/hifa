@@ -58,7 +58,7 @@ def validate_comment_body(body: str) -> str:
     """`strip()`; rejects empty (`BODY_EMPTY`) or len > MAX_BODY (`BODY_TOO_LONG`)."""
     cleaned = body.strip()
     if not cleaned:
-        raise _reject("comment body must not be empty", "BODY_EMPTY", "body", body)
+        raise _reject("a comment needs a body", "BODY_EMPTY", "body", body)
     if len(cleaned) > MAX_BODY:
         raise _reject(
             f"comment body must be at most {MAX_BODY} characters",

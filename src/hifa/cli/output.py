@@ -85,8 +85,31 @@ def write_note(text: str) -> None:
 
 # --- table -----------------------------------------------------------------------------
 
-#: Columns whose content is truncated.
-_TRUNCATING_COLUMNS = frozenset({"TITLE"})
+#: Ellipsis a shortened cell ends with; it occupies one of the cells it keeps.
+ELLIPSIS = "…"
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnFormat:
+    """How one column is narrowed: a fixed cell budget and a one-line rule.
+
+    `max_cells` is the most the column may print, ellipsis included; `None` means the column
+    is only shortened when the whole table overflows the terminal. `single_line` folds the
+    line breaks of a value into spaces, so a multi-line text keeps one row.
+    """
+
+    max_cells: int | None = None
+    single_line: bool = False
+
+
+#: The two columns that are shortened, with the rule each one follows.
+_TRUNCATED_COLUMNS: Mapping[str, ColumnFormat] = {
+    "TITLE": ColumnFormat(),
+    "BODY": ColumnFormat(max_cells=60, single_line=True),
+}
+
+#: Every other column: printed as it is.
+_PLAIN = ColumnFormat()
 
 
 def _cell(value: Any) -> str:
@@ -100,6 +123,15 @@ def _cell(value: Any) -> str:
     return text if text else "–"
 
 
+def _fit_cell(text: str, rule: ColumnFormat) -> str:
+    """`text` under the rule of its column: one line, at most `max_cells` cells."""
+    if rule.single_line:
+        text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    if rule.max_cells is not None and len(text) > rule.max_cells:
+        text = text[: rule.max_cells - 1] + ELLIPSIS
+    return text
+
+
 def _terminal_width() -> int:
     try:
         width = sys.stdout.isatty() and typer.get_terminal_size()[0] or 120
@@ -111,17 +143,23 @@ def _terminal_width() -> int:
 def render_table(rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> str:
     """Text table: UPPERCASE header, two spaces, numerics right-aligned."""
     headers = [column.upper() for column in columns]
-    body = [[_cell(row.get(column)) for column in columns] for row in rows]
+    body = [
+        [
+            _fit_cell(_cell(row.get(column)), _TRUNCATED_COLUMNS.get(column.upper(), _PLAIN))
+            for column in columns
+        ]
+        for row in rows
+    ]
 
     widths = [len(header) for header in headers]
     for line in body:
         for index, value in enumerate(line):
             widths[index] = max(widths[index], len(value))
 
-    # Maximum width: only TITLE is truncated with `…` (U+2026).
+    # Maximum width: only the columns of `_TRUNCATED_COLUMNS` give way, with `…` (U+2026).
     while sum(widths) + 2 * (len(widths) - 1) > _terminal_width():
         candidates = [
-            index for index, column in enumerate(columns) if column.upper() in _TRUNCATING_COLUMNS
+            index for index, column in enumerate(columns) if column.upper() in _TRUNCATED_COLUMNS
         ]
         if not candidates:
             break
@@ -131,7 +169,7 @@ def render_table(rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> s
         widths[index] -= 1
         for line in body:
             if len(line[index]) > widths[index]:
-                line[index] = line[index][: widths[index] - 1] + "…"
+                line[index] = line[index][: widths[index] - 1] + ELLIPSIS
 
     def format_row(values: Sequence[str]) -> str:
         cells: list[str] = []

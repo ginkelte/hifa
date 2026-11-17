@@ -106,6 +106,22 @@ CANONICAL_KEYS: tuple[str, ...] = (
 #: Header of the row every issue mutation prints.
 ISSUE_HEADER = "IDENTIFIER  P  STATE  ASSIGNEE  TITLE  LABELS  DUE"
 
+#: Keys of the canonical `comment` object, in order.
+COMMENT_KEYS: tuple[str, ...] = (
+    "id",
+    "issue_id",
+    "parent_id",
+    "author_id",
+    "body",
+    "resolved_at",
+    "edited_at",
+    "created_at",
+    "updated_at",
+)
+
+#: Header of the row `issue comment` prints.
+COMMENT_HEADER = "ID  ISSUE  AUTHOR  CREATED  BODY"
+
 
 def json_stdout(result: Result) -> Any:
     """`stdout` parsed as one JSON document (no other text is allowed there)."""

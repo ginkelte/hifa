@@ -211,6 +211,9 @@ CAPABILITIES: tuple[Capability, ...] = (
             ("POST", "/_/issues/{identifier}/restore"),
         ),
     ),
+    # The verb is the reference surface and ships first; the composer and its two routes are
+    # the later edge of the same ticket, so this line closes when they land.
+    Capability(name="issue.comment", cli="issue comment", web=None, debt="HIFA-60"),
     # Relations are read and written from the CLI; the dashboard shows their blockers once
     # HIFA-34 lands the panel and the badge, which is the later of the two edges.
     Capability(name="issue.relate", cli="issue relate", web=None, debt="HIFA-34"),
