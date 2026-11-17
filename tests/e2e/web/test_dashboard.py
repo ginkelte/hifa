@@ -276,13 +276,19 @@ TEAM_COLUMNS_ROW = "FROM workflow_state WHERE team_id = "
 
 
 def _statements_per_connection(
-    monkeypatch: pytest.MonkeyPatch, client: TestClient, path: str, headers: dict[str, str] | None
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    body: dict[str, str] | None = None,
 ) -> tuple[list[list[str]], Response]:
     """Every database connection one request opens, with the statements each one executed.
 
     Counted on the driver, not on a helper of the edge: whatever layer opens the connection, it
     goes through `sqlite3.connect`, so a second read cannot hide behind a different route to the
-    same file.
+    same file. `method` and `body` are what the request is: a render is read by a `GET`, a refused
+    write arrives as a `PATCH` and the response is the re-render it owes the client.
     """
     opened: list[list[str]] = []
     original = sqlite3.connect
@@ -295,33 +301,47 @@ def _statements_per_connection(
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", counted)
-    return opened, client.get(path, headers=headers)
+    return opened, client.request(method, path, headers=headers, data=body)
 
 
 @pytest.mark.parametrize(
-    ("label", "path", "headers"),
+    ("label", "method", "path", "headers", "body", "status"),
     [
-        ("the detail page", "/ENG/issue/ENG-1", None),
-        ("the panel", "/_/issues/ENG-1/panel", HTMX),
+        ("the detail page", "get", "/ENG/issue/ENG-1", None, None, 200),
+        ("the panel", "get", "/_/issues/ENG-1/panel", HTMX, None, 200),
+        (
+            "the refused write",
+            "patch",
+            "/_/issues/ENG-1?view=panel",
+            HTMX,
+            {"estimate": "abc"},
+            422,
+        ),
     ],
 )
 def test_one_read_of_the_issue_serves_a_render(
     seeded: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
     label: str,
+    method: str,
     path: str,
     headers: dict[str, str] | None,
+    body: dict[str, str] | None,
+    status: int,
 ) -> None:
     """The issue's own model is read once, on one connection, whatever the render.
 
-    Both renders used to open a second connection to learn the archive flags and the team's
-    columns: two snapshots of one issue, and the page could be composed from the older one. The
-    sidebar and the viewer are separate reads under their own rule, so this counts only the
-    statements that are a read of *this* issue.
+    The page, the panel and the `422` that re-renders a refused write all used to open a second
+    connection to learn the archive flags and the team's columns: two snapshots of one issue, and
+    the render could be composed from the older one. The sidebar and the viewer are separate
+    reads under their own rule, so this counts only the statements that are a read of *this*
+    issue.
     """
-    opened, response = _statements_per_connection(monkeypatch, seeded.client, path, headers)
+    opened, response = _statements_per_connection(
+        monkeypatch, seeded.client, method, path, headers, body
+    )
 
-    assert response.status_code == 200, label
+    assert response.status_code == status, label
     own = [statements for statements in opened if any(DETAIL_ENTITY_ROW in s for s in statements)]
     assert len(own) == 1, (label, opened)
     assert sum(DETAIL_ENTITY_ROW in statement for statement in own[0]) == 1, (label, own[0])
@@ -331,6 +351,12 @@ def test_one_read_of_the_issue_serves_a_render(
         sum(TEAM_COLUMNS_ROW in statement for statements in opened for statement in statements) == 1
     ), (label, opened)
     assert '<option value="' in response.text, label
+    if status == 422:
+        # The answer is the panel it refused, marked: the control and the message beside it.
+        assert '<aside id="panel"' in response.text, label
+        assert 'name="estimate"' in response.text, label
+        assert 'aria-invalid="true"' in response.text, label
+        assert "invalid value: estimate must be a number" in response.text, label
 
 
 def test_unknown_identifier_is_404_with_the_error_template(seeded: SimpleNamespace) -> None:
