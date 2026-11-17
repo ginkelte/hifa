@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
 
+from hifa.adapters.sqlite import state_repo
 from hifa.adapters.sqlite._base import to_date, to_dt
 from hifa.domain.entities import (
     Attachment,
@@ -807,9 +808,10 @@ def _member(conn: sqlite3.Connection, member_id: str | None) -> Member | None:
 
 
 #: The team's live columns, in the order a render offers them: an archived state is not one,
-#: and two states at the same position come back by name.
+#: and two states at the same position come back by name. The projection is the state repo's
+#: own column list, so a column added there is a column this read answers without a second edit.
 _TEAM_STATES_SQL = (
-    "SELECT id, team_id, name, type, color, position, is_default, archived_at"
+    f"SELECT {state_repo.COLUMNS}"
     " FROM workflow_state WHERE team_id = ? AND archived_at IS NULL"
     " ORDER BY position, name"
 )
@@ -829,7 +831,6 @@ def issue_detail(
     panel or a refusal without opening a second read of the same issue.
     """
     from hifa.adapters.sqlite.comment_repo import comment_from_row
-    from hifa.adapters.sqlite.state_repo import state_from_row
     from hifa.adapters.sqlite.team_repo import team_from_row
 
     unknown = sorted(set(include) - DETAIL_INCLUDE)
@@ -944,10 +945,8 @@ def issue_detail(
             if item["display_name"]
         }
 
-    assignee = _member(conn, row["assignee_id"])
-    creator = _member(conn, row["creator_id"])
     states = tuple(
-        state_from_row(item)
+        state_repo.state_from_row(item)
         for item in conn.execute(_TEAM_STATES_SQL, (row["team_id"],)).fetchall()
     )
 
@@ -955,9 +954,9 @@ def issue_detail(
         issue=header,
         description=row["description"],
         team=team_from_row(team_row),
-        state=state_from_row(state_row),
-        assignee=assignee,
-        creator=creator,
+        state=state_repo.state_from_row(state_row),
+        assignee=_member(conn, row["assignee_id"]),
+        creator=_member(conn, row["creator_id"]),
         project=project,
         cycle=cycle,
         parent=parent,

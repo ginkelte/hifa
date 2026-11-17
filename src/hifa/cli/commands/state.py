@@ -420,8 +420,12 @@ def _position_text(value: float | None) -> str:
     `4.75 / 4.875 / 4.9375` printed `4.8 / 4.9 / 4.9` — and the table's only job is the order, so
     two positions that read differently must not print the same number; `--json` still carries
     the exact float either way.
+
+    The value is expected to be finite, and a stored position always is: the column is `NOT NULL`
+    and `NaN` binds as `NULL`, so the database cannot hold one, while an infinity is no position a
+    board can order. `None` is a caller's shape and not a stored one, and prints the absent marker.
     """
-    if value is None:  # pragma: no cover - the column is NOT NULL
+    if value is None:
         return "–"
     text = format(Decimal(repr(float(value))), "f")
     return text if "." in text else f"{text}.0"

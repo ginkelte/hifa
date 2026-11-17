@@ -6,6 +6,7 @@ by the real CLI, and reads the HTML that a browser would receive.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import html as html_lib
 import re
@@ -291,17 +292,28 @@ def _statements_per_connection(
     write arrives as a `PATCH` and the response is the re-render it owes the client.
     """
     opened: list[list[str]] = []
+    connections: list[sqlite3.Connection] = []
     original = sqlite3.connect
 
     def counted(*args: object, **kwargs: object) -> sqlite3.Connection:
         connection = original(*args, **kwargs)  # type: ignore[arg-type]
         statements: list[str] = []
         connection.set_trace_callback(statements.append)
+        connections.append(connection)
         opened.append(statements)
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", counted)
-    return opened, client.request(method, path, headers=headers, data=body)
+    try:
+        return opened, client.request(method, path, headers=headers, data=body)
+    finally:
+        # The window closes with the request: the revision watch keeps a connection open, and a
+        # callback left on it would keep appending to a list this test has already read. A
+        # connection the request closed itself cannot be reached at all, and needs nothing.
+        monkeypatch.setattr(sqlite3, "connect", original)
+        for connection in connections:
+            with contextlib.suppress(sqlite3.ProgrammingError):
+                connection.set_trace_callback(None)
 
 
 @pytest.mark.parametrize(

@@ -1054,7 +1054,7 @@ def _issue_detail_vm(
         today=_today(),
         now=datetime.now(UTC),
         can_write=_can_write(request),
-        states=list(detail.states),
+        states=detail.states,
         is_archived=detail.archived_at is not None,
         is_trashed=detail.trashed,
         form_errors=form_errors,
