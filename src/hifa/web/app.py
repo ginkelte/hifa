@@ -38,8 +38,16 @@ from hifa.adapters.sqlite.connection import Database, RevisionWatch
 from hifa.adapters.sqlite.reads import IssueDetail, ListFilters
 from hifa.adapters.sqlite.uow import UnitOfWork
 from hifa.app import boards
-from hifa.app.commands import Actor, CreateIssue, UpdateIssue, UpdateState
-from hifa.app.issues import create_issue, update_issue
+from hifa.app.commands import (
+    Actor,
+    ArchiveIssue,
+    CreateIssue,
+    RestoreIssue,
+    TrashIssue,
+    UpdateIssue,
+    UpdateState,
+)
+from hifa.app.issues import archive_issue, create_issue, restore_issue, trash_issue, update_issue
 from hifa.app.teams import list_states, update_state
 from hifa.domain.entities import Issue, Team, WorkflowState
 from hifa.domain.errors import Conflict, HifaError, InvalidTransition, NotFound, Validation
@@ -491,7 +499,7 @@ def issue_page(request: Request, team: str, ref: str) -> Response:
     """
     db = _database(request)
     entity = boards.require_team(db, team)
-    detail = boards.issue_detail(db, ref, include=boards.DETAIL_INCLUDE)
+    detail = boards.issue_detail(db, ref, include=boards.DETAIL_INCLUDE, include_trashed=True)
     canonical = detail.issue.identifier
     if ref != canonical or detail.team.key != entity.key:
         return RedirectResponse(f"/{detail.team.key}/issue/{canonical}", status_code=303)
@@ -705,7 +713,9 @@ def issue_panel_fragment(request: Request, identifier: str) -> Response:
     page; without the states its `state` control submitted nothing, and without the flags an
     archived issue kept a form every write of which is refused.
     """
-    detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
+    detail = boards.issue_detail(
+        _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
+    )
     vm = _issue_detail_vm(request, detail)
     response = _render(
         request,
@@ -821,6 +831,68 @@ def issue_edit_page(
     except Validation as exc:
         return _issue_page_error(request, entity, identifier, exc)
     return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
+
+
+@router.post("/{team}/issue/{identifier}/archive")
+def issue_archive_page(
+    request: Request, team: str, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Archive one issue from the detail page's own form: `303` to the list.
+
+    The form carries its confirmation; without it nothing runs and the page comes back `422`
+    with the block reopened, because the confirmation is this edge's precondition and no use
+    case knows it exists. A refusal of the use case — open sub-issues, an issue already in the
+    trash — re-renders the same page with the sentence the catalogue gives that rule.
+    """
+    return _layer_page(request, team, identifier, body, verb="archive")
+
+
+@router.post("/{team}/issue/{identifier}/delete")
+def issue_delete_page(
+    request: Request, team: str, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Send one issue to the trash from its own form: `303` to the list.
+
+    Deleting an issue the trash already holds is a no-op that still redirects: the reader asked
+    for a state the row is in, and the answer is the list they expected to land on.
+    """
+    return _layer_page(request, team, identifier, body, verb="delete")
+
+
+@router.post("/{team}/issue/{identifier}/restore")
+def issue_restore_page(
+    request: Request, team: str, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Bring one issue back out of both layers: `303` to its own detail.
+
+    `restore` never asks: there is nothing to confirm about undoing, so the form carries no
+    `confirm` field and none is required.
+    """
+    return _layer_page(request, team, identifier, body, verb="restore")
+
+
+@router.post("/_/issues/{identifier}/archive", dependencies=[HTMX])
+def issue_archive_fragment(
+    request: Request, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """The panel's archive: `204`, bodyless, with the trigger the client listens for."""
+    return _layer_fragment(request, identifier, body, verb="archive")
+
+
+@router.post("/_/issues/{identifier}/delete", dependencies=[HTMX])
+def issue_delete_fragment(
+    request: Request, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """The panel's delete: `204`, bodyless, with its own trigger."""
+    return _layer_fragment(request, identifier, body, verb="delete")
+
+
+@router.post("/_/issues/{identifier}/restore", dependencies=[HTMX])
+def issue_restore_fragment(
+    request: Request, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """The panel's restore: `204`, bodyless, with its own trigger."""
+    return _layer_fragment(request, identifier, body, verb="restore")
 
 
 @router.post("/_/issues", dependencies=[HTMX])
@@ -1095,12 +1167,107 @@ def _update_from_form(request: Request, identifier: str, fields: dict[str, str])
         uow.close()
 
 
+#: The three layer writes, each with the word its route uses, the use case that performs it,
+#: the command it takes, the trigger a fragment answers and where its no-JS form lands.
+_LAYER_WRITES: dict[str, tuple[Callable[..., Issue], Callable[[str], Any], str, str]] = {
+    "archive": (archive_issue, ArchiveIssue, "issue-archived", "list"),
+    "delete": (trash_issue, TrashIssue, "issue-deleted", "list"),
+    "restore": (restore_issue, RestoreIssue, "issue-restored", "detail"),
+}
+
+
+def _run_layer_write(request: Request, identifier: str, verb: str) -> Issue:
+    """One layer write through the use case of `verb`, on its own unit of work.
+
+    raises: `NotFound(issue)`, `Validation`, `InvalidTransition`
+    """
+    use_case, command, _, _ = _LAYER_WRITES[verb]
+    uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        return use_case(uow, command(identifier), Actor(source="web", label="web"))
+    finally:
+        uow.close()
+
+
+def _needs_confirmation(verb: str) -> bool:
+    """Two of the three writes take an issue out of every listing, and ask before they do."""
+    return verb != "restore"
+
+
+def _layer_page(
+    request: Request, team: str, identifier: str, body: bytes, *, verb: str
+) -> Response:
+    """A layer write from a page form: its confirmation, its refusal or its `303`."""
+    db = _database(request)
+    entity = boards.require_team(db, team)
+    if not _can_write(request):
+        return _error_page(
+            request,
+            status_code=403,
+            message="server in read-only mode",
+            back_url=f"/{entity.key}/issue/{identifier}",
+            title="Read-only",
+        )
+    fields = _parse_form(body)
+    if _needs_confirmation(verb) and fields.get("confirm") != "1":
+        return _issue_page_error(request, entity, identifier, None, verb=verb, confirm_open=verb)
+    try:
+        issue = _run_layer_write(request, identifier, verb)
+    except (Validation, InvalidTransition, NotFound) as exc:
+        return _issue_page_error(request, entity, identifier, exc, verb=verb)
+    where = _LAYER_WRITES[verb][3]
+    target = (
+        f"/{entity.key}/issue/{issue.identifier}" if where == "detail" else f"/{entity.key}/list"
+    )
+    return RedirectResponse(target, status_code=303)
+
+
+def _layer_fragment(request: Request, identifier: str, body: bytes, *, verb: str) -> Response:
+    """A layer write from a fragment: its refusal, or the bodyless `204` both clients expect."""
+    if not _can_write(request):
+        return _fragment_error(request, status_code=403, message="server is read-only")
+    fields = _parse_form(body)
+    if _needs_confirmation(verb) and fields.get("confirm") != "1":
+        return _layer_refusal(request, identifier, verb, None)
+    try:
+        _run_layer_write(request, identifier, verb)
+    except (Validation, InvalidTransition, NotFound) as exc:
+        return _layer_refusal(request, identifier, verb, exc)
+    return Response(status_code=204, headers={"HX-Trigger": _LAYER_WRITES[verb][2]})
+
+
+def _layer_refusal(
+    request: Request, identifier: str, verb: str, exc: HifaError | None
+) -> HTMLResponse:
+    """The panel, re-rendered with the refusal inside it and the block that refusal belongs to.
+
+    The confirmation form swaps nothing on success, so a refusal has to name its own target or
+    the marked block is fetched and thrown away.
+    """
+    detail = boards.issue_detail(
+        _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
+    )
+    message = refusal_sentence(exc, verb=verb, identifier=detail.issue.identifier)
+    response = _issue_edit_fragment(
+        request,
+        identifier,
+        view="panel",
+        status_code=422,
+        form_error=message,
+        confirm_open=verb,
+    )
+    response.headers["HX-Retarget"] = "#panel"
+    response.headers["HX-Reswap"] = "innerHTML"
+    return response
+
+
 def _issue_detail_vm(
     request: Request,
     detail: IssueDetail,
     *,
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
+    confirm_open: str | None = None,
 ) -> dict[str, object]:
     """Build the model of the detail page, the panel and a refused write: the single builder.
 
@@ -1119,20 +1286,41 @@ def _issue_detail_vm(
         is_trashed=detail.trashed,
         form_errors=form_errors,
         form_error=form_error,
+        confirm_open=confirm_open,
     )
 
 
 def _issue_page_error(
-    request: Request, entity: Team, identifier: str, exc: Validation
+    request: Request,
+    entity: Team,
+    identifier: str,
+    exc: HifaError | None = None,
+    *,
+    verb: str = "edit",
+    confirm_open: str | None = None,
 ) -> HTMLResponse:
-    """Re-render `issue_detail.html` with `422`: the control marked and the server's value."""
-    detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
-    control, message = _refusal(exc, identifier=identifier, verb="edit")
+    """Re-render `issue_detail.html` with `422`: the control marked and the server's value.
+
+    `exc` is the refusal a use case raised, or `None` for the one the edge refuses itself: a
+    confirmation form posted without its confirmation. Either way the page comes back with the
+    message §6 composes for it and, for the confirmation, the block the reader has to reopen.
+    """
+    detail = boards.issue_detail(
+        _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
+    )
+    if exc is None:
+        control, message = (
+            None,
+            refusal_sentence(None, verb=verb, identifier=detail.issue.identifier),
+        )
+    else:
+        control, message = _refusal(exc, identifier=detail.issue.identifier, verb=verb)
     vm = _issue_detail_vm(
         request,
         detail,
         form_errors={control: message} if control else None,
         form_error=None if control else message,
+        confirm_open=confirm_open,
     )
     page = _page(
         request,
@@ -1151,6 +1339,7 @@ def _issue_edit_fragment(
     status_code: int,
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
+    confirm_open: str | None = None,
 ) -> HTMLResponse:
     """The element a `PATCH` answers — the row of the list, the card or the panel — refused or not.
 
@@ -1161,11 +1350,18 @@ def _issue_edit_fragment(
         _database(request),
         identifier,
         include=boards.DETAIL_INCLUDE if view == "panel" else frozenset(),
+        include_trashed=view == "panel",
     )
     message = form_error or next((text for text in (form_errors or {}).values() if text), None)
     control = next((name for name, text in (form_errors or {}).items() if text), None)
     if view == "panel":
-        vm = _issue_detail_vm(request, detail, form_errors=form_errors, form_error=form_error)
+        vm = _issue_detail_vm(
+            request,
+            detail,
+            form_errors=form_errors,
+            form_error=form_error,
+            confirm_open=confirm_open,
+        )
         response = _render(
             request,
             "partials/issue_panel.html",

@@ -70,6 +70,17 @@
     return panelIsOpen() || quickAddHoldsText() || document.body.dataset.dragging === "true";
   }
 
+  // A write that moves the issue between layers changes which listings it belongs to, so the
+  // collection is re-read whether or not the poller had news: the answer is the page the reader
+  // is looking at, and a toast over a stale board is a lie with nice timing.
+  function refreshNow() {
+    if (revision.inFlight) return;
+    var target = refreshTarget();
+    var fragment = document.body.dataset.refresh || "";
+    if (!target || !fragment) return;
+    swapInto(target, withLiveFilters(fragment));
+  }
+
   // The revision the collection now shows, so a pending value is spent by adopting it.
   function adopt(number) {
     if (number === null || number === undefined || number === "") return;
@@ -205,6 +216,21 @@
   document.body.addEventListener("issue-created", function () { toast("issue created"); });
   document.body.addEventListener("issue-updated", function () { toast("issue updated"); });
   document.body.addEventListener("issue-moved", function () { toast("issue moved"); });
+  document.body.addEventListener("issue-archived", function () {
+    toast("issue archived");
+    closePanel();
+    refreshNow();
+  });
+  document.body.addEventListener("issue-deleted", function () {
+    toast("issue deleted");
+    closePanel();
+    refreshNow();
+  });
+  document.body.addEventListener("issue-restored", function () {
+    toast("issue restored");
+    closePanel();
+    refreshNow();
+  });
 
   // focus survives a swap (2.6.2): remember the identifier, restore it afterwards.
   document.body.addEventListener("htmx:beforeSwap", function () {

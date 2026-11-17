@@ -28,6 +28,24 @@
           {% include "partials/issue_form_fields.html" %}
           <div class="form-actions"><button type="submit" class="btn">Save</button></div>
         </form>
+        <details class="confirm"{% if vm.confirm_open == "archive" %} open{% endif %}>
+          <summary class="btn">Archive</summary>
+          <p class="confirm-line">This takes {{ vm.identifier }} out of every listing. Restore puts it back.</p>
+          <form method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/archive">
+            <input type="checkbox" id="confirm-archive-{{ vm.identifier }}" name="confirm" value="1" required>
+            <label for="confirm-archive-{{ vm.identifier }}"{% if vm.confirm_open == "archive" and vm.form_error %} class="is-invalid"{% endif %}>Yes, archive {{ vm.identifier }}</label>
+            <button type="submit" class="btn btn-danger">Archive</button>
+          </form>
+        </details>
+        <details class="confirm"{% if vm.confirm_open == "delete" %} open{% endif %}>
+          <summary class="btn">Delete</summary>
+          <p class="confirm-line">This sends {{ vm.identifier }} to the trash. Restore brings it back.</p>
+          <form method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/delete">
+            <input type="checkbox" id="confirm-delete-{{ vm.identifier }}" name="confirm" value="1" required>
+            <label for="confirm-delete-{{ vm.identifier }}"{% if vm.confirm_open == "delete" and vm.form_error %} class="is-invalid"{% endif %}>Yes, delete {{ vm.identifier }}</label>
+            <button type="submit" class="btn btn-danger">Delete</button>
+          </form>
+        </details>
         {% endif %}
       </div>
       {% endif %}

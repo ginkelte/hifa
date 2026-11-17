@@ -148,9 +148,9 @@ class Capability:
 # * HIFA-7  (T-11) brings full-text search and replaces the `/search` stub: `search.issues`.
 # * HIFA-42 is the dashboard form for a team and a workflow state from the UI: it closes
 #           `team.create` and `state.create`.
-# * HIFA-3  (dashboard stage 2) brings the web edge of the five issue writes — inline edit,
-#           move from the panel — so it closes `issue.edit`, `issue.move`, `issue.archive`,
-#           `issue.delete` and `issue.restore`.
+# * HIFA-58 is the dashboard's write phase: `issue.edit` closed with it, `issue.archive`,
+#           `issue.delete` and `issue.restore` closed in its first slice, and `issue.move` is
+#           what the same ticket still owes — a done ticket is not honest debt.
 
 CAPABILITIES: tuple[Capability, ...] = (
     # --- operational: they build or run an edge, they are not a capability of one ---------
@@ -178,11 +178,33 @@ CAPABILITIES: tuple[Capability, ...] = (
         cli="issue edit",
         web=(("POST", "/{team}/issue/{identifier}"), ("PATCH", "/_/issues/{identifier}")),
     ),
-    # The four writes below are CLI-only until the dashboard stage 2 lands their web edge.
-    Capability(name="issue.move", cli="issue move", web=None, debt="HIFA-3"),
-    Capability(name="issue.archive", cli="issue archive", web=None, debt="HIFA-3"),
-    Capability(name="issue.delete", cli="issue delete", web=None, debt="HIFA-3"),
-    Capability(name="issue.restore", cli="issue restore", web=None, debt="HIFA-3"),
+    # Each of these is one capability with two transports: the no-JS form post and the htmx
+    # fragment of the panel. `move` is the one still CLI-only, and it is the ticket's own debt.
+    Capability(name="issue.move", cli="issue move", web=None, debt="HIFA-58"),
+    Capability(
+        name="issue.archive",
+        cli="issue archive",
+        web=(
+            ("POST", "/{team}/issue/{identifier}/archive"),
+            ("POST", "/_/issues/{identifier}/archive"),
+        ),
+    ),
+    Capability(
+        name="issue.delete",
+        cli="issue delete",
+        web=(
+            ("POST", "/{team}/issue/{identifier}/delete"),
+            ("POST", "/_/issues/{identifier}/delete"),
+        ),
+    ),
+    Capability(
+        name="issue.restore",
+        cli="issue restore",
+        web=(
+            ("POST", "/{team}/issue/{identifier}/restore"),
+            ("POST", "/_/issues/{identifier}/restore"),
+        ),
+    ),
     # Relations are read and written from the CLI; the dashboard shows their blockers once
     # HIFA-34 lands the panel and the badge, which is the later of the two edges.
     Capability(name="issue.relate", cli="issue relate", web=None, debt="HIFA-34"),
@@ -226,6 +248,9 @@ FRAGMENT_ALLOWLIST: Mapping[Route, str] = {
     ("GET", "/_/issues/{identifier}/panel"): "htmx partial of the issue panel",
     ("GET", "/_/counts"): "htmx partial of the dashboard counters",
     ("GET", "/_/revision"): "htmx read of the change signal: one number, no HTML to swap",
+    ("POST", "/_/issues/{identifier}/archive"): "htmx bodyless write of the panel's archive",
+    ("POST", "/_/issues/{identifier}/delete"): "htmx bodyless write of the panel's delete",
+    ("POST", "/_/issues/{identifier}/restore"): "htmx bodyless write of the panel's restore",
     ("POST", "/_/issues"): "htmx quick-add: the web transport of `issue create`",
     ("PATCH", "/_/issues/{identifier}"): "htmx field write: the web transport of `issue edit`",
     ("POST", "/_/states/{state_id}/position"): "htmx write of the board drag & drop",
