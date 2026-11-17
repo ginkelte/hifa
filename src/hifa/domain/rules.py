@@ -19,6 +19,7 @@ MAX_TITLE = 255
 MAX_BODY = 50_000
 MAX_DESCRIPTION = 100_000
 MAX_SUBISSUE_DEPTH = 5  # a root issue is level 1; the deepest descendant is level 5
+MAX_COMMENT_DEPTH = 3  # a root comment is depth 1; the deepest reachable comment is depth 3
 
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -68,6 +69,24 @@ def validate_comment_body(body: str) -> str:
             length=len(cleaned),
         )
     return cleaned
+
+
+def validate_comment_parent_depth(depth: int) -> None:
+    """Chain length of the comment a caller is about to insert, 1 for a root.
+
+    Rejects the reply that would sit deeper than `MAX_COMMENT_DEPTH` with
+    `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')`. The caller counts the
+    chain; this decides on the number.
+    """
+    if depth > MAX_COMMENT_DEPTH:
+        raise _reject(
+            f"the thread is {MAX_COMMENT_DEPTH} deep; reply to a shallower comment",
+            "COMMENT_DEPTH_EXCEEDED",
+            "parent_id",
+            depth,
+            max_depth=MAX_COMMENT_DEPTH,
+            depth=depth,
+        )
 
 
 def validate_priority(priority: int) -> Priority:
@@ -355,12 +374,14 @@ def validate_archive_team(team: Team, open_issues: int) -> None:
 
 __all__ = [
     "MAX_BODY",
+    "MAX_COMMENT_DEPTH",
     "MAX_DESCRIPTION",
     "MAX_SUBISSUE_DEPTH",
     "MAX_TITLE",
     "validate_archive_team",
     "validate_close",
     "validate_comment_body",
+    "validate_comment_parent_depth",
     "validate_date_range",
     "validate_due_date",
     "validate_estimate",
