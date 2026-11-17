@@ -211,9 +211,17 @@ CAPABILITIES: tuple[Capability, ...] = (
             ("POST", "/_/issues/{identifier}/restore"),
         ),
     ),
-    # The verb is the reference surface and ships first; the composer and its two routes are
-    # the later edge of the same ticket, so this line closes when they land.
-    Capability(name="issue.comment", cli="issue comment", web=None, debt="HIFA-60"),
+    # The verb is the reference surface and ships first; the composer and its two fragment
+    # routes are the later edge of the same ticket, so this row carries both edges.
+    Capability(
+        name="issue.comment",
+        cli="issue comment",
+        web=(
+            ("POST", "/{team}/issue/{identifier}/comment"),
+            ("POST", "/_/comments/{identifier}"),
+            ("GET", "/_/comments/{identifier}"),
+        ),
+    ),
     # Relations are read and written from the CLI; the dashboard shows their blockers once
     # HIFA-34 lands the panel and the badge, which is the later of the two edges.
     Capability(name="issue.relate", cli="issue relate", web=None, debt="HIFA-34"),
@@ -263,6 +271,8 @@ FRAGMENT_ALLOWLIST: Mapping[Route, str] = {
     ("POST", "/_/issues/{identifier}/restore"): "htmx bodyless write of the panel's restore",
     ("POST", "/_/issues"): "htmx quick-add: the web transport of `issue create`",
     ("PATCH", "/_/issues/{identifier}"): "htmx field write: the web transport of `issue edit`",
+    ("GET", "/_/comments/{identifier}"): "htmx partial: the whole `<ol>` of an issue's comments",
+    ("POST", "/_/comments/{identifier}"): "htmx append of a comment: `issue comment` in the panel",
     ("POST", "/_/states/{state_id}/position"): "htmx write of the board drag & drop",
 }
 

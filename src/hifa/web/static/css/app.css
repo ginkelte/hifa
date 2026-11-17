@@ -326,7 +326,25 @@ tr.row-empty td { color: var(--text-muted); }
 }
 .comment-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .comment { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; display: flex; gap: 8px; align-items: flex-start; }
-.comment-body { flex: 1; }
+.comment-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* A code block in a comment scrolls inside its own box instead of widening the list. */
+.comment-body pre { max-width: 100%; overflow-x: auto; }
+
+/* --- comment composer -------------------------------------------------------------- */
+/* Under the list it feeds: the box is about the collection above it, not the issue's actions. */
+.comment-composer { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 0; }
+.comment-composer textarea {
+  width: 100%;
+  min-height: 64px;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+.comment-composer .btn { align-self: flex-start; }
 .stamp { color: var(--text-muted); font-size: 11px; }
 .history ul, .children ul, .relations ul, .attachments ul { list-style: none; margin: 0; padding: 0; font-size: 12px; }
 .history li, .children li, .relations li, .attachments li { padding: 3px 0; border-bottom: 1px solid var(--border); }
@@ -435,7 +453,8 @@ textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
 @media (max-width: 900px) {
   /* A finger needs a target it can hit: the group's controls grow to the 44 px floor. */
   .action-group .btn,
-  .confirm summary { min-height: 44px; }
+  .confirm summary,
+  .comment-composer .btn { min-height: 44px; }
 }
 
 /* --- search, error, toasts --------------------------------------------------------- */

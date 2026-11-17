@@ -90,18 +90,16 @@
         </ul>
       </section>
       {% endif %}
-      <section class="comments">
+      <section id="comments">
         <h2>Comments</h2>
-        <ol class="comment-list">
-          {% for comment in vm.comments %}
-          <li class="comment"><span class="avatar avatar-sm">{{ comment.author_initials }}</span>
-            <div class="comment-body"><span class="comment-author">{{ comment.author_name or "unknown" }}</span>
-              {{ comment.body_html | safe }}</div>
-            <span class="stamp">{{ comment.created_label }}</span></li>
-          {% else %}
-          <li class="empty">No comments yet</li>
-          {% endfor %}
-        </ol>
+        {% include "partials/comments.html" %}
+        {% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
+        <form class="comment-composer" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/comment">
+          <label class="visually-hidden" for="comment-body">Comment</label>
+          <textarea id="comment-body" name="body" rows="3" required></textarea>
+          <button type="submit" class="btn">Comment</button>
+        </form>
+        {% endif %}
       </section>
     </section>
     <aside class="detail-side">

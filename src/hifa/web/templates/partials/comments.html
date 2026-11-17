@@ -1,0 +1,7 @@
+<ol id="comment-list" class="comment-list">
+  {% for comment in vm.comments %}
+  {% include "partials/comment_item.html" %}
+  {% else %}
+  <li class="empty">No comments yet</li>
+  {% endfor %}
+</ol>

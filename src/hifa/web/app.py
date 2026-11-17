@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
@@ -41,6 +41,7 @@ from hifa.app import boards
 from hifa.app.commands import (
     Actor,
     ArchiveIssue,
+    CommentOnIssue,
     CreateIssue,
     MoveIssue,
     RestoreIssue,
@@ -50,6 +51,7 @@ from hifa.app.commands import (
 )
 from hifa.app.issues import (
     archive_issue,
+    comment_on_issue,
     create_issue,
     move_issue,
     restore_issue,
@@ -57,7 +59,7 @@ from hifa.app.issues import (
     update_issue,
 )
 from hifa.app.teams import list_states, update_state
-from hifa.domain.entities import Issue, Team, WorkflowState
+from hifa.domain.entities import Comment, Issue, Team, WorkflowState
 from hifa.domain.errors import Conflict, HifaError, InvalidTransition, NotFound, Validation
 from hifa.domain.ranking import UNIT_GAP, between
 from hifa.web import readmodels
@@ -879,6 +881,43 @@ def issue_restore_page(
     return _layer_page(request, team, identifier, body, verb="restore")
 
 
+@router.post("/{team}/issue/{identifier}/comment")
+def issue_comment_page(
+    request: Request, team: str, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Write one comment from the detail page's form: `303` to the section that holds it.
+
+    The form is flat: it sends `body` and never a `parent`, so the no-JS path starts a thread at
+    the root of the list. A `parent` sent by a client that built its own request is passed
+    through untouched — the use case is what decides whether it names a comment of this issue.
+
+    A refusal re-renders the page with the sentence the catalogue gives that rule and the
+    composer back where it was: `422` for an empty body, a parent of another issue or an issue
+    in the trash, `409` for an issue under the archive layer. `404` travels to the single
+    handler, because a reference that resolves to nothing has no page to come back to.
+    """
+    db = _database(request)
+    entity = boards.require_team(db, team)
+    if not _can_write(request):
+        return _error_page(
+            request,
+            status_code=403,
+            message="server in read-only mode",
+            back_url=f"/{entity.key}/issue/{identifier}",
+            title="Read-only",
+        )
+    try:
+        comment = _write_comment(request, identifier, _parse_form(body))
+    except InvalidTransition as exc:
+        return _issue_page_error(request, entity, identifier, exc, verb="comment", status_code=409)
+    except Validation as exc:
+        return _issue_page_error(request, entity, identifier, exc, verb="comment")
+    detail = boards.issue_detail(_database(request), comment.issue_id)
+    return RedirectResponse(
+        f"/{detail.team.key}/issue/{detail.issue.identifier}#comments", status_code=303
+    )
+
+
 @router.post("/_/issues/{identifier}/archive", dependencies=[HTMX])
 def issue_archive_fragment(
     request: Request, identifier: str, body: bytes = Body(default=b"")
@@ -929,6 +968,59 @@ def issue_move_page(
     except Validation as exc:
         return _issue_page_error(request, entity, identifier, exc, verb="move")
     return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
+
+
+@router.get("/_/comments/{identifier}", dependencies=[HTMX])
+def comments_fragment(request: Request, identifier: str) -> HTMLResponse:
+    """Answer the whole list of one issue's comments: the `<ol>` the `outerHTML` swap replaces.
+
+    The list alone, not the `<section>` that holds it: the section also carries the heading and
+    the composer, and a swap that named it would empty the box the reader is typing in. The
+    trash keeps its two surfaces — the page and the panel — so this read answers `404` for a
+    trashed reference like the row and the card fragments do.
+    """
+    detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
+    vm = _issue_detail_vm(request, detail)
+    return _render(
+        request,
+        "partials/comments.html",
+        {"page": _page(request, title=detail.issue.identifier, nav="issue"), "vm": vm},
+    )
+
+
+@router.post("/_/comments/{identifier}", dependencies=[HTMX])
+def comment_fragment(
+    request: Request, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Append one comment to the panel's list: `200` with the `<li>`, and the event that says so.
+
+    `200` and not `204`, because the element is the answer: the client appends it to the list it
+    names, and the box is emptied by a listener on `comment-created`, not by a status code. A
+    refusal keeps the reader where they are — the panel comes back with the sentence and the
+    composer — because a fragment's caller has no page to fall back on.
+    """
+    if not _can_write(request):
+        return _fragment_error(request, status_code=403, message="server in read-only mode")
+    try:
+        comment = _write_comment(request, identifier, _parse_form(body))
+    except InvalidTransition as exc:
+        return _comment_refusal(request, identifier, exc, status_code=409)
+    except Validation as exc:
+        return _comment_refusal(request, identifier, exc)
+    detail = boards.issue_detail(
+        _database(request), comment.issue_id, include=boards.DETAIL_INCLUDE
+    )
+    vm = _issue_detail_vm(request, detail)
+    response = _render(
+        request,
+        "partials/comment_item.html",
+        {
+            "page": _page(request, title=detail.issue.identifier, nav="issue"),
+            "comment": _comment_item_vm(vm, comment.id),
+        },
+    )
+    response.headers["HX-Trigger"] = "comment-created"
+    return response
 
 
 @router.post("/_/issues/{identifier}/move", dependencies=[HTMX])
@@ -1149,7 +1241,9 @@ def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | 
     from it would name the wrong subject twice out of three times.
 
     A rule outside the catalogue is the last row of the table: the fallback prefix and the
-    error's own message, which is the only sentence of this layer that quotes the domain.
+    error's own message. Two sentences of this layer quote the domain rather than restate it,
+    because the number they carry is not this edge's to format: the fallback, and
+    `COMMENT_DEPTH_EXCEEDED`, whose bound the rule builds from `MAX_COMMENT_DEPTH`.
     """
     if refusal is None:
         return f"confirm the {verb} of {identifier}"
@@ -1158,6 +1252,15 @@ def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | 
         return f"{identifier} is archived; restore it first"
     if rule == "ISSUE_TRASHED":
         return f"{identifier} is in the trash; restore it first"
+    if rule == "BODY_EMPTY":
+        return "a comment needs a body"
+    if rule == "COMMENT_PARENT_MISMATCH":
+        return "that comment belongs to another issue"
+    if rule == "COMMENT_DEPTH_EXCEEDED":
+        # The only sentence of the three that carries a number, and the domain builds it from
+        # `MAX_COMMENT_DEPTH`: quoting it keeps the bound in one place instead of a second
+        # formatting site that could print a depth the rule does not enforce.
+        return refusal.message
     if rule == "CLOSE_WITH_OPEN_CHILDREN" and verb in CLOSE_VERBS:
         count = refusal.details.get("open_children", 0)
         return f"cannot {verb} {identifier}: it has {count} open sub-issues"
@@ -1262,6 +1365,27 @@ def _run_move(request: Request, identifier: str, fields: Mapping[str, str]) -> I
         uow.close()
 
 
+def _write_comment(request: Request, identifier: str, fields: Mapping[str, str]) -> Comment:
+    """One `comment_on_issue` from the fields of a form: `body` always, `parent` when sent.
+
+    `parent` is not a control of this layer: both composers are flat, so the field only arrives
+    from a client that built its own request. It is passed through untouched, because whether it
+    names a comment of this issue is a rule of the use case and not of an edge.
+
+    raises: `NotFound` (issue, parent comment), `Validation`, `InvalidTransition(ISSUE_ARCHIVED)`
+    """
+    parent = (fields.get("parent") or "").strip() or None
+    uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        return comment_on_issue(
+            uow,
+            CommentOnIssue(issue=identifier, body=fields.get("body", ""), parent_id=parent),
+            Actor(source="web", label="web"),
+        )
+    finally:
+        uow.close()
+
+
 def _needs_confirmation(verb: str) -> bool:
     """Two of the three writes take an issue out of every listing, and ask before they do."""
     return verb != "restore"
@@ -1337,6 +1461,48 @@ def _layer_refusal(
     response.headers["HX-Retarget"] = "#panel"
     response.headers["HX-Reswap"] = "innerHTML"
     return response
+
+
+def _comment_refusal(
+    request: Request, identifier: str, exc: HifaError, *, status_code: int = 422
+) -> HTMLResponse:
+    """The panel, re-rendered with the refusal of a comment and the box it was written in.
+
+    The composer posts to `#comment-list`, so a refusal that answered the list would append a
+    paragraph where a comment belongs: the answer names `#panel` instead, and the sentence is
+    the one every other write of this layer prints for that rule. On an issue in either layer
+    the gate of the composer renders none, which is exactly what a stale form gets back.
+    """
+    detail = boards.issue_detail(
+        _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
+    )
+    control, message = _refusal(exc, identifier=detail.issue.identifier, verb="comment")
+    vm = _issue_detail_vm(
+        request,
+        detail,
+        form_errors={control: message} if control else None,
+        form_error=None if control else message,
+    )
+    response = _render(
+        request,
+        "partials/issue_panel.html",
+        {"page": _page(request, title=detail.issue.identifier, nav="issue"), "vm": vm},
+        status_code=status_code,
+    )
+    response.headers["HX-Retarget"] = "#panel"
+    response.headers["HX-Reswap"] = "innerHTML"
+    return response
+
+
+def _comment_item_vm(vm: Mapping[str, object], comment_id: str) -> dict[str, object]:
+    """The item of the comment just written, shaped by the builder that shapes the whole list.
+
+    The item is read back through `build_issue_vm` instead of being composed here: one builder
+    decides what a comment looks like, so the `<li>` the fragment appends and the list the page
+    renders cannot drift in author, body, stamp or edit mark.
+    """
+    comments = cast(list[dict[str, object]], vm["comments"])
+    return next(item for item in comments if item["id"] == comment_id)
 
 
 def _issue_detail_vm(
