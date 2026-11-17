@@ -1083,7 +1083,10 @@ Rules:
   holds the field, it carries the `id` its control names, and the control names it twice:
   `form="edit-{identifier}"` (ownership, and the no-JS submit target) and
   `hx-include="#edit-{identifier}"` (what htmx serializes). `hidden` keeps it out of the layout, not
-  out of the document, and `method`/`action` stay as the no-JS fallback (2.6.6).
+  out of the document, and `method`/`action` stay as the no-JS fallback (2.6.6). The panel's edit form
+  is the same shape and keeps them too — `method="post"` and `action="/{team}/issue/{identifier}"`,
+  plus its own `hx-patch` to `?view=panel` — so the no-JS submit reaches §2.1.2's page form from
+  either surface, and `action="/ENG/issue/ENG-13"` is markup of the panel as much as of a row.
 - `hx-patch` on the `<form>` is what turns a submit into a `PATCH`. `Enter` in the control is the
   implicit submission of its form owner — the same `hx-patch` — so there is no second `hx-trigger`.
 - `hx-include="#edit-{identifier}"` sends every field of that row's form, not just the edited one: a
@@ -1496,6 +1499,25 @@ brings it back.`, and the checkbox's `<label>` reads `Yes, delete ENG-13`; the f
 (`confirm the delete of ENG-11`). The two blocks do not share one sentence because the two layers are not
 the same fact to a reader: an archive leaves the issue restorable from its own detail, and a delete puts it
 one layer deeper, where only `Restore` on its page brings it back (§2.1.1, D-059).
+
+**`Restore` is a bare form, because it has nothing to confirm.** It is the one control a reader presses
+on an archived or a trashed issue, the same element in both places (the detail page's action group and
+the panel footer), and it is written out like the two blocks above instead of being left to the
+implementer:
+
+```html
+<form class="action-restore" method="post" action="/ENG/issue/ENG-13/restore">
+  <button type="submit" class="btn">Restore</button>
+</form>
+```
+
+A `<form>` with a `<button>` in the action group and **no** `<details>`: `restore` never asks (D-053), so
+there is no `<summary>` to open first, no `name="confirm"` checkbox and no `confirm-line` — the whole
+block is one button. The label is the button's own text, `Restore`, its class is `btn` and not
+`btn btn-danger` (this write takes an issue out of a layer; it does not put one in), and the form's class
+is `action-restore`, the only new class of §2.6.9. The panel's copy is that same form with
+`hx-post="/_/issues/ENG-13/restore"` and `hx-swap="none"`, no `hx-target`, and `method`/`action` kept as
+the fallback of §2.6.3 (§2.1.3).
 
 **Why `<details>`, and what it costs.** It is the one native element that gives a visible, always
 present control with a closed and an open state, driven by `Tab` + `Enter`/`Space` and a tap, with the
@@ -2108,6 +2130,125 @@ Feature: hifa web dashboard
     Then the status is 422
     And the position of the ENG state did not change
 
+  Scenario: the detail page of a trashed issue is served with Restore as its only control
+    Given an issue ENG-13 in the state "Todo" with title "Fix login", in the trash and not archived
+    When GET /ENG/issue/ENG-13 is requested
+    Then the status is 200
+    And the HTML contains "Fix login"
+    And the HTML contains "/ENG/issue/ENG-13/restore"
+    And the HTML does not contain "action=\"/ENG/issue/ENG-13\""
+    And the HTML does not contain "name=\"state_id\""
+    And the HTML does not contain "/ENG/issue/ENG-13/archive"
+    And the HTML does not contain "/ENG/issue/ENG-13/delete"
+
+  Scenario: the panel of a trashed issue is served with Restore as its only control
+    Given an issue ENG-13 in the state "Todo" with title "Fix login", in the trash and not archived
+    When GET /_/issues/ENG-13/panel is requested with HX-Request true
+    Then the status is 200
+    And the HTML contains "<aside id=\"panel\""
+    And the HTML contains "Fix login"
+    And the HTML contains "/_/issues/ENG-13/restore"
+    And the HTML does not contain "name=\"state_id\""
+    And the HTML does not contain "/_/issues/ENG-13/archive"
+    And the HTML does not contain "/_/issues/ENG-13/delete"
+    And the HTML does not contain "<html>"
+
+  Scenario: the ULID alias of a trashed issue answers 303 to its canonical page
+    Given an issue with identifier ENG-13 in the trash and not archived
+    When GET /ENG/issue/<its ULID> is requested
+    Then the status is 303
+    And the Location header is "/ENG/issue/ENG-13"
+
+  Scenario: a trashed issue is absent from the board, the list, the search page, the palette and the counters
+    Given an issue ENG-13 in the trash and a visible issue ENG-80 in the state "Todo"
+    When GET /ENG/board, /ENG/list, /search?q=ENG-13, /_/palette?q=ENG-13 and /_/counts?team=ENG are requested
+    Then none of the answers contains "ENG-13"
+    And the counters count 1 issue for "ENG"
+
+  Scenario: the row and card fragments keep the trash out while the page serves it
+    Given an issue ENG-13 in the state "Todo" with title "Fix login", in the trash and not archived
+    When GET /_/issues/ENG-13/row?view=list and /_/issues/ENG-13/card are requested with HX-Request true, then its page
+    Then the first status is 404
+    And the second status is 404
+    And the third status is 200
+    And the third response contains "Fix login"
+
+  Scenario: a move naming no state of the team answers the catalogue's 404
+    Given an issue ENG-13 in the state "Todo" and a team OPS whose state is "Todo"
+    When POST /_/issues/ENG-13/move is requested with HX-Request true and {"state_id":"<the OPS Todo id>"}
+    Then the status is 404
+    And the body mentions "workflow state does not exist"
+    And the state of ENG-13 is still "Todo"
+    And no row was added to issue_history
+
+  Scenario: a move from the panel footer answers 204 and hands the client the collection
+    Given an issue ENG-13 in the state "Todo"
+    When POST /_/issues/ENG-13/move is requested with HX-Request true and {"state_id":"<the In Progress id>"}
+    Then the status is 204
+    And the body is empty
+    And the HX-Trigger header contains "issue-moved"
+    And the HX-Revision header carries the revision the request observed
+    And the state of ENG-13 is "In Progress"
+    And ENG-13 is the last issue of the column "In Progress"
+
+  Scenario: a move refused from the panel re-renders that panel and marks it for the reader
+    Given an issue ENG-13 in the state "Todo", in the trash and not archived
+    When POST /_/issues/ENG-13/move is requested with HX-Request true and {"state_id":"<the In Progress id>"}
+    Then the status is 422
+    And the HTML contains "<aside id=\"panel\""
+    And the HTML contains "ENG-13 is in the trash; restore it first"
+    And the HX-Retarget header is "#panel"
+    And the HX-Reswap header is "innerHTML"
+    And the state of ENG-13 is still "Todo"
+
+  Scenario: a delete of an issue already in the trash is a no-op that still answers
+    Given an issue ENG-12 in the state "In Progress", in the trash and not archived, updated at "2026-11-10T12:00:00Z"
+    When POST /_/issues/ENG-12/delete is requested with HX-Request true and {"confirm":"1"}
+    Then the status is 204
+    And the body is empty
+    And the HX-Trigger header contains "issue-deleted"
+    And no row was added to issue_history
+    And ENG-12 still has trashed 1
+    And the updated_at of ENG-12 is "2026-11-10T12:00:00Z"
+
+  Scenario: the delete confirmation block renders its own three strings and its refusal
+    Given an issue ENG-13 in the state "Todo", visible and not archived
+    When POST /ENG/issue/ENG-13/delete is requested with an empty form
+    Then the status is 422
+    And the HTML contains "<details class=\"confirm\" open>"
+    And the HTML contains "<summary class=\"btn\">Delete</summary>"
+    And the HTML contains "This sends ENG-13 to the trash. Restore brings it back."
+    And the HTML contains "Yes, delete ENG-13"
+    And the HTML contains "btn btn-danger\">Delete</button>"
+    And the HTML contains "confirm the delete of ENG-13"
+    And the HTML contains "is-invalid"
+    And ENG-13 still has trashed 0
+    And no row was added to issue_history
+
+  Scenario: an archive sends the reader to the list and leaves the detail reachable
+    Given an issue ENG-12 in the state "In Progress", visible and not archived
+    When POST /ENG/issue/ENG-12/archive is requested with {"confirm":"1"} and then GET /ENG/issue/ENG-12 is requested
+    Then the first status is 303
+    And the Location header is "/ENG/list"
+    And the second status is 200
+    And the second response contains "/ENG/issue/ENG-12/restore"
+    And the second response does not contain "name=\"state_id\""
+
+  Scenario: a visible issue's page and panel carry the four controls of the action group
+    Given an issue ENG-13 in the state "Todo" with title "Fix login", visible and not archived
+    When GET /ENG/issue/ENG-13 is requested and then GET /_/issues/ENG-13/panel is requested with HX-Request true
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "name=\"state_id\""
+    And the second response contains "name=\"state_id\""
+    And the first response contains "/ENG/issue/ENG-13/archive"
+    And the second response contains "/ENG/issue/ENG-13/archive"
+    And the first response contains "/ENG/issue/ENG-13/delete"
+    And the second response contains "/ENG/issue/ENG-13/delete"
+    And the first response contains "action=\"/ENG/issue/ENG-13\""
+    And the second response contains "action=\"/ENG/issue/ENG-13\""
+    And none of the answers contains "/ENG/issue/ENG-13/restore"
+
   Scenario: removing a label returns 200 with an empty body
     Given an issue ENG-13 with the label "bug"
     When DELETE /_/issues/ENG-13/labels/<bug id> is requested
@@ -2263,7 +2404,7 @@ Feature: hifa web dashboard
 7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (49 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (61 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).
@@ -2317,7 +2458,8 @@ Feature: hifa web dashboard
   so those two fragments answer `404` for exactly the identifier whose page answers `200`. The asymmetry is
   declared instead of implied: the page and the panel pass `issue_detail(..., include_trashed=True)` (SPEC-040
   §2.2, R21, `spec_revision` 24 of the same decision) and nothing else does. (2) **The `Restore` gate
-  (§2.6.9).** The templates that exist gate the action group on `not vm.is_trashed`, so a `200` page for a
+  (§2.6.9).** The templates that exist gate the action group on
+  `{% if vm.can_write and not vm.is_archived and not vm.is_trashed %}`, so a `200` page for a
   trashed issue would have shipped with **no control at all** — the sentence this section already had would
   have been markup no route could produce, one layer lower than before. §2.6.9 now states the gate **once**:
   `vm.can_write` gates the action group and the layer picks the branch inside it — an issue in either layer
@@ -2348,14 +2490,20 @@ Feature: hifa web dashboard
   note, **§2.6.4 and §5.7**'s one-flow `move` wording, the **seven** write page forms of §2.1.2 (§2.5
   counted five), the four writes' **`HX-Revision` on the bodyless `204`** beside `HX-Trigger` (§2.1.3,
   §2.6.8, §5.7 step 5), the **delete confirmation block's three strings** and its `422` sentence
-  (§2.6.9), and **two new §6 rows** — the `delete` no-op beside a narrowed `ISSUE_TRASHED` row (`edit`,
-  `move`, a label or `assignee` write, `archive`; never `delete`), and the `/_/states/{id}/position`
-  read-only refusal named as the exception to the fragment-plus-catalogue answer. Completing it moved
-  neither header: `spec_revision` remains **23** and `version` remains **5**, because none adds a route, a
-  verb or a field and none changes a successful status — R29 and §5.7.1 write down behaviour §2.1.1 and
-  §2.6.4 already implied, and the §6 rows make the table agree with §5.7. Owed to the next round: the
-  **inline §7** copy of the trash's scenarios — the
-  `specs/acceptance/001-mvp-v1/16-dashboard.feature` half shipped in this revision.
+  (§2.6.9), the **`Restore` control's markup** — a bare `class="action-restore"` form whose single
+  `<button class="btn">` reads `Restore`, with no `<details>` and no `confirm` (§2.6.9) — **§2.6.3**'s
+  panel copy of the inline-edit form, which keeps `method="post"` and
+  `action="/{team}/issue/{identifier}"` beside its `hx-patch` to `?view=panel`, **§2.6.6**'s `Move
+  state` row, whose "with JS" cell now ends at §5.7.1, **§2.6.9**'s focus-table row for a `move` from
+  the panel footer, and **two new §6 rows** — the `delete` no-op beside a narrowed `ISSUE_TRASHED` row
+  (`edit`, `move`, a label or `assignee` write, `archive`; never `delete`), and the
+  `/_/states/{id}/position` read-only refusal named as the exception to the fragment-plus-catalogue
+  answer. Completing it moved neither header: `spec_revision` remains **23** and `version` remains
+  **5**, because none adds a route, a verb or a field and none changes a successful status — R29 and
+  §5.7.1 write down behaviour §2.1.1 and §2.6.4 already implied, and the §6 rows make the table agree
+  with §5.7. §7's inline copy of the trash block's twelve scenarios landed in the same revision, so both
+  halves of the acceptance criteria — `specs/acceptance/001-mvp-v1/16-dashboard.feature` and §7 — say
+  the same thing, and nothing of D-059 is owed to a later round.
 - spec_revision 22 (2026-11-16): **the board a new team gets is seven columns (D-058).** The template
   gains one shared `In Review` between `In Progress` and `Done` (SPEC-100 §2.5), so §7's two column
   assertions move from six to seven and list the new name in place; nothing of this layer's contract

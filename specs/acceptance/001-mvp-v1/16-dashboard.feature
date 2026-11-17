@@ -600,8 +600,14 @@ Feature: HTTP dashboard
     # the page and on the panel, and no `Restore`, which a trashed issue alone offers (§2.6.9, D-059).
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
-    Then both answers contain "name=\"state_id\""
-    And both answers contain "/ENG/issue/ENG-13/archive"
-    And both answers contain "/ENG/issue/ENG-13/delete"
-    And both answers contain "action=\"/ENG/issue/ENG-13\""
-    And neither answer contains "/ENG/issue/ENG-13/restore"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "name=\"state_id\""
+    And the second response contains "name=\"state_id\""
+    And the first response contains "/ENG/issue/ENG-13/archive"
+    And the second response contains "/ENG/issue/ENG-13/archive"
+    And the first response contains "/ENG/issue/ENG-13/delete"
+    And the second response contains "/ENG/issue/ENG-13/delete"
+    And the first response contains "action=\"/ENG/issue/ENG-13\""
+    And the second response contains "action=\"/ENG/issue/ENG-13\""
+    And none of the answers contains "/ENG/issue/ENG-13/restore"
