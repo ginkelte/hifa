@@ -1,3 +1,10 @@
+## [0.8.1](https://github.com/ginkelte/hifa/compare/v0.8.0...v0.8.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **web:** a render of an issue is served by one read, and the position it prints is the value it stores ([#25](https://github.com/ginkelte/hifa/issues/25)) ([87a50f6](https://github.com/ginkelte/hifa/commit/87a50f6fe69429229c18091323c29f783d47504d))
+
 # [0.8.0](https://github.com/ginkelte/hifa/compare/v0.7.1...v0.8.0) (2026-11-16)
 
 
