@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 import typer
 from fastapi.testclient import TestClient
+from httpx import Response
 from typer.testing import CliRunner
 
 from hifa.cli.main import app as cli_app
@@ -264,6 +265,72 @@ def test_detail_by_ulid_redirects_to_the_identifier(seeded: SimpleNamespace) -> 
     response = seeded.client.get(f"/ENG/issue/{ulid}", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/ENG/issue/ENG-1"
+
+
+#: The entity row of a detail read. `sqlite3`'s trace callback prints the statement with its
+#: parameters expanded, so the match stops before the value — and it matches any projection of
+#: `issue` by id, not only the one this read happens to write today.
+DETAIL_ENTITY_ROW = "FROM issue WHERE id = "
+#: The statement that lists a team's live columns: one per render of an issue, from the same read.
+TEAM_COLUMNS_ROW = "FROM workflow_state WHERE team_id = "
+
+
+def _statements_per_connection(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, path: str, headers: dict[str, str] | None
+) -> tuple[list[list[str]], Response]:
+    """Every database connection one request opens, with the statements each one executed.
+
+    Counted on the driver, not on a helper of the edge: whatever layer opens the connection, it
+    goes through `sqlite3.connect`, so a second read cannot hide behind a different route to the
+    same file.
+    """
+    opened: list[list[str]] = []
+    original = sqlite3.connect
+
+    def counted(*args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = original(*args, **kwargs)  # type: ignore[arg-type]
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+        opened.append(statements)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", counted)
+    return opened, client.get(path, headers=headers)
+
+
+@pytest.mark.parametrize(
+    ("label", "path", "headers"),
+    [
+        ("the detail page", "/ENG/issue/ENG-1", None),
+        ("the panel", "/_/issues/ENG-1/panel", HTMX),
+    ],
+)
+def test_one_read_of_the_issue_serves_a_render(
+    seeded: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    path: str,
+    headers: dict[str, str] | None,
+) -> None:
+    """The issue's own model is read once, on one connection, whatever the render.
+
+    Both renders used to open a second connection to learn the archive flags and the team's
+    columns: two snapshots of one issue, and the page could be composed from the older one. The
+    sidebar and the viewer are separate reads under their own rule, so this counts only the
+    statements that are a read of *this* issue.
+    """
+    opened, response = _statements_per_connection(monkeypatch, seeded.client, path, headers)
+
+    assert response.status_code == 200, label
+    own = [statements for statements in opened if any(DETAIL_ENTITY_ROW in s for s in statements)]
+    assert len(own) == 1, (label, opened)
+    assert sum(DETAIL_ENTITY_ROW in statement for statement in own[0]) == 1, (label, own[0])
+    assert sum(TEAM_COLUMNS_ROW in statement for statement in own[0]) == 1, (label, own[0])
+    # Nothing else read the team's columns: the render took them from that read, not from a second.
+    assert (
+        sum(TEAM_COLUMNS_ROW in statement for statements in opened for statement in statements) == 1
+    ), (label, opened)
+    assert '<option value="' in response.text, label
 
 
 def test_unknown_identifier_is_404_with_the_error_template(seeded: SimpleNamespace) -> None:

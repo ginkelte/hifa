@@ -379,9 +379,9 @@ def build_issue_vm(
 ) -> dict[str, object]:
     """Template model of one issue detail: `row_vm` plus the detail collections.
 
-    `states`, `is_archived` and `is_trashed` are the three facts the detail read does not
-    carry: the caller resolves them from the same database and hands them over, so this
-    function stays pure and the panel and the page render the same dict.
+    `states`, `is_archived` and `is_trashed` are the detail's own facts: the caller hands over
+    `detail.states`, `detail.archived_at is not None` and `detail.trashed`, so this function
+    stays pure and the panel, the page and a refusal render the same dict from one read.
 
     `form_errors` and `form_error` are the answer of a refused write: the message of the use
     case, once per control and once for the element. The per-control dict is normalised to one
