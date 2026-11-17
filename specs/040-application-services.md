@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 3
-spec_revision: 23
+version: 4
+spec_revision: 24
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/040-application-services.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # SPEC-040 — Application services
@@ -790,11 +790,23 @@ def board_counts(db: Database, team: str) -> dict[str, int]: ...
 
 
 def issue_detail(
-    db: Database, ref: str, *, include: frozenset[str] = frozenset()
+    db: Database,
+    ref: str,
+    *,
+    include: frozenset[str] = frozenset(),
+    include_trashed: bool = False,
 ) -> IssueDetail: ...
 
 
 # raises: NotFound(issue); include ⊆ {comments, relations, attachments, history, children} -> Validation(INCLUDE_INVALID)
+#
+# `include_trashed=False` is the read every caller gets: statement 1 filters `i.trashed = 0`, so a
+# trashed reference -- an identifier or a ULID -- answers `NotFound` and no detail exists to carry the
+# flag. `include_trashed=True` is the one declared exception and it changes that predicate and nothing
+# else: the same statements, the same order, the same count (SPEC-030 §2.6, SQL-7), and `trashed` may be
+# `True` on the answer. It is a visibility argument of the *caller*, not a second read: SPEC-070 §2.1.1
+# is the only consumer (the detail page and the panel of a trashed issue, D-059), and every listing,
+# every count and the row/card fragments keep the default.
 
 
 def list_issues(db: Database, filters: ListFilters) -> IssuePage: ...
@@ -1309,12 +1321,18 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   not the whole page: the same render also reads the sidebar's team list (SPEC-070 R23) and the
   viewer, each under its own rule, and R21 neither counts nor forbids those reads. A fact a render of
   the issue needs and this read does not carry is a defect of this read, not a reason for the edge to
-  read again. This widens no visibility: `issue_detail` still answers `None` for an issue the trash
-  layer hides, so `archived_at` is the only flag a render can find set, and `trashed` is therefore
-  **always `False`** on a detail this read returns — statement 1 filters `i.trashed = 0`, so a trashed
-  issue answers `NotFound` before a detail exists to carry the value; it is carried for shape parity
-  with the row model, so the render's gate reads one model instead of two, not as a verdict about the
-  trash. The states cost one statement and nothing else: the fixed set is **12** with
+  read again. **The trash is the one layer this read can be asked to look through, and the asking is a
+  declared argument rather than a second read (D-059).** `include_trashed=False` — the default, and the
+  value no listing, no count, no row and no card overrides — keeps statement 1's `i.trashed = 0`, so a
+  trashed reference answers `NotFound` and `trashed` is `False` on every detail returned that way;
+  `include_trashed=True` drops that one predicate and changes nothing else — the same statements in the
+  same order, so the count below does not move — and it is the only way a returned detail can carry
+  `trashed = True`. Its single consumer is SPEC-070 §2.1.1: the detail page and the panel that render the
+  `Restore` control of an issue the trash layer holds, a page the dashboard already promises (§2.6.9) and
+  the refusals already instruct (`ENG-13 is in the trash; restore it first`). The flag is a **visibility
+  argument of the caller**, not a verdict about the trash: the trash stays out of every collection, every
+  count and every listing, and `archived_at` remains the layer a default render can find set.
+  The states cost one statement and nothing else: the fixed set is **12** with
   `DETAIL_INCLUDE` and **8** with an empty `include` (11 and 7 before this revision added row 16),
   independent of how many children, labels, comments or history events the issue has; a project, a
   cycle, a parent, an assignee and a creator add one each when the row carries the id they look up,
@@ -2247,6 +2265,29 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 24 (2026-11-17): **the detail read can be asked to look through the trash, and that
+  argument is the only thing that changed (D-059).** R21 said `issue_detail` "still answers `None` for an
+  issue the trash layer hides", and drew a conclusion from it — `trashed` is "**always `False`** on a detail
+  this read returns" — while SPEC-070 §2.6.9 promised that "the panel of an archived **or trashed** issue
+  renders `Restore` and nothing else". Both sentences were in the corpus on the same day (rev 23 here,
+  rev 22 there) and only one of them could be true. The dashboard's promise wins, because it is the one a
+  reader is given an instruction for: the `422` `ISSUE_TRASHED` of §6 says `ENG-13 is in the trash; restore
+  it first`, and a refusal whose instruction has no page behind it is a dead end. `issue_detail` therefore
+  gains `include_trashed: bool = False` (§2.2) and R21 states what each value does: the default is
+  statement 1's `i.trashed = 0` and the `NotFound` that follows from it — every caller in the tree, every
+  listing, every count, the row and card fragments, and
+  `tests/integration/db/test_reads_detail.py::test_a_trashed_issue_has_no_detail` keep it — and
+  `include_trashed=True` drops that one predicate and nothing else. **The counts do not move:** SQL-7 is
+  the same **12** statements with `DETAIL_INCLUDE` and the same **8** with an empty `include`, because a
+  predicate is not a statement; what the keyword buys is the row, not a read. Its only consumer is
+  SPEC-070 §2.1.1 (the detail page and the panel of a trashed issue), and the two specs' agreement on that
+  one call is the point: a render of an issue is still one call on one connection (rev 23's rule), which a
+  second `trashed_detail` read would have broken by construction. `version` moves 3 → 4 and not only
+  `spec_revision`, because §2.2 is the public contract and a signature is what it declares: the keyword is
+  additive and defaulted, but a caller that regenerated this layer from the spec has to write it. The
+  reasoning, the rejected alternatives (a `/trash` listing; leaving the trash unreachable) and the price
+  (the trash is reachable by identifier and is still enumerated only by `hifa issue list --trashed`) are
+  D-059's, not repeated here.
 - spec_revision 23 (2026-11-16): **a render of an issue is served by one read on one connection
   (HIFA-55).** R21 states it: `issue_detail` carries the archive flags and the team's non-archived
   states, so the page, the panel and the refusal that re-renders a write compose their model from the
