@@ -1294,18 +1294,31 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   `add_issues_to_cycle` are outside this rule in v1: they change other tables and the product has no
   declared semantics for them under archive yet. This rule is the **single producer of `InvalidTransition`** in the
   system (§6).
-- **R21 — The detail read is complete for a render, and a render opens one connection (HIFA-55).**
-  `issue_detail` returns everything a render of one issue decides from: the header, the team and its
-  state, the collections `include` asked for, **the archive flags of the row** (`archived_at`,
-  `trashed`) and **the team's workflow states** — the three fields SPEC-030 §2.6 declares on
-  `IssueDetail`. Every render of an issue — the page, the panel and the `422`/`409` that re-renders
-  the refused write — is therefore served by **one** call of `issue_detail` over **one** connection:
-  the edge composes the model and never opens a second read to learn whether the issue may be
-  written (`archived_at`, the input R20 decides on) or which columns the state `<select>` offers.
-  A fact a render needs and the read does not carry is a defect of this read, not a reason for the
-  edge to read again. This widens no visibility: `issue_detail` still answers `None` for an issue the
-  trash layer hides, so `archived_at` is the only layer a render can find set, and `trashed` is the
-  stored value that makes the render's gate one model instead of two.
+- **R21 — The detail read is complete for a render, and the issue's own model costs one connection
+  (HIFA-55).** `issue_detail` returns everything a render of one issue decides from: the header, the
+  team and its state, the collections `include` asked for, **the archive flags of the row**
+  (`archived_at`, `trashed`) and **the team's non-archived workflow states, in `position, name`
+  order** — the three fields SPEC-030 §2.6 declares on `IssueDetail`. `states` is the set and the
+  order of SQL-7 row 16, the statement `TeamRepo.states` runs: `archived_at IS NULL`, ties broken by
+  `name`, never the order a page happens to hold, so the state `<select>` and the team's own list
+  offer the same columns in the same order. Every render of an issue — the page, the panel and the
+  `422`/`409` that re-renders the refused write — is therefore served by **one** call of
+  `issue_detail` over **one** connection: the edge composes the model and never opens a second read to
+  learn whether the issue may be written (`archived_at`, the input R20 decides on) or which columns
+  the state `<select>` offers. That connection is the issue and what the render decides **about it**,
+  not the whole page: the same render also reads the sidebar's team list (SPEC-070 R23) and the
+  viewer, each under its own rule, and R21 neither counts nor forbids those reads. A fact a render of
+  the issue needs and this read does not carry is a defect of this read, not a reason for the edge to
+  read again. This widens no visibility: `issue_detail` still answers `None` for an issue the trash
+  layer hides, so `archived_at` is the only flag a render can find set, and `trashed` is therefore
+  **always `False`** on a detail this read returns — statement 1 filters `i.trashed = 0`, so a trashed
+  issue answers `NotFound` before a detail exists to carry the value; it is carried for shape parity
+  with the row model, so the render's gate reads one model instead of two, not as a verdict about the
+  trash. The states cost one statement and nothing else: the fixed set is **12** with
+  `DETAIL_INCLUDE` and **8** with an empty `include` (11 and 7 before this revision added row 16),
+  independent of how many children, labels, comments or history events the issue has; a project, a
+  cycle, a parent and an assignee add one each when the row carries the id they look up, and each
+  relation adds one (SQL-7).
 
 ### 4.2 Functional requirements (REQ-F)
 
@@ -2235,14 +2248,17 @@ Feature: Application use cases
 ## Notes
 
 - spec_revision 23 (2026-11-16): **a render of an issue is served by one read on one connection
-  (HIFA-55).** R21 states it: `issue_detail` carries the archive flags and the team's workflow
+  (HIFA-55).** R21 states it: `issue_detail` carries the archive flags and the team's non-archived
   states, so the page, the panel and the refusal that re-renders a write compose their model from the
   one call the route already makes. Before it, every one of those renders opened a second read of the
   same issue — measured on this tree with `set_trace_callback`: `_issue_detail_extras` added a
-  connection and 6 statements per render, on top of the detail read's 7, and the issue could change
-  between the two snapshots. The fields themselves are SPEC-030 §2.6's (rev 11) and the shape there is
-  additive and defaulted; no signature, command field, envelope, exit code or HTTP status moves, so
-  `version` stays at 3. **Why a revision and not a `D-0NN`:** this layer adds no rule and settles no
+  connection and 6 statements per render, on top of the detail read's **11 → 12** with
+  `DETAIL_INCLUDE` and **7 → 8** with an empty `include` (row 16 is the statement this revision
+  adds), on top of the one a project, a cycle, a parent or an assignee adds when the row carries its
+  id and the one each relation adds — and the issue could change between the two snapshots. The
+  fields themselves are SPEC-030 §2.6's (rev 11) and the shape there is additive and defaulted; no
+  signature, command field, envelope, exit code or HTTP status moves, so `version` stays at 3.
+  **Why a revision and not a `D-0NN`:** this layer adds no rule and settles no
   conflict. R19 already says the read models are consumed as SPEC-030 declares them and P4/A1/A3
   already forbid an edge reading the database, so the helper was a violation of existing rules rather
   than a trade-off nobody had taken; the correction is one paragraph in the spec that was wrong and
