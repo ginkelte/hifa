@@ -594,7 +594,7 @@ def validate_comment_body(body: str) -> str:
     """strip(); rejects empty (rule='BODY_EMPTY'); len > MAX_BODY (rule='BODY_TOO_LONG')."""
 
 
-def validate_comment_parent_depth(parent_chain_length: int) -> None:
+def validate_comment_parent_depth(depth: int) -> None:
     """The chain from a root comment, 1 for a root.
 
     raises: Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id') when the reply the
@@ -933,7 +933,7 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-18** | Every DDL table with a writer has a model: `team_membership` → `TeamMembership` and `team_previous_key` → `TeamPreviousKey`, with field names identical to the columns; `schema_migration` is left out by explicit decision (§10) | test comparing `model_fields` with `PRAGMA table_info` of both tables |
 | **REQ-F020-19** | `validate_transition` rejects a target state with non-null `archived_at` with `Validation(rule='STATE_ARCHIVED', field='state_id')`, and accepts the same non-archived state type | 2 tests |
 | **REQ-F020-20** | `RelationType` answers the four facts of §2.1 for its four values: `is_symmetric`, `is_hard`, `canonical_pair` (unchanged for `blocks`, sorted by ULID for the symmetric ones) and `name_as_seen` (`blocks` when the issue is the source, `blocked_by` when it is the target of a `blocks` row, own value for the rest); `parse` accepts `blocked_by` as the inverse input and rejects any other name with `Validation(COMMAND_FIELD)` | table-driven over the 4 values + 2 parse cases |
-| **REQ-F020-21** | `validate_comment_parent_depth` accepts a root comment (chain length `1`) and a reply that still lands at or above `MAX_COMMENT_DEPTH`, and rejects the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')`; the boundary is stated once, in one place | 3 tests: the last accepted depth, the first refused one, and a root |
+| **REQ-F020-21** | `validate_comment_parent_depth(depth)` accepts a root comment (`depth = 1`) and a reply that still lands at or above `MAX_COMMENT_DEPTH`, and rejects the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')`; the boundary is stated once, in one place | 3 tests: the last accepted depth, the first refused one, and a root |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -1275,6 +1275,13 @@ Feature: Pure domain core
     Given a workflow_state of the ENG team of type started and archived_at NULL
     When rules.validate_transition is called with that state as target and 0 open children
     Then it raises no exception
+
+  @REQ-F020-21
+  Scenario: the third reply is accepted and the fourth is not
+    Given validate_comment_parent_depth and MAX_COMMENT_DEPTH = 3
+    When it is called with depth 3 and then with depth 4
+    Then the first call returns without raising
+    And the second raises Validation with rule "COMMENT_DEPTH_EXCEEDED" and field "parent_id"
 ```
 
 ## 8. Regeneration checklist

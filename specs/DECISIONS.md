@@ -2598,11 +2598,13 @@ SPEC-040 goes to `spec_revision` 24 and SPEC-070 to 23.
 
 ## D-060 — A comment is a write to a parked issue, so it waits: the composer, the depth and the one anchor
 
-**Date:** 2026-11-17 · **Wins:** SPEC-020 §2.5 · **Touches:** SPEC-020 §2 (the `rules` rows of the symbol
-table, §2.5), §3, §4.1 (R14's bound), §4.2 (REQ-F020-21), §5, §6, §7, §8, Notes; SPEC-040 §2.2
-(`comment_on_issue`'s `raises:` line), §4.1 (R20), §6 (three tables), §7, Notes; SPEC-050 §2.4, §2.4.1,
-§2.4.4, §2.5.3 (the row, its exit set and its notes), §5.1, §5.2, Notes; SPEC-070 §2.1.2, §2.1.3, §2.3.4,
-§2.6.2, §2.6.9, §4 (R12, R27), §6, Notes; SPEC-001 REQ-F022; `specs/001-mvp-v1.tasks.md` (T-20.2);
+**Date:** 2026-11-17 · **Wins:** SPEC-020 §2.5 · **Touches:** SPEC-020 §2 (the `rules` and `constants` rows of
+the symbol table, §2.5's block), §4.2 (REQ-F020-21), §7 (its scenario), §8 (the symbol count), Notes;
+SPEC-040 §2.2 (`comment_on_issue`'s `raises:` line), §4.1 (R20), §4.2 (REQ-F040-35/36), §6 (three tables,
+including the two producer cells), §7 (four scenarios), Notes; SPEC-050 §2.4.1, §2.4.4, §2.5.3 (the row,
+its exit set and its notes), §2.6.1 (the exit-5 condition), §5.1, §5.2, §11; SPEC-070 §2.1.2, §2.1.3,
+§2.3.4, §2.6.2, §2.6.9, §2.6.10 (new), §4 (R12, R27, R29), §6, §7, §11; SPEC-001 REQ-F022;
+`specs/001-mvp-v1.tasks.md` (T-20.2);
 `specs/acceptance/001-mvp-v1/08-comments-attachments.feature`,
 `specs/acceptance/001-mvp-v1/16-dashboard.feature`; `specs/INDEX.md`
 

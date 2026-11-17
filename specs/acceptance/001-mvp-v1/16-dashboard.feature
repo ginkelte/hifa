@@ -95,6 +95,18 @@ Feature: HTTP dashboard
     And the second response contains "/ENG/issue/ENG-13/restore"
     And none of the answers contains "name=\"body\""
 
+  @REQ-F013 @REQ-F035 @slow
+  Scenario: an archived issue offers no composer either
+    # the other half of the gate: a composer rendered only for a visible issue passes the trashed
+    # scenario above and renders on the archived page, where the write is refused (§2.6.10, D-060).
+    Given the issue "ENG-13" in the state "Todo" archived at "2026-11-10T12:00:00Z"
+    When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the first status is 200
+    And the second status is 200
+    And the first response contains "/ENG/issue/ENG-13/restore"
+    And the second response contains "/ENG/issue/ENG-13/restore"
+    And none of the answers contains "name=\"body\""
+
   @REQ-F013 @slow
   Scenario: a comment posted without JavaScript lands on the comments of the page
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"

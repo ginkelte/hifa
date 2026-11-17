@@ -1774,9 +1774,9 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `TEAM_HAS_OPEN_ISSUES` | `Validation` | archiving a team with open issues | `archive_team` | 2 | 422 |
 | `TEAM_ALREADY_ARCHIVED` | `Conflict` | archiving twice | `archive_team` | 4 | 409 |
 | `TEAM_KEY_INVALID` | `Validation` | key that does not match `identifier.KEY_PATTERN` | `create_team`, `update_team` | 2 | 422 |
-| `ISSUE_TRASHED` | `Validation` | operating on an issue with `trashed = 1` | `update_issue`, `move_issue`, `assign_issue`, `add_label` | 2 | 422 |
+| `ISSUE_TRASHED` | `Validation` | operating on an issue with `trashed = 1` | `update_issue`, `move_issue`, `assign_issue`, `add_label`, `comment_on_issue` | 2 | 422 |
 | `CLOSE_WITH_OPEN_CHILDREN` | `Validation` | closing/canceling/archiving a parent with open sub-issues | `move_issue`, `update_issue`, `archive_issue` | 2 | 422 |
-| `ISSUE_ARCHIVED` | `InvalidTransition` | writing an issue with `archived_at` not null (R20), `field='ref'` | `update_issue`, `assign_issue`, `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `add_label`, `remove_label` | **5** | 409 |
+| `ISSUE_ARCHIVED` | `InvalidTransition` | writing an issue with `archived_at` not null (R20), `field='ref'` | `update_issue`, `assign_issue`, `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `add_label`, `remove_label`, `comment_on_issue` | **5** | 409 |
 | `POSITION_NEIGHBOR` | `Validation` | nonexistent anchor, from another team or from another state | `move_issue`, `reorder_issue` | 2 | 422 |
 | `POSITION_OUT_OF_ORDER` | `Validation` | edge `sort_order` does not fall strictly between its neighbors | `move_issue` | 2 | 422 |
 | `RANKING_EXHAUSTED` | `Validation` | no float gap left even after rebalancing once | `move_issue`, `reorder_issue` | 2 | 422 |
