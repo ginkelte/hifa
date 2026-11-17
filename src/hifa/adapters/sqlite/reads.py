@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
 
+from hifa.adapters.sqlite import state_repo
 from hifa.adapters.sqlite._base import to_date, to_dt
 from hifa.domain.entities import (
     Attachment,
@@ -522,6 +523,15 @@ class IssueDetail:
     `members` maps `member.id` to `display_name` for the authors of the comments and the
     actors of the history of *this* issue (one query, no N+1). The view layer never guesses
     an author: a missing id is rendered as unknown.
+
+    `archived_at` and `trashed` are the archive layers of the row this read already loads, so a
+    render decides whether the issue may be written without a second read. `trashed` is always
+    `False` on a returned detail: a trashed issue answers `None` instead of a model, and the
+    field exists so that the gate reads one model and not two.
+
+    `states` carries the team's non-archived workflow states, ordered by `position` then `name`,
+    so the state control of a render offers the columns the team's own list offers, in the same
+    order, out of the same read.
     """
 
     issue: IssueListItem
@@ -539,6 +549,9 @@ class IssueDetail:
     history: tuple[IssueHistory, ...]
     attachments: tuple[Attachment, ...]
     members: Mapping[str, str] = field(default_factory=dict)
+    archived_at: datetime | None = None
+    trashed: bool = False
+    states: tuple[WorkflowState, ...] = ()
 
 
 #: Columns of an `IssueListItem`, shared by the listing, the board and the detail header.
@@ -794,6 +807,16 @@ def _member(conn: sqlite3.Connection, member_id: str | None) -> Member | None:
     return None if row is None else member_from_row(row)
 
 
+#: The team's live columns, in the order a render offers them: an archived state is not one,
+#: and two states at the same position come back by name. The projection is the state repo's
+#: own column list, so a column added there is a column this read answers without a second edit.
+_TEAM_STATES_SQL = (
+    f"SELECT {state_repo.COLUMNS}"
+    " FROM workflow_state WHERE team_id = ? AND archived_at IS NULL"
+    " ORDER BY position, name"
+)
+
+
 def issue_detail(
     conn: sqlite3.Connection, ref: str, *, include: frozenset[str] = frozenset()
 ) -> IssueDetail | None:
@@ -801,9 +824,13 @@ def issue_detail(
 
     `include` gates the heavy collections (`comments`, `history`, `attachments`). A name outside
     `DETAIL_INCLUDE` is a `Validation(rule="INCLUDE_INVALID")`, not a silent no-op.
+
+    The model carries everything a render of the issue decides from: the archive flags of the
+    row, read from the entity this call already loads, and the team's live workflow states,
+    read with one statement of their own. One call is one model, so an edge composes a page, a
+    panel or a refusal without opening a second read of the same issue.
     """
     from hifa.adapters.sqlite.comment_repo import comment_from_row
-    from hifa.adapters.sqlite.state_repo import state_from_row
     from hifa.adapters.sqlite.team_repo import team_from_row
 
     unknown = sorted(set(include) - DETAIL_INCLUDE)
@@ -918,11 +945,16 @@ def issue_detail(
             if item["display_name"]
         }
 
+    states = tuple(
+        state_repo.state_from_row(item)
+        for item in conn.execute(_TEAM_STATES_SQL, (row["team_id"],)).fetchall()
+    )
+
     return IssueDetail(
         issue=header,
         description=row["description"],
         team=team_from_row(team_row),
-        state=state_from_row(state_row),
+        state=state_repo.state_from_row(state_row),
         assignee=_member(conn, row["assignee_id"]),
         creator=_member(conn, row["creator_id"]),
         project=project,
@@ -934,6 +966,9 @@ def issue_detail(
         history=history,
         attachments=attachments,
         members=members,
+        archived_at=to_dt(row["archived_at"]),
+        trashed=bool(row["trashed"]),
+        states=states,
     )
 
 

@@ -1035,29 +1035,6 @@ def _update_from_form(request: Request, identifier: str, fields: dict[str, str])
         uow.close()
 
 
-def _issue_detail_extras(
-    request: Request, detail: IssueDetail
-) -> tuple[list[WorkflowState], bool, bool]:
-    """The three facts the detail read does not carry: team states, archived, trashed.
-
-    `IssueListItem` is a projection of `v_issue` without the archive columns, so the flags are
-    read from the entity in the same unit of work the states come from — the caller renders
-    one element, not three.
-
-    raises: `NotFound` (issue) when the issue is gone between the route's read and this one
-    """
-    uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
-    try:
-        with uow.read() as tx:
-            issue = tx.issues.get(detail.issue.id)
-        states = [summary.state for summary in list_states(uow, detail.team.id)]
-    finally:
-        uow.close()
-    if issue is None:  # pragma: no cover - the detail was read from the same database
-        raise NotFound(resource="issue", key=detail.issue.identifier)
-    return states, issue.archived_at is not None, issue.trashed
-
-
 def _issue_detail_vm(
     request: Request,
     detail: IssueDetail,
@@ -1067,19 +1044,19 @@ def _issue_detail_vm(
 ) -> dict[str, object]:
     """Build the model of the detail page, the panel and a refused write: the single builder.
 
-    Resolve the team's workflow states and the issue's archive flags here, so that every render
-    of an issue — page, panel or refusal — carries them; a refused write arrives as
-    `form_errors`/`form_error` and is carried into the model, and both stay absent otherwise.
+    The team's states and the archive flags come from the detail itself, so every render of an
+    issue — page, panel or refusal — is composed from the one read the route already made and no
+    render opens a second one. A refused write arrives as `form_errors`/`form_error` and is
+    carried into the model; both stay absent otherwise.
     """
-    states, is_archived, is_trashed = _issue_detail_extras(request, detail)
     return readmodels.build_issue_vm(
         detail,
         today=_today(),
         now=datetime.now(UTC),
         can_write=_can_write(request),
-        states=states,
-        is_archived=is_archived,
-        is_trashed=is_trashed,
+        states=detail.states,
+        is_archived=detail.archived_at is not None,
+        is_trashed=detail.trashed,
         form_errors=form_errors,
         form_error=form_error,
     )

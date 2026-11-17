@@ -6,6 +6,7 @@ by the real CLI, and reads the HTML that a browser would receive.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import html as html_lib
 import re
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 import typer
 from fastapi.testclient import TestClient
+from httpx import Response
 from typer.testing import CliRunner
 
 from hifa.cli.main import app as cli_app
@@ -264,6 +266,115 @@ def test_detail_by_ulid_redirects_to_the_identifier(seeded: SimpleNamespace) -> 
     response = seeded.client.get(f"/ENG/issue/{ulid}", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/ENG/issue/ENG-1"
+
+
+#: The entity row of a detail read. `sqlite3`'s trace callback prints the statement with its
+#: parameters expanded, so the match stops before the value — and it matches any projection of
+#: `issue` by id, not only the one this read happens to write today.
+DETAIL_ENTITY_ROW = "FROM issue WHERE id = "
+#: The statement that lists a team's live columns: one per render of an issue, from the same read.
+TEAM_COLUMNS_ROW = "FROM workflow_state WHERE team_id = "
+
+
+def _statements_per_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    body: dict[str, str] | None = None,
+) -> tuple[list[list[str]], Response]:
+    """Every database connection one request opens, with the statements each one executed.
+
+    Counted on the driver, not on a helper of the edge: whatever layer opens the connection, it
+    goes through `sqlite3.connect`, so a second read cannot hide behind a different route to the
+    same file. `method` and `body` are what the request is: a render is read by a `GET`, a refused
+    write arrives as a `PATCH` and the response is the re-render it owes the client.
+    """
+    opened: list[list[str]] = []
+    connections: list[sqlite3.Connection] = []
+    original = sqlite3.connect
+
+    def counted(*args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = original(*args, **kwargs)  # type: ignore[arg-type]
+        statements: list[str] = []
+        connection.set_trace_callback(statements.append)
+        connections.append(connection)
+        opened.append(statements)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", counted)
+    try:
+        return opened, client.request(method, path, headers=headers, data=body)
+    finally:
+        # The window closes with the request: the revision watch keeps a connection open, and a
+        # callback left on it would keep appending to a list this test has already read. A
+        # connection the request closed itself cannot be reached at all, and needs nothing.
+        monkeypatch.setattr(sqlite3, "connect", original)
+        for connection in connections:
+            with contextlib.suppress(sqlite3.ProgrammingError):
+                connection.set_trace_callback(None)
+
+
+@pytest.mark.parametrize(
+    ("label", "method", "path", "headers", "body", "status"),
+    [
+        ("the detail page", "get", "/ENG/issue/ENG-1", None, None, 200),
+        ("the panel", "get", "/_/issues/ENG-1/panel", HTMX, None, 200),
+        (
+            "the refused write",
+            "patch",
+            "/_/issues/ENG-1?view=panel",
+            HTMX,
+            {"estimate": "abc"},
+            422,
+        ),
+    ],
+)
+def test_one_read_of_the_issue_serves_a_render(
+    seeded: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    body: dict[str, str] | None,
+    status: int,
+) -> None:
+    """The issue's own model is read once, on one connection, whatever the render.
+
+    The page, the panel and the `422` that re-renders a refused write all used to open a second
+    connection to learn the archive flags and the team's columns: two snapshots of one issue, and
+    the render could be composed from the older one. The sidebar and the viewer are separate
+    reads under their own rule, so this counts only the statements that are a read of *this*
+    issue.
+    """
+    opened, response = _statements_per_connection(
+        monkeypatch, seeded.client, method, path, headers, body
+    )
+
+    assert response.status_code == status, label
+    own = [statements for statements in opened if any(DETAIL_ENTITY_ROW in s for s in statements)]
+    assert len(own) == 1, (label, opened)
+    assert sum(DETAIL_ENTITY_ROW in statement for statement in own[0]) == 1, (label, own[0])
+    assert sum(TEAM_COLUMNS_ROW in statement for statement in own[0]) == 1, (label, own[0])
+    # Nothing else read the team's columns: the render took them from that read, not from a second.
+    assert (
+        sum(TEAM_COLUMNS_ROW in statement for statements in opened for statement in statements) == 1
+    ), (label, opened)
+    # The state control, not "some option": the priority select renders five options of its own,
+    # so a bare `<option value=` passed even with no states at all. The current state's own
+    # option and the count of the team's seven columns are what only the state control answers.
+    control = re.search(r'<select name="state".*?</select>', response.text, re.S)
+    assert control is not None, label
+    assert control.group(0).count('<option value="') == 7, (label, control.group(0))
+    assert ">Triage</option>" in control.group(0), (label, control.group(0))
+    if status == 422:
+        # The answer is the panel it refused, marked: the control and the message beside it.
+        assert '<aside id="panel"' in response.text, label
+        assert 'name="estimate"' in response.text, label
+        assert 'aria-invalid="true"' in response.text, label
+        assert "invalid value: estimate must be a number" in response.text, label
 
 
 def test_unknown_identifier_is_404_with_the_error_template(seeded: SimpleNamespace) -> None:

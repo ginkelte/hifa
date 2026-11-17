@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,21 @@ def out(result) -> str:
 
 def body(result) -> dict:
     return json.loads(result.stdout)
+
+
+def rows(result) -> list[list[str]]:
+    """Data rows of a printed table, split on the two-space gutter the renderer leaves."""
+    return [re.split(r"\s{2,}", line.strip()) for line in result.stdout.splitlines()[1:]]
+
+
+def stored_positions(db: Path, *names: str) -> dict[str, float]:
+    """`workflow_state.position` as the database holds it, key for key of `names`."""
+    with sqlite3.connect(db) as conn:
+        return {
+            name: position
+            for name, position in conn.execute("SELECT name, position FROM workflow_state")
+            if name in names
+        }
 
 
 @pytest.fixture
@@ -59,6 +75,61 @@ def test_list_prints_the_canonical_order(sandbox: Path) -> None:
     assert [row[4] for row in rows] == ["–", "*", "–", "–", "–", "–", "–"]
     # One concrete row, cell by cell, so a formatting regression cannot hide behind the header.
     assert rows[1] == ["2.0", "Todo", "unstarted", "#E2E2E2", "*", "0"]
+
+
+def test_list_prints_the_position_the_value_needs(sandbox: Path) -> None:
+    """HIFA-56: a stored `4.75` prints `4.75`, not the `4.8` one decimal produced.
+
+    `--before Done` on the seven-state seed lands in the `In Review`(4.5)–`Done`(5.0) slot, so
+    the stored value is exactly `4.75`. The table and the column are asserted, and the database
+    is read beside the CLI answer: the printed number is the stored one, not a rounding of it.
+    """
+    created = run("state", "create", "QA", "--type", "started", "--before", "Done")
+
+    assert created.exit_code == 0, out(created)
+    assert created.stdout.splitlines()[1].split()[0] == "4.75"
+    assert stored_positions(sandbox, "QA") == {"QA": 4.75}
+
+    listed = run("state", "list")
+    assert listed.exit_code == 0, out(listed)
+    printed = {row[1]: row[0] for row in rows(listed)}
+    assert printed["QA"] == "4.75"
+    # The neighbours keep the one decimal the value needs: no trailing zero, never a bare `4`.
+    assert [printed[name] for name in CANONICAL] == [
+        "1.0",
+        "2.0",
+        "3.0",
+        "4.0",
+        "4.5",
+        "5.0",
+        "6.0",
+    ]
+
+
+def test_three_inserts_after_a_column_print_three_distinct_positions(sandbox: Path) -> None:
+    """Two positions that read differently must never print the same number.
+
+    Three inserts after `In Progress` halve the same slot: the database holds `4.25 / 4.125 /
+    4.0625` and the one-decimal formatter printed `4.2 / 4.1 / 4.1` — two orders, one number.
+    The printed column is what is asserted, with the stored value read beside it.
+    """
+    for name in ("QA", "Blocked", "Reviewing"):
+        created = run("state", "create", name, "--type", "started", "--after", "In Progress")
+        assert created.exit_code == 0, out(created)
+
+    listed = run("state", "list")
+    assert listed.exit_code == 0, out(listed)
+    printed = {row[1]: row[0] for row in rows(listed)}
+    names = ("QA", "Blocked", "Reviewing")
+    assert [printed[name] for name in names] == ["4.25", "4.125", "4.0625"]
+    assert len({printed[name] for name in names}) == 3, "two positions printed one number"
+    # And they are the stored values, in the order the board is read in.
+    assert stored_positions(sandbox, *names) == {
+        "QA": 4.25,
+        "Blocked": 4.125,
+        "Reviewing": 4.0625,
+    }
+    assert [row[0] for row in rows(listed)][3:6] == ["4.0", "4.0625", "4.125"]
 
 
 def test_list_json_uses_the_items_envelope(sandbox: Path) -> None:
