@@ -2718,7 +2718,7 @@ The comment section of the detail page and of the panel is one structure with tw
   <ol id="comment-list" class="comment-list">
     <li class="comment" data-comment-id="…">…</li>
   </ol>
-  <!-- the composer of §2.6.9 -->
+  <!-- the composer of §2.6.10, gated on can_write and neither layer -->
 </section>
 ```
 
