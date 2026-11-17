@@ -1,3 +1,10 @@
+## [0.9.1](https://github.com/ginkelte/hifa/compare/v0.9.0...v0.9.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **web:** the detail page is one column below the breakpoint ([#27](https://github.com/ginkelte/hifa/issues/27)) ([e28f0e6](https://github.com/ginkelte/hifa/commit/e28f0e6c6a4f4b2fcb66ff92d0efdd3d367c85f8))
+
 # [0.9.0](https://github.com/ginkelte/hifa/compare/v0.8.1...v0.9.0) (2026-11-17)
 
 
