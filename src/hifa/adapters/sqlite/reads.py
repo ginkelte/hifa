@@ -525,9 +525,10 @@ class IssueDetail:
     an author: a missing id is rendered as unknown.
 
     `archived_at` and `trashed` are the archive layers of the row this read already loads, so a
-    render decides whether the issue may be written without a second read. `trashed` is always
-    `False` on a returned detail: a trashed issue answers `None` instead of a model, and the
-    field exists so that the gate reads one model and not two.
+    render decides whether the issue may be written without a second read. `trashed` is `False` on
+    every **default** read: a trashed issue answers `None` instead of a model, and the field exists
+    so that the gate of a render reads one model and not two. It is `True` only on the answer of
+    `include_trashed=True` (D-059), the read the detail page and the panel pass.
 
     `states` carries the team's non-archived workflow states, ordered by `position` then `name`,
     so the state control of a render offers the columns the team's own list offers, in the same
@@ -818,12 +819,23 @@ _TEAM_STATES_SQL = (
 
 
 def issue_detail(
-    conn: sqlite3.Connection, ref: str, *, include: frozenset[str] = frozenset()
+    conn: sqlite3.Connection,
+    ref: str,
+    *,
+    include: frozenset[str] = frozenset(),
+    include_trashed: bool = False,
 ) -> IssueDetail | None:
     """Detail of one issue by identifier or ULID; `None` when it does not exist.
 
     `include` gates the heavy collections (`comments`, `history`, `attachments`). A name outside
     `DETAIL_INCLUDE` is a `Validation(rule="INCLUDE_INVALID")`, not a silent no-op.
+
+    `include_trashed` is the one declared way to read an issue the trash layer holds (D-059,
+    SQL-7 row 1): `False` — the default — binds `:include_trashed = 0`, which reduces the
+    header's predicate to `i.trashed = 0`, so a trashed reference answers `None`; `True` binds
+    `1`, the `OR` short-circuits and that one predicate drops. It is a parameter of row 1 and
+    not a statement of its own, so the same statements run in the same order and the two totals
+    of the read (§2.5) do not move either way.
 
     The model carries everything a render of the issue decides from: the archive flags of the
     row, read from the entity this call already loads, and the team's live workflow states,
@@ -846,7 +858,9 @@ def issue_detail(
     if not text:
         return None
     header = _one_item(
-        conn, "(i.identifier = :ref OR i.id = :ref) AND i.trashed = 0", {"ref": text}
+        conn,
+        "(i.identifier = :ref OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)",
+        {"ref": text, "include_trashed": int(include_trashed)},
     )
     if header is None:
         return None
