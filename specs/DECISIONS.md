@@ -2473,8 +2473,9 @@ is the reason for the `spec_revision` bump and closes when T-21 lands.
 ## D-059 — A trashed issue is served by its own detail page and its panel, and `issue_detail` gains the one declared way to read it
 
 **Date:** 2026-11-17 · **Wins:** SPEC-070 §2.1.1, §4 (R29) · **Touches:** SPEC-070 §1, §2.1.1, §2.1.2,
-§2.1.3, §2.1.4, §2.3.4, §2.6.4, §2.6.9, §4 (R27, R29), §5.7, §5.7.1, §6, §7, §11; SPEC-040 §2.2 (the
-`issue_detail` signature), §4.1 (R21), §11; `specs/001-mvp-v1.tasks.md` (T-20.1); `specs/INDEX.md`;
+§2.1.3, §2.1.4, §2.3.4, §2.6.4, §2.6.9, §4 (R27, R29), §5.7, §5.7.1, §6, §7, §11; SPEC-030 §2.5 (SQL-7
+row 1), §2.6 (`issue_detail`, `IssueDetail.trashed`); SPEC-040 §2.2 (the `issue_detail` signature), §4.1
+(R21), §11; `specs/001-mvp-v1.tasks.md` (T-20.1); `specs/INDEX.md`;
 `specs/acceptance/001-mvp-v1/16-dashboard.feature`
 
 **Prior state.** SPEC-070 §2.6.9 states the rule for the two layers in one sentence: "the panel of an
