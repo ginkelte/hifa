@@ -13,14 +13,22 @@
   </dl>
   <div class="description">{{ vm.description_html | safe }}</div>
   {% if vm.form_error %}{% if not vm.invalid_field %}<p class="form-error" role="alert">{{ vm.form_error }}</p>{% endif %}{% endif %}
-  {% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
-  <form class="issue-edit" method="post" action="{{ vm.edit_action }}"
-        hx-patch="{{ vm.edit_fragment }}?view=panel" hx-target="#panel" hx-swap="innerHTML"
-        hx-disabled-elt="find button">
-    <h3 class="form-title">Edit</h3>
-    {% include "partials/issue_form_fields.html" %}
-    <div class="form-actions"><button type="submit" class="btn">Save</button></div>
-  </form>
+  {% if vm.can_write %}
+  <div class="action-group">
+    {% if vm.is_archived or vm.is_trashed %}
+    <form class="action-restore" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/restore">
+      <button type="submit" class="btn">Restore</button>
+    </form>
+    {% else %}
+    <form class="issue-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=panel" hx-target="#panel" hx-swap="innerHTML"
+          hx-disabled-elt="find button">
+      <h3 class="form-title">Edit</h3>
+      {% include "partials/issue_form_fields.html" %}
+      <div class="form-actions"><button type="submit" class="btn">Save</button></div>
+    </form>
+    {% endif %}
+  </div>
   {% endif %}
   {% if vm.comments %}
   <section class="comments">
