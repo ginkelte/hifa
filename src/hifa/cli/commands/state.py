@@ -10,6 +10,7 @@ fractional midpoint comes from `domain.ranking.between` — the same helper the 
 from __future__ import annotations
 
 import enum
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -410,10 +411,20 @@ def _row(summary: StateSummary) -> dict[str, Any]:
 
 
 def _position_text(value: float | None) -> str:
-    """One decimal, always: `1.0`, `2.0`, `2.5`."""
+    """The position the stored value needs: `1.0`, `2.0`, `2.5`, `4.75`, `4.9375`.
+
+    `repr` is the shortest decimal that round-trips to the same float, so it carries exactly the
+    decimals the value needs (no trailing zero left to trim) and keeps the `.0` an integral
+    position needs. `Decimal(...)` rendered as `f` keeps it a plain decimal where `repr` would
+    fall back to `1e-06` below `1e-4`. A fixed one decimal rounded two positions into one —
+    `4.75 / 4.875 / 4.9375` printed `4.8 / 4.9 / 4.9` — and the table's only job is the order, so
+    two positions that read differently must not print the same number; `--json` still carries
+    the exact float either way.
+    """
     if value is None:  # pragma: no cover - the column is NOT NULL
         return "–"
-    return f"{value:.1f}"
+    text = format(Decimal(repr(float(value))), "f")
+    return text if "." in text else f"{text}.0"
 
 
 def _table_row(row: dict[str, Any]) -> dict[str, Any]:
