@@ -2603,7 +2603,7 @@ the symbol table, §2.5's block), §4.2 (REQ-F020-21), §7 (its scenario), §8 (
 SPEC-040 §2.2 (`comment_on_issue`'s `raises:` line), §4.1 (R20), §4.2 (REQ-F040-35/36), §6 (three tables,
 including the two producer cells), §7 (four scenarios), Notes; SPEC-050 §2.4.1, §2.4.4, §2.5.3 (the row,
 its exit set and its notes), §2.6.1 (the exit-5 condition), §5.1, §5.2, §11; SPEC-070 §2.1.2, §2.1.3,
-§2.3.4, §2.6.2, §2.6.9, §2.6.10 (new), §4 (R12, R27, R29), §6, §7, §11; SPEC-001 REQ-F022;
+§2.3.4, §2.6.2, §2.6.9, §2.6.10 (new), §4 (R27, R29), §6, §7, §11; SPEC-001 REQ-F022;
 `specs/001-mvp-v1.tasks.md` (T-20.2);
 `specs/acceptance/001-mvp-v1/08-comments-attachments.feature`,
 `specs/acceptance/001-mvp-v1/16-dashboard.feature`; `specs/INDEX.md`
@@ -2709,7 +2709,7 @@ wonders why the replies are not indented, and the ticket is what removes it: ind
 key the read model does not carry (SPEC-030 §2.6's `Comment` row is the stored row) and a composer per
 comment, which is a second form per row and a second target in §2.1.3.
 
-### (d) One anchor, two shapes, both valid HTML
+### (d) One anchor, one swap target, two shapes, both valid HTML
 
 The comment section of the detail page and of the panel is one structure with two node levels:
 
@@ -2723,8 +2723,7 @@ The comment section of the detail page and of the panel is one structure with tw
 ```
 
 - `GET /_/comments/{identifier}` returns the **whole `<ol id="comment-list" class="comment-list">`** and the
-  client swaps the **`innerHTML` of `#comments`** with it (a `<section>` whose child is an `<ol>` stays
-  valid HTML); `hx-target="#comments"`, `hx-swap="innerHTML"`.
+  client swaps it in **`outerHTML`** at `#comment-list`; `hx-target="#comment-list"`, `hx-swap="outerHTML"`.
 - `POST /_/comments/{identifier}` returns **one `<li>`** with status **`200`** and the client appends it
   `beforeend` into **`#comment-list`**; `hx-target="#comment-list"`, `hx-swap="beforeend"`. `200` and not
   `201`: this layer's answers are HTML the client puts somewhere, and the only `201` of the tree is the
@@ -2735,8 +2734,14 @@ The comment section of the detail page and of the panel is one structure with tw
 **The alternative rejected: both routes targeting `#comments` with `innerHTML`.** It nests an `<ol>` inside
 an `<ol>` on the `POST` (the answer is one `<li>`) and appends an `<li>` into a `<section>` on the `GET` if
 the anchors are swapped — the collision the old §2.1.3 rows had, where `GET` and `POST` named the same
-element with different node types and only one of the two could be right. One anchor and two shapes is the
-only pair that is valid HTML for both verbs without a client-side branch.
+element with different node types and only one of the two could be right.
+
+**And the second alternative, rejected after the first was written:** the `GET` swapping the **`innerHTML`
+of `#comments`** with the `<ol>`. It is valid HTML and it is still wrong, because the section also holds
+the `<h2>` and the composer of §2.6.10: a refresh would delete the box the reader is typing in. The list is
+the node that changes, so the list is the node the swap names — `outerHTML` on the `<ol>`, which leaves the
+heading and the box in place. `#comments` keeps its job as the URL fragment a `303` lands on, and stops
+being a swap target; a reader following the anchor is not the same event as a client replacing the list.
 
 **What this decision does not do.** It adds no verb, no endpoint, no column, no table and no enum value: a
 comment is still one `INSERT` into `comment` with `author_id` from the actor (SPEC-040 §3.1), the history

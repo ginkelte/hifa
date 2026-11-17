@@ -998,6 +998,7 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `Validation` | `STATE_TEAM_MISMATCH` / `LABEL_TEAM_MISMATCH` / `PARENT_TEAM_MISMATCH` | cross-team reference | exit 2 | 422 |
 | `Validation` | `PARENT_CYCLE` / `RELATION_SELF` / `PARENT_SELF` | relation with itself or hierarchy cycle | exit 2 | 422 |
 | `Validation` | `PARENT_DEPTH_EXCEEDED` | the tree would exceed `MAX_SUBISSUE_DEPTH` levels (root = 1), counting the moved subtree | exit 2 | 422 |
+| `Validation` | `BODY_EMPTY` / `COMMENT_DEPTH_EXCEEDED` / `COMMENT_PARENT_MISMATCH` | a comment with no body, a reply that would sit deeper than `MAX_COMMENT_DEPTH` (root = 1), or a parent that belongs to another issue | exit 2 | 422 |
 | `Validation` | `RELATION_WORKSPACE_MISMATCH` | an edge between two workspaces | exit 2 | 422 |
 | `Validation` | `RANKING_EXHAUSTED` | no float gap between two positions | exit 2 | 422 |
 | `Validation` | `STATE_ARCHIVED` | move/create against a `workflow_state` with `archived_at` | exit 2 | 422 |
