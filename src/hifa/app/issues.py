@@ -30,6 +30,7 @@ from hifa.adapters.sqlite.uow import Repos, UnitOfWork
 from hifa.app.commands import (
     Actor,
     ArchiveIssue,
+    CommentOnIssue,
     CreateIssue,
     MoveIssue,
     RelateIssues,
@@ -43,7 +44,7 @@ from hifa.app.retry import CREATE_RETRY_CODES, with_write_retry
 from hifa.app.rules import apply_milestones, branch_name
 from hifa.domain import identifier as identifier_module
 from hifa.domain import ranking, rules
-from hifa.domain.entities import Issue, IssueRelation, Label, Member, Team, WorkflowState
+from hifa.domain.entities import Comment, Issue, IssueRelation, Label, Member, Team, WorkflowState
 from hifa.domain.enums import RelationType, WorkflowStateType
 from hifa.domain.errors import HifaError, InvalidTransition, NotFound, Validation
 
@@ -652,6 +653,78 @@ def _relation_value(row: IssueRelation, issue: Issue, other: Issue) -> str:
     return f"{row.type.name_as_seen(direction)} {other.identifier}"
 
 
+# --- comments ----------------------------------------------------------------------------
+
+
+def comment_on_issue(uow: UnitOfWork, cmd: CommentOnIssue, actor: Actor) -> Comment:
+    """Write one comment on an issue, or one reply inside its thread.
+
+    The layers of the issue are checked before the parent is read: a trashed issue is a
+    validation and an archived one is a transition, because restoring first is the way back
+    in both cases. A reply has to name a comment of this issue and may not sit deeper than
+    `MAX_COMMENT_DEPTH`, counted by walking the parents one row at a time. The comment is
+    its own record: it writes no history row and does not stamp the issue.
+
+    raises: `NotFound(issue|comment)`, `Validation(BODY_EMPTY|COMMENT_PARENT_MISMATCH|`
+    `COMMENT_DEPTH_EXCEEDED|ISSUE_TRASHED)`, `InvalidTransition(ISSUE_ARCHIVED)`
+    """
+    return with_write_retry(lambda: _comment_once(uow, cmd, actor))
+
+
+def _comment_once(uow: UnitOfWork, cmd: CommentOnIssue, actor: Actor) -> Comment:
+    with uow.write() as tx:
+        issue = tx.issues.require(cmd.issue)
+        _reject_trashed(issue)
+        _reject_archived(issue)
+
+        depth = 1 if cmd.parent_id is None else _comment_depth(tx, issue, cmd.parent_id)
+        rules.validate_comment_parent_depth(depth)
+        body = rules.validate_comment_body(cmd.body)
+
+        now = uow.clock.now()
+        return tx.comments.insert(
+            Comment(
+                id=uow.idgen.new(),
+                issue_id=issue.id,
+                parent_id=cmd.parent_id,
+                author_id=cmd.author_id or actor.member_id,
+                body=body,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+def _comment_depth(tx: Repos, issue: Issue, parent_id: str) -> int:
+    """Depth the reply would occupy: its parent's chain plus itself.
+
+    The parent has to be a comment of this issue, and the walk goes upward from it until a
+    root is reached. A chain that points at a missing row or back into itself stops where it
+    breaks, so a damaged row cannot make the read run forever.
+    """
+    parent = tx.comments.require(parent_id)
+    if parent.issue_id != issue.id:
+        raise Validation(
+            "parent comment belongs to another issue",
+            rule="COMMENT_PARENT_MISMATCH",
+            field="parent_id",
+            value=parent_id,
+            details={"issue_id": issue.id, "parent_issue_id": parent.issue_id},
+            code="COMMENT_PARENT_MISMATCH",
+        )
+    depth = 1  # the parent counts as one link of the chain
+    seen = {parent.id}
+    cursor = parent.parent_id
+    while cursor is not None and cursor not in seen:
+        seen.add(cursor)
+        ancestor = tx.comments.get(cursor)
+        if ancestor is None:
+            break
+        depth += 1
+        cursor = ancestor.parent_id
+    return depth + 1  # the reply closes the chain
+
+
 # --- history values ----------------------------------------------------------------------
 
 
@@ -949,6 +1022,7 @@ __all__ = [
     "MILESTONE_FIELDS",
     "UPDATE_FIELDS",
     "archive_issue",
+    "comment_on_issue",
     "create_issue",
     "move_issue",
     "relate_issues",
