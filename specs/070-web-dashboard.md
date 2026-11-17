@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 5
-spec_revision: 23
+spec_revision: 24
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -122,6 +122,22 @@ asks, because undoing is not destructive (SPEC-050 §2.5.3). `archive` and `rest
 there is no `undo` field, because a capability reachable only through the body of another capability's
 route cannot be declared, counted or mapped on its own (D-053).
 
+**The confirmation is this edge's own precondition, and no rule of the core knows it exists.** `confirm=1`
+is a field of a form, so its absence is decided where the form is read: the route refuses the body before
+any use case is called, opens no transaction, writes nothing, and the sentence it answers with comes from
+§6's one builder like every other `form_error`. There is no `Validation` rule, no error class and no
+handler for it, and `confirmation_required` names this form contract and nothing else. `ArchiveIssue` and
+`TrashIssue` take an `issue` reference and no `confirm` (SPEC-040 §2.2). The two edges therefore declare
+the same precondition once each — the CLI as `--yes`/`--no-input` with the TTY prompt of SPEC-050 R6, the
+dashboard as this required field — over a capability set neither invents: `archive` and `delete` are the
+destructive writes of SPEC-050 §2.5.3, the surface P1 makes the reference. Guarding it in `app/` instead
+was rejected with its price stated: a `confirm` on the command moves a UI affordance into SPEC-040 §2.2
+and bumps `version` in both specs for a field that guards nothing about the resource; it gives the CLI a
+second gate on top of the prompt it already asks; and it turns the CLI's documented refusal — `hifa:
+operation canceled`, code `confirmation_required`, exit `2` (SPEC-050 §6) — into the `validation_error`
+that every `Validation` prints, which is a public regression of a documented output rather than a
+clarification of it.
+
 **Two names for two things, and neither of them is a position.** `state` on the edit form is a
 *reference* to a workflow state (a name or a ULID, resolved like `hifa issue edit -s`), and setting it
 appends the issue to the target column (SPEC-040 §2.2, `UpdateIssue`). `state_id` on the move form and
@@ -188,7 +204,7 @@ Headers the server must read or emit:
 | `HX-Retarget` | output | on `422` of an inline edit: re-targets the `<form>` that failed |
 | `HX-Push-Url` | output | when opening the panel: pushes `/{team}/issue/{identifier}` |
 | `HX-Reswap` | output | `none` when the fragment only updates counters |
-| `HX-Revision` | output | the revision the response was rendered at (§2.6.8): on every `200`/`201`/`204` of this layer, pages and fragments alike, so the page adopts it and never reloads what it has just been given. The four bodyless writes of the table above carry it too (§5.7 step 5), and a `204` is the one answer that renders no element for the number to land on: nothing adopts it there, and the collection re-read the client performs afterwards is the answer that reports the number the page keeps (§5.7 steps 6-7, §2.6.8, D-050) |
+| `HX-Revision` | output | the number the request observed (§2.6.8) — for a write, the number read **after** it committed, the same observation the page marker and `/_/revision` report and the one the board it just changed already reflects: on every `200`/`201`/`204` of this layer, pages and fragments alike, so the page adopts it and never reloads what it has just been given. The four bodyless writes of the table above carry it too (§5.7 step 5), and a `204` is the one answer that renders no element for the number to land on: nothing adopts it there, and the collection re-read the client performs afterwards is the answer that reports the number the page keeps (§5.7 steps 6-7, §2.6.8, D-050) |
 
 `422` rule in fragments: htmx **does not** swap 4xx responses by default. A global listener in
 `app.js` enables the swap for `422` and adds `.is-invalid` to the field:
@@ -364,7 +380,8 @@ is matched, before the per-route `HX-Request` dependency and before the handler 
 1. the write guard — `403 cross-site write refused` (R28, this section)
 2. `HX-Request` — `400 fragment requires htmx` (§6, R5)
 3. read-only mode — `403 server in read-only mode` (§6, R18)
-4. the use case — `404`, `422` validation, `422 confirmation_required`, `409` archived (§6, R27)
+4. the route and the use case — `404` resolution, `422` validation, `422 confirmation_required` (refused
+   by the route before any use case runs, §2.1.2), `409` archived (§6, R27)
 
 A cross-site write to an identifier that does not exist is therefore `403`, not `404`: the refusal must not
 depend on the target resolving, or a `404` would prove the guard was not in the way and the answer would
@@ -752,6 +769,7 @@ def render_markdown(text: str | None) -> str:
 | `{{ x\|safe }}` on user text | only exceptions: `description_html`/`body_html` (R15) and `snippet_html` (R17), already escaped by the server |
 | `<script>` in child templates | CSP `script-src 'self'` (R14) |
 | `{{ url }}` without a scheme check in `attachments` | `javascript:` in an `href` (R16) |
+| a sentence of §6 written as a literal or assembled with `{% if %}` | the catalogue's strings have one builder, `refusal_sentence` (§6): a template prints the `form_error` it is given and never composes one |
 
 #### 2.3.8 `team_picker_vm` (team_picker.html)
 
@@ -1604,7 +1622,7 @@ transactions and locks, and this connection holds neither between probes.
 | ID | Rule |
 |---|---|
 | **R1** | **Two route families, no overlap.** Pages hang off `/{team}/…` and `/search`; fragments **only** off `/_/…`. A fragment is never served on a page route nor the other way around. → **REQ-F070-01**, **REQ-F070-02** |
-| **R2** | **Zero logic in Jinja.** Templates only access read model keys. A static test greps `templates/**` for `\|length`, `{% set %}`, arithmetic operators and `.query`/entity attributes and fails. → **REQ-F070-03** |
+| **R2** | **Zero logic in Jinja.** Templates only access read model keys. A static test greps `templates/**` for `\|length`, `{% set %}`, arithmetic operators, `.query`/entity attributes and any sentence of §6 (§2.3.7), and fails. → **REQ-F070-03** |
 | **R3** | **Complete read model.** Every template receives all the keys declared in §2.3, even if the value is `None`/`[]`/`""`. Defensive `default()` in the template for a key the read model must provide is forbidden. → **REQ-F070-03** |
 | **R4** | **Without JS you can read and write.** Every page is full HTML; every mutation has a `<form method="post" action>` that responds `303`. Every `hx-get` has an `href`. → **REQ-F070-04** |
 | **R5** | **A fragment requires `HX-Request`.** Without that header, `/_/*` responds `400` with `text/plain`. It keeps a fragment from being indexed or opened as a half page. → **REQ-F070-02** |
@@ -1783,7 +1801,9 @@ a refusal rather than a re-render.
 2. With htmx: POST /_/issues/ENG-13/archive, HX-Request: true, body confirm=1. The page form posts to
    POST /ENG/issue/ENG-13/archive with the same body.
 3. Router: resolve the reference (404 ⇒ error.html / the panel), refuse a body without confirm=1 with
-   422 confirmation_required and the element re-rendered with the <details> open and `form_error`,
+   422 confirmation_required and the element re-rendered with the <details> open and `form_error` — the
+   edge's form-level refusal of §2.1.2: no use case is called and no transaction opens, so this branch is
+   answered from the block plus §6's builder and never from an exception —
    then call app.issues.archive_issue(uow, ArchiveIssue(issue=ref), Actor(...)).
 4. Validation(CLOSE_WITH_OPEN_CHILDREN) or Validation(ISSUE_TRASHED) ⇒ 422 with the element
    re-rendered and `form_error`. An **already-archived** issue is not a refusal: the use case returns
@@ -1921,6 +1941,49 @@ Catalog of visible messages (exact text, lowercase initial, no trailing period):
 | read-only | `server in read-only mode` |
 | write from another origin (§2.1.7, R28) | `cross-site write refused` |
 | invalid field | `invalid value` + the domain `error.message` |
+
+**Every refusal of a write is composed by one builder, and the subject is the identifier of the row the
+route resolved.** The sentences this catalogue puts in a `form_error` — one for each layer, the two
+`CLOSE_WITH_OPEN_CHILDREN` verbs', the confirmation's and the invalid-field fallback — are built by one
+function of this edge, `refusal_sentence(refusal, *, verb, identifier)`, in `src/hifa/web/app.py`: the
+single place in the tree that turns a refusal into text (A7, P4). Nothing else composes them — not a
+handler of `_install_error_handlers`, not a route branch, and not a template (§2.3.7: a template prints
+the `form_error` it is handed and never assembles one) — so each string exists once in the spec, here,
+and once in the code, in that function. `refusal` is the `HifaError` the route caught, or `None` for the
+one refusal of this layer that no use case produces: the missing `confirm=1` of §2.1.2. Each argument has
+exactly one source:
+
+- `refusal.rule` is the rule id and the only thing that selects a sentence — never the exception's class,
+  which is `Validation` for two of these rules and `InvalidTransition` for the third, and never two
+  conditions checked in sequence. `None`, which has no rule, selects the confirmation's sentence and
+  nothing else. A rule outside the catalogue falls through to `invalid value: ` plus `refusal.message`,
+  the last row of the table.
+- `identifier` is the `identifier` of the issue the route resolved, **not** the path segment (a page route
+  also accepts the ULID, R6) and **not** `refusal.value`: `ISSUE_ARCHIVED` happens to carry the identifier
+  there (`field='ref'`), `ISSUE_TRASHED` carries the issue's ULID (`field='trashed'`) and
+  `CLOSE_WITH_OPEN_CHILDREN` carries the target state's type (`field='state_id'`, `value='canceled'`), so a
+  builder that read `value` would print two different subjects for three sentences that must read alike.
+  The row is in hand by construction: the route resolves the reference before it writes, and the `404`
+  precedes every `422`/`409` of this layer (§5.7 step 3).
+- `verb` is the route's own word, and one rule reads it: `CLOSE_WITH_OPEN_CHILDREN` is the rule of the
+  catalogue's only two sentences that differ in a word and in nothing else, `cannot move ENG-13: it has 2
+  open sub-issues` and `cannot archive ENG-13: it has 2 open sub-issues`. The confirmation's sentence reads
+  it too (`confirm the archive of ENG-13`, `confirm the delete of ENG-13`). A `CLOSE_WITH_OPEN_CHILDREN`
+  raised by a field write — `update_issue`'s `state`, SPEC-040 §6, `field='state_id'` — is a control of no
+  verb in this catalogue and falls through to the row above rather than borrowing the word of a write it
+  did not perform.
+- `refusal.details['open_children']` is the count and the only number any sentence carries, printed as the
+  rule counted it. The noun is `sub-issues` for every count: the sentence has one form and not two, and no
+  scenario of §7 asks for a singular.
+
+The page form and the panel call it with the same three arguments, so a refusal reads identically in
+`issue_detail.html` and in `partials/issue_panel.html`; they differ in the element that carries the
+`form_error`, never in the text (§2.6.9). The fallback's prefix is the builder's too: `_refusal`, the
+per-field arm this module already carries for the inline edit of §2.6.3, keeps the control it resolves and
+takes its message from the builder, so `invalid value: ` is written in one place and the two cannot drift.
+The `text/plain` rows of this table are not `form_error`s and are not built here: `fragment requires htmx`,
+`workflow state does not exist`, `invalid neighbour`, `cross-site write refused` and `server in read-only
+mode` are single constants or the fragment partial, and none of them is a sentence about an issue.
 
 In fragments, the error travels in the HTML (`.field-error`), **not** in JSON: the client of this
 layer is htmx, not an agent. The one exception is `/_/revision`: its success body is JSON, so its
@@ -2449,6 +2512,47 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 24 (2026-11-17): **the refusals say where their sentences are built, the confirmation says
+  whose it is, and the `204` keeps the header it already had.** Three description gaps closed before the
+  write routes were implemented; none of them is a trade-off between two contracts, so no `D-0NN` was opened
+  and `DECISIONS.md` is untouched. (1) **The sentences existed only in this spec (§6).** §6 contracted
+  `ENG-13 is archived; restore it first`, `ENG-13 is in the trash; restore it first` and `cannot archive
+  ENG-13: it has 2 open sub-issues`, and nothing in the tree composed them: the domain and the use cases
+  raise `Validation(ISSUE_TRASHED)`, `InvalidTransition(ISSUE_ARCHIVED)` and
+  `Validation(CLOSE_WITH_OPEN_CHILDREN)` with their own `message` (`issue is in the trash`, `issue is
+  archived`, `cannot close an issue with open sub-issues`), the handler that catches them prints
+  `invalid value: ` plus that message, and no branch anywhere turned a rule id into one of the three
+  sentences. §6 now declares the one builder — `refusal_sentence(refusal, *, verb, identifier)` in
+  `src/hifa/web/app.py` — and the one source of each part of a sentence: the rule id from `refusal.rule`,
+  the subject from the `identifier` of the row the route resolved (**never** the path segment, which may be
+  a ULID, and **never** `refusal.value`, which is the identifier for `ISSUE_ARCHIVED`, the issue's ULID for
+  `ISSUE_TRASHED` and the target state's type for `CLOSE_WITH_OPEN_CHILDREN` — the trap the paragraph
+  exists for), the word from the route's own verb (the only difference between the catalogue's two
+  `CLOSE_WITH_OPEN_CHILDREN` sentences), and the count from `details['open_children']`, in one form for
+  every count. §2.3.7 forbids a template to compose one, `invalid value: ` is the same function's fallback,
+  and a `CLOSE_WITH_OPEN_CHILDREN` from a field write (`update_issue`'s `state`) falls through to that
+  fallback instead of borrowing a verb it did not perform. (2) **The confirmation had no home (§2.1.2,
+  §5.7).** It lived in the CLI edge as `CliError(code="confirmation_required")` and this spec asserted only
+  that the two forms carry `confirm=1`. §2.1.2 now says which kind of thing it is — a **form-level refusal
+  of the edge**: the body is read before any use case, no transaction opens, nothing is written, and the
+  `422` is the route's answer, not an exception — which is why `ArchiveIssue`/`TrashIssue` carry no
+  `confirm` (SPEC-040 §2.2 and its `spec_revision` are untouched) and why `confirmation_required` names a
+  form contract and no `Validation`. The other choice was priced and rejected: the guard in `app/` would
+  move a UI affordance into SPEC-040 §2.2 and bump `version` in both specs, give the CLI a second gate
+  beside the prompt it already asks (SPEC-050 R6), and turn that edge's documented refusal (`hifa: operation
+  canceled`, exit `2`) into the `validation_error` a `Validation` prints. The price this revision accepts
+  is named in the same paragraph: the destructive set is declared once per edge, kept in step by P1/P2 and
+  the CLI's verb contract, and a third destructive verb would need both tables rather than one command.
+  (3) **`HX-Revision` on a `204` (§2.1.3).** The header row already declared it — the four bodyless writes
+  carry it, and a `204` renders no element for the number to land on, so the collection re-read afterwards
+  is what reports the number the page keeps (§5.7 steps 5-7, D-050) — so no clause was added. The drift was
+  in its first words: "the revision the response was rendered at" describes an answer with a body, and the
+  middleware sets the header on `200`/`201` only today. The cell now reads "the number the request
+  observed — for a write, the number read after it committed", which is what `READ_METHODS` and
+  `_install_security_headers` already implement and what §5.7 step 5 and §2.6.8 already said; the `204` arm
+  of that middleware is the implementation's, and no spec sentence stood in its way. **`version` stays 5**:
+  no endpoint, body, status, header or command moved — the three changes name where an existing string and
+  an existing precondition live — and the page that carried `confirm=1` before carries it now.
 - spec_revision 23 (2026-11-17): **the dashboard serves a trashed issue, and `move` says where a bad state
   goes (D-059).** Five changes, one decision. (1) **The read surface (§2.1.1).**
   `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue the trash
