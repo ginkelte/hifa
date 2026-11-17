@@ -1317,8 +1317,8 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   trash. The states cost one statement and nothing else: the fixed set is **12** with
   `DETAIL_INCLUDE` and **8** with an empty `include` (11 and 7 before this revision added row 16),
   independent of how many children, labels, comments or history events the issue has; a project, a
-  cycle, a parent and an assignee add one each when the row carries the id they look up, and each
-  relation adds one (SQL-7).
+  cycle, a parent, an assignee and a creator add one each when the row carries the id they look up,
+  and each relation adds one (SQL-7).
 
 ### 4.2 Functional requirements (REQ-F)
 
