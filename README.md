@@ -164,10 +164,12 @@ Shipped and covered by tests:
 | `hifa issue create` | one issue in one transaction (row + label links + `created` history row) |
 | `hifa team create\|list\|show` | multi-team; `show --states` prints the team's workflow |
 | `hifa state list\|create\|update` | custom states per team, reorder with `--before` / `--after` |
+| `hifa issue comment REF [BODY]` | one comment: `--body-file`, `--parent` to reply, `--quiet` prints its id |
 | `hifa serve` | the dashboard |
 
 Exit codes are a contract, not a mood: `0` ok · `2` usage or validation · `3` not found ·
-`4` conflict · `6` internal bug. An agent can branch on them without parsing English.
+`4` conflict · `5` refused transition · `6` internal bug. An agent can branch on them without
+parsing English.
 
 ## Teams and workflow states
 
@@ -223,6 +225,8 @@ Dark, keyboard-driven, and it opens no socket to anywhere but `127.0.0.1`.
 | `POST /{team}/issue/{identifier}/archive` | archive, after `confirm=1`: `303` to the list (fragment answers `204` + `issue-archived`) |
 | `POST /{team}/issue/{identifier}/delete` | send to the trash, after `confirm=1`: `303` to the list (fragment answers `204` + `issue-deleted`) |
 | `POST /{team}/issue/{identifier}/restore` | bring it back out of both layers: `303` to the detail (fragment answers `204` + `issue-restored`) |
+| `POST /{team}/issue/{identifier}/comment` | one comment on the detail page: `303` to `#comments`, `422` re-renders (fragment `POST /_/comments/{identifier}` answers `200` with the new `<li>` + `HX-Trigger: comment-created`) |
+| `GET /_/comments/{identifier}` | the comment list alone, which the page re-reads when `comment-created` fires |
 | `GET /_/revision` | the page's change signal: one number, `204` bodies carry it too |
 | `GET /healthz` | `{"status":"ok"}` |
 
