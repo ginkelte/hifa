@@ -242,7 +242,6 @@ def test_comment_table_folds_a_markdown_body_into_one_row(cli: Cli) -> None:
     assert result.exit_code == 0, result.stdout + result.stderr
     lines = result.stdout.splitlines()
     assert len(lines) == 2
-    assert "\n" not in lines[1]
     assert "first paragraph second paragraph " in lines[1]
     # A markdown body is one row: the newline is a space, the cell keeps at most sixty cells,
     # and what it drops it announces with an ellipsis instead of cutting the text in silence.
@@ -357,6 +356,9 @@ def test_comment_with_a_parent_of_another_issue_is_refused(cli: Cli) -> None:
     result = cli.run("issue", "comment", "ENG-2", "reply", "--parent", foreign, "--json")
     assert result.exit_code == 2
     assert error_json(result)["field"] == "parent_id"
+    # The sentence is the catalogue's, character for character: the dashboard prints the same
+    # one for the same rule, and a wording that drifted here would be caught by neither edge.
+    assert "that comment belongs to another issue" in plain(result.stderr)
     assert len(_comments(cli, "ENG-2")) == 0
 
 
@@ -366,7 +368,7 @@ def test_comment_on_a_trashed_issue_is_refused(cli: Cli) -> None:
     result = cli.run("issue", "comment", "ENG-1", "anyone there?", "--json")
     assert result.exit_code == 2
     assert error_json(result)["code"] == "validation_error"
-    assert "trash" in plain(result.stderr)
+    assert "ENG-1 is in the trash; restore it first" in plain(result.stderr)
     assert _comments(cli) == []
 
 
@@ -376,7 +378,7 @@ def test_comment_on_an_archived_issue_exits_5(cli: Cli) -> None:
     result = cli.run("issue", "comment", "ENG-1", "anyone there?", "--json")
     assert result.exit_code == 5
     assert error_json(result)["code"] == "invalid_transition"
-    assert "archived" in plain(result.stderr)
+    assert "ENG-1 is archived; restore it first" in plain(result.stderr)
     assert _comments(cli) == []
 
 

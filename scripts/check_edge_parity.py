@@ -214,13 +214,18 @@ CAPABILITIES: tuple[Capability, ...] = (
     # The verb is the reference surface and ships first; the composer and its two fragment
     # routes are the later edge of the same ticket, so this row carries both edges.
     Capability(
-        name="issue.comment",
+        name="comment.create",
         cli="issue comment",
         web=(
             ("POST", "/{team}/issue/{identifier}/comment"),
             ("POST", "/_/comments/{identifier}"),
             ("GET", "/_/comments/{identifier}"),
         ),
+    ),
+    Capability(
+        name="comment.reply",
+        cli="issue comment",
+        debt="HIFA-59",
     ),
     # Relations are read and written from the CLI; the dashboard shows their blockers once
     # HIFA-34 lands the panel and the badge, which is the later of the two edges.

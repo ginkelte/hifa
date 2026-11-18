@@ -1,0 +1,21 @@
+{#- One composer, two surfaces.
+
+    The gate below is the rule of the page, not a styling choice: a reader who may not write, or
+    an issue under either layer, gets no box at all. It is written here once because the detail
+    page and the panel render the same control, and two copies of a gate are two gates waiting
+    to disagree.
+
+    `comment_composer_id` and `comment_composer_fragment` come from the model, because the two
+    copies must not share an `id` and only the panel's copy posts the fragment — the page's copy
+    posts its own route and lets the browser follow the redirect. -#}
+{% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
+<form class="comment-composer" method="post"
+      action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/comment"{% if vm.comment_composer_fragment %}
+      hx-post="{{ vm.comment_composer_fragment }}" hx-target="#comment-list" hx-swap="beforeend"{% endif %}>
+  <label class="visually-hidden" for="{{ vm.comment_composer_id }}">Comment</label>
+  <textarea id="{{ vm.comment_composer_id }}" name="body" rows="3" required
+            class="field-input{% if vm.form_errors['body'] %} is-invalid{% endif %}"{% if vm.form_errors['body'] %} aria-invalid="true"{% endif %}></textarea>
+  {% if vm.form_errors['body'] %}<p class="form-error" role="alert">{{ vm.form_errors['body'] }}</p>{% endif %}
+  <button type="submit" class="btn">Comment</button>
+</form>
+{% endif %}

@@ -61,14 +61,7 @@
   <section id="comments">
     <h3>Comments</h3>
     {% include "partials/comments.html" %}
-    {% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
-    <form class="comment-composer" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/comment"
-          hx-post="/_/comments/{{ vm.identifier }}" hx-target="#comment-list" hx-swap="beforeend">
-      <label class="visually-hidden" for="panel-comment-body">Comment</label>
-      <textarea id="panel-comment-body" name="body" rows="3" required></textarea>
-      <button type="submit" class="btn">Comment</button>
-    </form>
-    {% endif %}
+    {% include "partials/comment_composer.html" %}
   </section>
   <footer class="panel-foot"><a class="btn" href="{{ vm.url }}">Open full issue</a></footer>
 </aside>

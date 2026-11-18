@@ -93,13 +93,7 @@
       <section id="comments">
         <h2>Comments</h2>
         {% include "partials/comments.html" %}
-        {% if vm.can_write and not vm.is_archived and not vm.is_trashed %}
-        <form class="comment-composer" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/comment">
-          <label class="visually-hidden" for="comment-body">Comment</label>
-          <textarea id="comment-body" name="body" rows="3" required></textarea>
-          <button type="submit" class="btn">Comment</button>
-        </form>
-        {% endif %}
+        {% include "partials/comment_composer.html" %}
       </section>
     </section>
     <aside class="detail-side">

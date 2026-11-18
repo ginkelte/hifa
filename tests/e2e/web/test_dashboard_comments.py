@@ -54,19 +54,11 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 
 @pytest.fixture
-def read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def read_only(seeded: SimpleNamespace) -> SimpleNamespace:
     """The same workspace, served by a server that refuses every write."""
-    project = tmp_path / "proj"
-    project.mkdir()
-    monkeypatch.chdir(project)
-    monkeypatch.setenv("HIFA_DB", str(tmp_path / "hifa.db"))
-    monkeypatch.setenv("HIFA_ME_EMAIL", "ginkelte@example.com")
-    _run("init", "--team-key", "ENG")
-    _run("issue", "create", TITLE, "--state", "Todo")
-    db = tmp_path / "hifa.db"
     return SimpleNamespace(
-        db=db,
-        client=TestClient(create_app(db, default_team="ENG", read_only=True)),
+        db=seeded.db,
+        client=TestClient(create_app(seeded.db, default_team="ENG", read_only=True)),
     )
 
 
@@ -76,12 +68,12 @@ def _comments(db: Path) -> list[sqlite3.Row]:
         return list(conn.execute("SELECT * FROM comment ORDER BY created_at, id"))
 
 
-def _page(seeded: SimpleNamespace, identifier: str = "ENG-1"):
-    return seeded.client.get(f"/ENG/issue/{identifier}")
+def _page(seeded: SimpleNamespace, identifier: str | None = None):
+    return seeded.client.get(f"/ENG/issue/{identifier or seeded.identifier}")
 
 
-def _panel(seeded: SimpleNamespace, identifier: str = "ENG-1"):
-    return seeded.client.get(f"/_/issues/{identifier}/panel", headers=HTMX)
+def _panel(seeded: SimpleNamespace, identifier: str | None = None):
+    return seeded.client.get(f"/_/issues/{identifier or seeded.identifier}/panel", headers=HTMX)
 
 
 # --- a visible issue: the box is there to type in -----------------------------------------
@@ -172,6 +164,16 @@ def test_the_panel_fragment_answers_the_one_item_it_wrote(seeded) -> None:
     assert len(_comments(seeded.db)) == 1
 
 
+def test_the_list_refreshes_itself_after_a_write(seeded) -> None:
+    """The event re-reads the list from the server, so the placeholder cannot outlive it."""
+    body = _panel(seeded).text
+
+    assert 'hx-get="/_/comments/ENG-1"' in body
+    assert 'hx-trigger="comment-created from:body"' in body
+    assert 'hx-swap="outerHTML"' in body
+    assert 'class="empty"' in body
+
+
 def test_the_list_fragment_answers_the_list_and_not_the_box(seeded) -> None:
     seeded.client.post("/_/comments/ENG-1", data={"body": "One"}, headers=HTMX)
 
@@ -188,12 +190,16 @@ def test_the_list_fragment_answers_the_list_and_not_the_box(seeded) -> None:
 # --- refusals, each with the row count it did not move -----------------------------------
 
 
-def test_an_empty_body_is_refused_and_the_box_comes_back(seeded) -> None:
+def test_an_empty_body_is_refused_with_the_control_marked_and_the_box_back(seeded) -> None:
     response = seeded.client.post("/ENG/issue/ENG-1/comment", data={"body": "   "})
 
     assert response.status_code == 422
     assert "a comment needs a body" in response.text
     assert 'class="comment-composer"' in response.text
+    # The sentence and the mark are two separate promises: a page that printed the message and
+    # left the box plain would read as a refusal of something the reader cannot see.
+    assert "is-invalid" in response.text
+    assert 'aria-invalid="true"' in response.text
     assert _comments(seeded.db) == []
 
 
@@ -243,4 +249,8 @@ def test_a_read_only_server_refuses_both_comment_routes(read_only) -> None:
     assert page.status_code == 403
     assert fragment.status_code == 403
     assert "server in read-only mode" in page.text
+    # The fragment prints the module's one read-only sentence, not a second one that reads
+    # almost the same: the page and the fragment must be distinguishable from the cross-site
+    # refusal without reading the status code.
+    assert "server is read-only" in fragment.text
     assert _comments(read_only.db) == []

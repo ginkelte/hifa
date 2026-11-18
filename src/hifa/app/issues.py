@@ -705,7 +705,7 @@ def _comment_depth(tx: Repos, issue: Issue, parent_id: str) -> int:
     parent = tx.comments.require(parent_id)
     if parent.issue_id != issue.id:
         raise Validation(
-            "parent comment belongs to another issue",
+            "that comment belongs to another issue",
             rule="COMMENT_PARENT_MISMATCH",
             field="parent_id",
             value=parent_id,
@@ -763,7 +763,7 @@ def _reject_trashed(issue: Issue) -> None:
     if not issue.trashed:
         return
     raise Validation(
-        "issue is in the trash",
+        f"{issue.identifier} is in the trash; restore it first",
         rule="ISSUE_TRASHED",
         field="trashed",
         value=issue.id,
@@ -775,7 +775,7 @@ def _reject_archived(issue: Issue) -> None:
     if issue.archived_at is None:
         return
     raise InvalidTransition(
-        "issue is archived",
+        f"{issue.identifier} is archived; restore it first",
         rule="ISSUE_ARCHIVED",
         field="ref",
         current=issue.state_id,
