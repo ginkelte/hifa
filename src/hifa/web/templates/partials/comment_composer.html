@@ -14,7 +14,7 @@
       hx-post="{{ vm.comment_composer_fragment }}" hx-target="#comment-list" hx-swap="beforeend"{% endif %}>
   <label class="visually-hidden" for="{{ vm.comment_composer_id }}">Comment</label>
   <textarea id="{{ vm.comment_composer_id }}" name="body" rows="3" required
-            class="field-input{% if vm.form_errors['body'] %} is-invalid{% endif %}"{% if vm.form_errors['body'] %} aria-invalid="true"{% endif %}></textarea>
+            class="field-input{% if vm.form_errors['body'] %} is-invalid{% endif %}"{% if vm.form_errors['body'] %} aria-invalid="true"{% endif %}>{{ vm.comment_draft }}</textarea>
   {% if vm.form_errors['body'] %}<p class="form-error" role="alert">{{ vm.form_errors['body'] }}</p>{% endif %}
   <button type="submit" class="btn">Comment</button>
 </form>

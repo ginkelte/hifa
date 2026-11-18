@@ -906,8 +906,10 @@ def issue_comment_page(
             back_url=f"/{entity.key}/issue/{identifier}",
             title="Read-only",
         )
+    fields = _parse_form(body)
+    typed = fields.get("body", "")
     try:
-        comment = _write_comment(request, identifier, _parse_form(body))
+        comment = _write_comment(request, identifier, fields)
     except InvalidTransition as exc:
         return _issue_page_error(
             request,
@@ -917,6 +919,7 @@ def issue_comment_page(
             verb="comment",
             status_code=409,
             controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=typed,
         )
     except Validation as exc:
         return _issue_page_error(
@@ -926,6 +929,7 @@ def issue_comment_page(
             exc,
             verb="comment",
             controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=typed,
         )
     detail = boards.issue_detail(_database(request), comment.issue_id)
     return RedirectResponse(
@@ -1016,12 +1020,28 @@ def comment_fragment(
     """
     if not _can_write(request):
         return _fragment_error(request, status_code=403, message="server is read-only")
+    fields = _parse_form(body)
     try:
-        comment = _write_comment(request, identifier, _parse_form(body))
+        comment = _write_comment(request, identifier, fields)
     except InvalidTransition as exc:
-        return _layer_refusal(request, identifier, "comment", exc, status_code=409)
+        return _layer_refusal(
+            request,
+            identifier,
+            "comment",
+            exc,
+            status_code=409,
+            controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=fields.get("body", ""),
+        )
     except Validation as exc:
-        return _layer_refusal(request, identifier, "comment", exc)
+        return _layer_refusal(
+            request,
+            identifier,
+            "comment",
+            exc,
+            controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=fields.get("body", ""),
+        )
     detail = boards.issue_detail(
         _database(request), comment.issue_id, include=boards.DETAIL_INCLUDE
     )
@@ -1465,23 +1485,36 @@ def _layer_refusal(
     exc: HifaError | None,
     *,
     status_code: int = 422,
+    controls: tuple[str, ...] = (),
+    draft: str | None = None,
 ) -> HTMLResponse:
     """The panel, re-rendered with the refusal inside it and the block that refusal belongs to.
 
     The confirmation form swaps nothing on success, so a refusal has to name its own target or
     the marked block is fetched and thrown away.
+
+    `controls` is what the panel can mark: a layer refusal names no field, but a comment one
+    names `body`, and the box has to come back marked the way the page's copy comes back marked.
+    `draft` is what the reader had typed when the write was refused: a refusal that empties the
+    box is a paragraph they have to type again.
     """
     detail = boards.issue_detail(
         _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
     )
-    message = refusal_sentence(exc, verb=verb, identifier=detail.issue.identifier)
+    control, message = (
+        _refusal(exc, identifier=detail.issue.identifier, verb=verb, controls=controls)
+        if exc is not None and controls
+        else (None, refusal_sentence(exc, verb=verb, identifier=detail.issue.identifier))
+    )
     response = _issue_edit_fragment(
         request,
         identifier,
         view="panel",
         status_code=status_code,
-        form_error=message,
+        form_errors={control: message} if control else None,
+        form_error=None if control else message,
         confirm_open=verb,
+        draft=draft,
     )
     response.headers["HX-Retarget"] = "#panel"
     response.headers["HX-Reswap"] = "innerHTML"
@@ -1507,6 +1540,7 @@ def _issue_detail_vm(
     form_error: str | None = None,
     confirm_open: str | None = None,
     surface: str = "page",
+    draft: str | None = None,
 ) -> dict[str, object]:
     """Build the model of the detail page, the panel and a refused write: the single builder.
 
@@ -1535,6 +1569,7 @@ def _issue_detail_vm(
     )
     panel = surface == "panel"
     vm["comment_composer_id"] = "panel-comment-body" if panel else "comment-body"
+    vm["comment_draft"] = draft or ""
     vm["comment_composer_fragment"] = f"/_/comments/{detail.issue.identifier}" if panel else None
     return vm
 
@@ -1549,6 +1584,7 @@ def _issue_page_error(
     confirm_open: str | None = None,
     status_code: int = 422,
     controls: tuple[str, ...] = readmodels.EDIT_FORM_FIELDS,
+    draft: str | None = None,
 ) -> HTMLResponse:
     """Re-render `issue_detail.html` with the refusal: the control marked and the stored value.
 
@@ -1574,6 +1610,7 @@ def _issue_page_error(
         form_errors={control: message} if control else None,
         form_error=None if control else message,
         confirm_open=confirm_open,
+        draft=draft,
     )
     page = _page(
         request,
@@ -1593,6 +1630,7 @@ def _issue_edit_fragment(
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
     confirm_open: str | None = None,
+    draft: str | None = None,
 ) -> HTMLResponse:
     """The element a `PATCH` answers — the row of the list, the card or the panel — refused or not.
 
@@ -1615,6 +1653,7 @@ def _issue_edit_fragment(
             form_error=form_error,
             confirm_open=confirm_open,
             surface="panel",
+            draft=draft,
         )
         response = _render(
             request,

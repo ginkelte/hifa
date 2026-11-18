@@ -239,7 +239,21 @@ def test_a_reply_that_would_sit_deeper_than_three_is_refused(seeded) -> None:
 
     assert response.status_code == 422
     assert "the thread is 3 deep; reply to a shallower comment" in response.text
+    # The sentence names no control the composer renders, so it lands on the element; and the
+    # text the reader typed comes back with it, because a refusal that empties the box is a
+    # paragraph they have to write again.
+    assert "Four" in response.text
     assert len(_comments(seeded.db)) == 3
+
+
+def test_the_panel_fragment_marks_the_box_it_refused(seeded) -> None:
+    response = seeded.client.post("/_/comments/ENG-1", data={"body": "  "}, headers=HTMX)
+
+    assert response.status_code == 422
+    assert "a comment needs a body" in response.text
+    assert "is-invalid" in response.text
+    assert 'aria-invalid="true"' in response.text
+    assert _comments(seeded.db) == []
 
 
 def test_a_read_only_server_refuses_both_comment_routes(read_only) -> None:
