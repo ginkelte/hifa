@@ -61,6 +61,10 @@ EDIT_FORM_FIELDS: tuple[str, ...] = (
     "due_date",
     "estimate",
 )
+#: The controls of the comment composer. `body` is the only one it renders: the composer is
+#: flat, so a refusal that names `parent_id` belongs to the element and not to a control nobody
+#: can see. Neither name is a field of the issue, so neither is in the edit tuple.
+COMMENT_FORM_FIELDS: tuple[str, ...] = ("body",)
 
 
 # --- small pure helpers ---------------------------------------------------------------
@@ -386,7 +390,8 @@ def build_issue_vm(
 
     `form_errors` and `form_error` are the answer of a refused write: the message of the use
     case, once per control and once for the element. The per-control dict is normalised to one
-    entry per `EDIT_FORM_FIELDS`, `None` where the field is fine, so the template can ask for a
+    entry per `EDIT_FORM_FIELDS` and `COMMENT_FORM_FIELDS`, `None` where the field is fine, so
+    the template can ask for a
     key that is always there and still fail in CI on a real omission. `form_error` stands on
     its own because a refusal is not always about a control (`ISSUE_ARCHIVED` names no field).
 
@@ -461,7 +466,9 @@ def build_issue_vm(
         for entry in detail.history
     ]
 
-    errors = {name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS}
+    errors = {
+        name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS + COMMENT_FORM_FIELDS
+    }
     invalid_field = next((name for name, message in errors.items() if message), None)
     vm = build_row_vm(
         item,

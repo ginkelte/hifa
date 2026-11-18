@@ -1,0 +1,8 @@
+<ol id="comment-list" class="comment-list"
+    hx-get="/_/comments/{{ vm.identifier }}" hx-trigger="comment-created from:body" hx-swap="outerHTML">
+  {% for comment in vm.comments %}
+  {% include "partials/comment_item.html" %}
+  {% else %}
+  <li class="empty">No comments yet</li>
+  {% endfor %}
+</ol>

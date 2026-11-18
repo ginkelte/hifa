@@ -329,6 +329,14 @@
     flushRevision();
   });
 
+  // a successful comment answers with HX-Trigger: comment-created; empty its box and nothing
+  // else. The event is emitted by the success path only, so a refused comment keeps the text
+  // the reader typed without a status code being consulted here.
+  document.body.addEventListener("comment-created", function () {
+    var composers = document.querySelectorAll(".comment-composer");
+    for (var i = 0; i < composers.length; i += 1) composers[i].reset();
+  });
+
   // An emptied quick add ends the interaction that was holding the swap back.
   document.body.addEventListener("input", function (event) {
     var target = event.target;

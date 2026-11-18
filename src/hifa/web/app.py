@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
@@ -37,10 +37,11 @@ from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database, RevisionWatch
 from hifa.adapters.sqlite.reads import IssueDetail, ListFilters
 from hifa.adapters.sqlite.uow import UnitOfWork
-from hifa.app import boards
+from hifa.app import boards, members
 from hifa.app.commands import (
     Actor,
     ArchiveIssue,
+    CommentOnIssue,
     CreateIssue,
     MoveIssue,
     RestoreIssue,
@@ -50,6 +51,7 @@ from hifa.app.commands import (
 )
 from hifa.app.issues import (
     archive_issue,
+    comment_on_issue,
     create_issue,
     move_issue,
     restore_issue,
@@ -57,7 +59,7 @@ from hifa.app.issues import (
     update_issue,
 )
 from hifa.app.teams import list_states, update_state
-from hifa.domain.entities import Issue, Team, WorkflowState
+from hifa.domain.entities import Comment, Issue, Team, WorkflowState
 from hifa.domain.errors import Conflict, HifaError, InvalidTransition, NotFound, Validation
 from hifa.domain.ranking import UNIT_GAP, between
 from hifa.web import readmodels
@@ -724,7 +726,7 @@ def issue_panel_fragment(request: Request, identifier: str) -> Response:
     detail = boards.issue_detail(
         _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
     )
-    vm = _issue_detail_vm(request, detail)
+    vm = _issue_detail_vm(request, detail, surface="panel")
     response = _render(
         request,
         "partials/issue_panel.html",
@@ -879,6 +881,62 @@ def issue_restore_page(
     return _layer_page(request, team, identifier, body, verb="restore")
 
 
+@router.post("/{team}/issue/{identifier}/comment")
+def issue_comment_page(
+    request: Request, team: str, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Write one comment from the detail page's form: `303` to the section that holds it.
+
+    The form is flat: it sends `body` and never a `parent`, so the no-JS path starts a thread at
+    the root of the list. A `parent` sent by a client that built its own request is passed
+    through untouched — the use case is what decides whether it names a comment of this issue.
+
+    A refusal re-renders the page with the sentence the catalogue gives that rule and the
+    composer back where it was: `422` for an empty body, a parent of another issue or an issue
+    in the trash, `409` for an issue under the archive layer. `404` travels to the single
+    handler, because a reference that resolves to nothing has no page to come back to.
+    """
+    db = _database(request)
+    entity = boards.require_team(db, team)
+    if not _can_write(request):
+        return _error_page(
+            request,
+            status_code=403,
+            message="server in read-only mode",
+            back_url=f"/{entity.key}/issue/{identifier}",
+            title="Read-only",
+        )
+    fields = _parse_form(body)
+    typed = fields.get("body", "")
+    try:
+        comment = _write_comment(request, identifier, fields)
+    except InvalidTransition as exc:
+        return _issue_page_error(
+            request,
+            entity,
+            identifier,
+            exc,
+            verb="comment",
+            status_code=409,
+            controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=typed,
+        )
+    except Validation as exc:
+        return _issue_page_error(
+            request,
+            entity,
+            identifier,
+            exc,
+            verb="comment",
+            controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=typed,
+        )
+    detail = boards.issue_detail(_database(request), comment.issue_id)
+    return RedirectResponse(
+        f"/{detail.team.key}/issue/{detail.issue.identifier}#comments", status_code=303
+    )
+
+
 @router.post("/_/issues/{identifier}/archive", dependencies=[HTMX])
 def issue_archive_fragment(
     request: Request, identifier: str, body: bytes = Body(default=b"")
@@ -929,6 +987,75 @@ def issue_move_page(
     except Validation as exc:
         return _issue_page_error(request, entity, identifier, exc, verb="move")
     return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
+
+
+@router.get("/_/comments/{identifier}", dependencies=[HTMX])
+def comments_fragment(request: Request, identifier: str) -> HTMLResponse:
+    """Answer the whole list of one issue's comments: the `<ol>` the `outerHTML` swap replaces.
+
+    The list alone, not the `<section>` that holds it: the section also carries the heading and
+    the composer, and a swap that named it would empty the box the reader is typing in. The
+    trash keeps its two surfaces — the page and the panel — so this read answers `404` for a
+    trashed reference like the row and the card fragments do.
+    """
+    detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
+    vm = _issue_detail_vm(request, detail)
+    return _render(
+        request,
+        "partials/comments.html",
+        {"page": _page(request, title=detail.issue.identifier, nav="issue"), "vm": vm},
+    )
+
+
+@router.post("/_/comments/{identifier}", dependencies=[HTMX])
+def comment_fragment(
+    request: Request, identifier: str, body: bytes = Body(default=b"")
+) -> Response:
+    """Append one comment to the panel's list: `200` with the `<li>`, and the event that says so.
+
+    `200` and not `204`, because the element is the answer: the client appends it to the list it
+    names, and the box is emptied by a listener on `comment-created`, not by a status code. A
+    refusal keeps the reader where they are — the panel comes back with the sentence and the
+    composer — because a fragment's caller has no page to fall back on.
+    """
+    if not _can_write(request):
+        return _fragment_error(request, status_code=403, message="server is read-only")
+    fields = _parse_form(body)
+    try:
+        comment = _write_comment(request, identifier, fields)
+    except InvalidTransition as exc:
+        return _layer_refusal(
+            request,
+            identifier,
+            "comment",
+            exc,
+            status_code=409,
+            controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=fields.get("body", ""),
+        )
+    except Validation as exc:
+        return _layer_refusal(
+            request,
+            identifier,
+            "comment",
+            exc,
+            controls=readmodels.COMMENT_FORM_FIELDS,
+            draft=fields.get("body", ""),
+        )
+    detail = boards.issue_detail(
+        _database(request), comment.issue_id, include=boards.DETAIL_INCLUDE
+    )
+    vm = _issue_detail_vm(request, detail)
+    response = _render(
+        request,
+        "partials/comment_item.html",
+        {
+            "page": _page(request, title=detail.issue.identifier, nav="issue"),
+            "comment": _comment_item_vm(vm, comment.id),
+        },
+    )
+    response.headers["HX-Trigger"] = "comment-created"
+    return response
 
 
 @router.post("/_/issues/{identifier}/move", dependencies=[HTMX])
@@ -1129,6 +1256,11 @@ def _parse_estimate(value: str) -> float | None:
 #: of borrowing the word of a write it did not perform.
 CLOSE_VERBS = frozenset({"move", "archive"})
 
+#: The rules only a comment write raises. Their sentences are the domain's, word for word: the
+#: catalogue fixes one wording for both edges and the rule is where it is written, so the web
+#: quotes it instead of keeping the second copy that could drift from the first.
+COMMENT_RULES = frozenset({"BODY_EMPTY", "COMMENT_PARENT_MISMATCH", "COMMENT_DEPTH_EXCEEDED"})
+
 
 def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | None) -> str:
     """Compose the one line a refused write shows the reader.
@@ -1149,7 +1281,9 @@ def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | 
     from it would name the wrong subject twice out of three times.
 
     A rule outside the catalogue is the last row of the table: the fallback prefix and the
-    error's own message, which is the only sentence of this layer that quotes the domain.
+    error's own message. Two sentences of this layer quote the domain rather than restate it,
+    because the number they carry is not this edge's to format: the fallback, and
+    `COMMENT_DEPTH_EXCEEDED`, whose bound the rule builds from `MAX_COMMENT_DEPTH`.
     """
     if refusal is None:
         return f"confirm the {verb} of {identifier}"
@@ -1158,6 +1292,12 @@ def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | 
         return f"{identifier} is archived; restore it first"
     if rule == "ISSUE_TRASHED":
         return f"{identifier} is in the trash; restore it first"
+    if rule in COMMENT_RULES:
+        # The three comment rules quote the domain: one of them carries the bound the rule
+        # builds from `MAX_COMMENT_DEPTH`, and the other two would only be a second place to
+        # edit a wording the CLI prints as it is. The catalogue and the rule say the same
+        # sentence, and the rule is the copy that is written.
+        return refusal.message
     if rule == "CLOSE_WITH_OPEN_CHILDREN" and verb in CLOSE_VERBS:
         count = refusal.details.get("open_children", 0)
         return f"cannot {verb} {identifier}: it has {count} open sub-issues"
@@ -1173,7 +1313,13 @@ def _title_required() -> str:
     )
 
 
-def _refusal(refusal: HifaError, *, identifier: str | None, verb: str) -> tuple[str | None, str]:
+def _refusal(
+    refusal: HifaError,
+    *,
+    identifier: str | None,
+    verb: str,
+    controls: tuple[str, ...] = readmodels.EDIT_FORM_FIELDS,
+) -> tuple[str | None, str]:
     """`(control, message)` of a refused write: the control is `None` when it names none.
 
     The control is resolved here (the error names a command field, the form a control) and the
@@ -1182,7 +1328,7 @@ def _refusal(refusal: HifaError, *, identifier: str | None, verb: str) -> tuple[
     """
     reported = refusal.field or ""
     control = EDIT_FIELD_ALIASES.get(reported, reported)
-    field = control if control in readmodels.EDIT_FORM_FIELDS else None
+    field = control if control in controls else None
     return field, refusal_sentence(refusal, verb=verb, identifier=identifier)
 
 
@@ -1262,6 +1408,29 @@ def _run_move(request: Request, identifier: str, fields: Mapping[str, str]) -> I
         uow.close()
 
 
+def _write_comment(request: Request, identifier: str, fields: Mapping[str, str]) -> Comment:
+    """One `comment_on_issue` from the fields of a form: `body` always, `parent` when sent.
+
+    `parent` is not a control of this layer: both composers are flat, so the field only arrives
+    from a client that built its own request. It is passed through untouched, because whether it
+    names a comment of this issue is a rule of the use case and not of an edge.
+
+    raises: `NotFound` (issue, parent comment), `Validation`, `InvalidTransition(ISSUE_ARCHIVED)`
+    """
+    parent = (fields.get("parent") or "").strip() or None
+    uow = UnitOfWork(request.app.state.db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        with uow.read() as repos:
+            author = members.local_member(repos)
+        return comment_on_issue(
+            uow,
+            CommentOnIssue(issue=identifier, body=fields.get("body", ""), parent_id=parent),
+            Actor(member_id=author, source="web", label="web"),
+        )
+    finally:
+        uow.close()
+
+
 def _needs_confirmation(verb: str) -> bool:
     """Two of the three writes take an issue out of every listing, and ask before they do."""
     return verb != "restore"
@@ -1316,27 +1485,51 @@ def _layer_refusal(
     exc: HifaError | None,
     *,
     status_code: int = 422,
+    controls: tuple[str, ...] = (),
+    draft: str | None = None,
 ) -> HTMLResponse:
     """The panel, re-rendered with the refusal inside it and the block that refusal belongs to.
 
     The confirmation form swaps nothing on success, so a refusal has to name its own target or
     the marked block is fetched and thrown away.
+
+    `controls` is what the panel can mark: a layer refusal names no field, but a comment one
+    names `body`, and the box has to come back marked the way the page's copy comes back marked.
+    `draft` is what the reader had typed when the write was refused: a refusal that empties the
+    box is a paragraph they have to type again.
     """
     detail = boards.issue_detail(
         _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
     )
-    message = refusal_sentence(exc, verb=verb, identifier=detail.issue.identifier)
+    control, message = (
+        _refusal(exc, identifier=detail.issue.identifier, verb=verb, controls=controls)
+        if exc is not None and controls
+        else (None, refusal_sentence(exc, verb=verb, identifier=detail.issue.identifier))
+    )
     response = _issue_edit_fragment(
         request,
         identifier,
         view="panel",
         status_code=status_code,
-        form_error=message,
+        form_errors={control: message} if control else None,
+        form_error=None if control else message,
         confirm_open=verb,
+        draft=draft,
     )
     response.headers["HX-Retarget"] = "#panel"
     response.headers["HX-Reswap"] = "innerHTML"
     return response
+
+
+def _comment_item_vm(vm: Mapping[str, object], comment_id: str) -> dict[str, object]:
+    """The item of the comment just written, shaped by the builder that shapes the whole list.
+
+    The item is read back through `build_issue_vm` instead of being composed here: one builder
+    decides what a comment looks like, so the `<li>` the fragment appends and the list the page
+    renders cannot drift in author, body, stamp or edit mark.
+    """
+    comments = cast(list[dict[str, object]], vm["comments"])
+    return next(item for item in comments if item["id"] == comment_id)
 
 
 def _issue_detail_vm(
@@ -1346,6 +1539,8 @@ def _issue_detail_vm(
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
     confirm_open: str | None = None,
+    surface: str = "page",
+    draft: str | None = None,
 ) -> dict[str, object]:
     """Build the model of the detail page, the panel and a refused write: the single builder.
 
@@ -1353,8 +1548,14 @@ def _issue_detail_vm(
     issue — page, panel or refusal — is composed from the one read the route already made and no
     render opens a second one. A refused write arrives as `form_errors`/`form_error` and is
     carried into the model; both stay absent otherwise.
+
+    `surface` is the one thing the model cannot read from the issue: the composer exists on both
+    surfaces, and the two copies must not share an `id` nor both claim the fragment's target.
+    The page's composer posts to its own route and the browser follows the redirect; the panel's
+    posts the fragment and the client appends. Deciding it here keeps the template free of the
+    conditional that would otherwise have to know which page it is in.
     """
-    return readmodels.build_issue_vm(
+    vm = readmodels.build_issue_vm(
         detail,
         today=_today(),
         now=datetime.now(UTC),
@@ -1366,6 +1567,11 @@ def _issue_detail_vm(
         form_error=form_error,
         confirm_open=confirm_open,
     )
+    panel = surface == "panel"
+    vm["comment_composer_id"] = "panel-comment-body" if panel else "comment-body"
+    vm["comment_draft"] = draft or ""
+    vm["comment_composer_fragment"] = f"/_/comments/{detail.issue.identifier}" if panel else None
+    return vm
 
 
 def _issue_page_error(
@@ -1377,6 +1583,8 @@ def _issue_page_error(
     verb: str = "edit",
     confirm_open: str | None = None,
     status_code: int = 422,
+    controls: tuple[str, ...] = readmodels.EDIT_FORM_FIELDS,
+    draft: str | None = None,
 ) -> HTMLResponse:
     """Re-render `issue_detail.html` with the refusal: the control marked and the stored value.
 
@@ -1393,13 +1601,16 @@ def _issue_page_error(
             refusal_sentence(None, verb=verb, identifier=detail.issue.identifier),
         )
     else:
-        control, message = _refusal(exc, identifier=detail.issue.identifier, verb=verb)
+        control, message = _refusal(
+            exc, identifier=detail.issue.identifier, verb=verb, controls=controls
+        )
     vm = _issue_detail_vm(
         request,
         detail,
         form_errors={control: message} if control else None,
         form_error=None if control else message,
         confirm_open=confirm_open,
+        draft=draft,
     )
     page = _page(
         request,
@@ -1419,6 +1630,7 @@ def _issue_edit_fragment(
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
     confirm_open: str | None = None,
+    draft: str | None = None,
 ) -> HTMLResponse:
     """The element a `PATCH` answers — the row of the list, the card or the panel — refused or not.
 
@@ -1440,6 +1652,8 @@ def _issue_edit_fragment(
             form_errors=form_errors,
             form_error=form_error,
             confirm_open=confirm_open,
+            surface="panel",
+            draft=draft,
         )
         response = _render(
             request,

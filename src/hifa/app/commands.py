@@ -272,6 +272,22 @@ class UnrelateIssues:
 
 
 @dataclass(frozen=True, slots=True)
+class CommentOnIssue:
+    """Write one comment on an issue, or one reply inside its thread.
+
+    `issue` is a ULID or an identifier; `parent_id` is the ULID of a comment of the same
+    issue, and `None` starts a thread. `author_id=None` takes the actor's member. The body
+    is not checked here: the use case normalises it, so an empty one is its refusal and not
+    a constructor failure.
+    """
+
+    issue: str
+    body: str
+    parent_id: str | None = None
+    author_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveIssue:
     """Archive one issue; the layer is reversible and never deletes the row."""
 
@@ -445,6 +461,7 @@ __all__ = [
     "UNSET",
     "Actor",
     "ArchiveIssue",
+    "CommentOnIssue",
     "CreateIssue",
     "CreateState",
     "CreateTeam",

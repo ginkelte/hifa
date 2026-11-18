@@ -28,11 +28,13 @@ from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database
 from hifa.adapters.sqlite.reads import IssueListItem, IssuePage, ListFilters, OrderKey
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
+from hifa.app import members
 from hifa.app.boards import issue_detail, list_blocked, list_issues
 from hifa.app.commands import (
     UNSET,
     Actor,
     ArchiveIssue,
+    CommentOnIssue,
     CreateIssue,
     MoveIssue,
     RelateIssues,
@@ -43,6 +45,7 @@ from hifa.app.commands import (
 )
 from hifa.app.issues import (
     archive_issue,
+    comment_on_issue,
     create_issue,
     move_issue,
     relate_issues,
@@ -55,7 +58,7 @@ from hifa.cli import output
 from hifa.cli.context import CliContext, resolve_team
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
 from hifa.config import ConfigError, resolve_config
-from hifa.domain.entities import Issue, Label, Member, Team
+from hifa.domain.entities import Comment, Issue, Label, Member, Team
 from hifa.domain.errors import HifaError, NotFound
 
 issue_app = typer.Typer(
@@ -81,6 +84,9 @@ RELATION_TABLE_COLUMNS: tuple[str, ...] = ("reads as", "identifier", "title", "s
 
 #: Columns of the single row `issue relate` prints.
 RELATION_EDGE_COLUMNS: tuple[str, ...] = ("id", "type", "issue_id", "related_issue_id")
+
+#: Columns of the row `issue comment` prints.
+COMMENT_TABLE_COLUMNS: tuple[str, ...] = ("id", "issue", "author", "created", "body")
 
 #: Priority -> single-cell glyph.
 PRIORITY_GLYPHS: dict[int, str] = {0: "–", 1: "U", 2: "H", 3: "M", 4: "L"}
@@ -605,6 +611,41 @@ def restore_command(
     _emit_issue(row, payload)
 
 
+@issue_app.command("comment")
+def comment_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    body: str | None = typer.Argument(
+        None, help="Comment body (markdown). Omit to read it from --body-file or stdin."
+    ),
+    body_file: str | None = typer.Option(
+        None, "--body-file", help="File with the body ('-' = stdin)."
+    ),
+    parent: str | None = typer.Option(None, "--parent", help="Comment ULID to reply to."),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Comment id only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Write one comment on an issue, or one reply inside its thread."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        text = _resolve_comment_body(body, body_file)
+        row, payload = _run_comment(
+            db_flag=db if db is not None else root.db, ref=ref, body=text, parent=parent
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_comment(row, payload)
+
+
 # --- reads ------------------------------------------------------------------------------
 
 
@@ -891,7 +932,7 @@ def _assignee_filter(repos: Repos, ref: str | None, *, mine: bool) -> str | None
     """`--mine` is the resolved member; `-a` is the member reference of the vocabulary."""
     if not mine:
         return _resolve_assignee(repos, ref)
-    member_id = _local_member(repos)
+    member_id = members.local_member(repos)
     if member_id is None:
         raise CliError(
             "no member for --mine: use HIFA_MEMBER, an email or a ULID",
@@ -950,7 +991,7 @@ def _run_create(
         with uow.read() as repos:
             team_ref = resolve_team(repos, cfg, flag=team)
             assignee_id = _resolve_assignee(repos, assignee)
-            actor = Actor(member_id=_local_member(repos), source="cli", label="cli")
+            actor = Actor(member_id=members.local_member(repos), source="cli", label="cli")
         cmd = CreateIssue(
             team=team_ref,
             title=text,
@@ -982,24 +1023,63 @@ def _resolve_title(positional: str | None, option: str | None) -> str:
     return value
 
 
-def _resolve_description(description: str | None, description_file: str | None) -> str | None:
-    if description is not None and description_file is not None:
-        raise CliError("use --description or --description-file, not both", field="description")
-    if description_file is not None:
-        if description_file == "-":
-            return sys.stdin.read()
-        path = Path(description_file)
-        try:
-            return path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise CliError(
-                f"cannot read {path}: {exc.strerror or exc}",
-                code="file_unreadable",
-                field="description",
-            ) from exc
-    if description == "-":
+def _read_text(
+    value: str | None,
+    path_value: str | None,
+    *,
+    field: str,
+    flags: tuple[str, str],
+) -> str | None:
+    """The text two spellings of one input give: the argument, the file, or `stdin`.
+
+    `-` means `stdin` in either place, so `--description -` and `--description-file -` are the
+    same request. A file that cannot be read is the edge's own refusal: it never reaches the
+    core, which has no opinion about paths.
+    """
+    if value is not None and path_value is not None:
+        raise CliError(
+            f"use {flags[0]} or {flags[1]}, not both", code="invalid_option", field=field
+        )
+    if path_value is None:
+        return sys.stdin.read() if value == "-" else value
+    if path_value == "-":
         return sys.stdin.read()
-    return description
+    path = Path(path_value)
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CliError(
+            f"cannot read {path}: {exc.strerror or exc}", code="file_unreadable", field=field
+        ) from exc
+
+
+def _resolve_description(description: str | None, description_file: str | None) -> str | None:
+    """The description of a create or an edit, from the argument, a file or `stdin`."""
+    return _read_text(
+        description,
+        description_file,
+        field="description",
+        flags=("--description", "--description-file"),
+    )
+
+
+def _resolve_comment_body(body: str | None, body_file: str | None) -> str:
+    """The body of a comment, from the argument, a file or `stdin`.
+
+    The value travels to the use case unmodified: whether an empty body is a comment at all
+    is a rule of the core, not a question this edge answers. With neither a body nor a file,
+    `stdin` is read only when it is not a terminal, so an interactive caller who typed
+    nothing is told what is missing instead of hanging on a prompt nobody offered.
+    """
+    if body is None and body_file is None and not sys.stdin.isatty():
+        body_file = "-"
+    text = _read_text(body, body_file, field="body", flags=("BODY", "--body-file"))
+    if text is None:
+        raise CliError(
+            "missing comment body: pass it as an argument, with --body-file, or on stdin",
+            field="body",
+        )
+    return text
 
 
 def _parse_priority(raw: str | None) -> int:
@@ -1033,16 +1113,14 @@ def _resolve_assignee(repos: Repos, ref: str | None) -> str | None:
         return None
     value = ref.strip()
     if value.upper() == "ME":
-        value = (os.environ.get("HIFA_MEMBER") or "").strip()
-        if not value:
-            members = _active_members(repos)
-            if len(members) == 1:
-                return members[0].id
+        local = members.local_member(repos, ref=os.environ.get("HIFA_MEMBER"))
+        if local is None:
             raise CliError(
                 "no member for --assignee ME: use HIFA_MEMBER, an email or a ULID",
                 code="missing_context",
                 field="assignee",
             )
+        return local
     member = repos.members.get(value) or repos.members.get_by_email(value)
     if member is None:
         member = _member_by_display_name(repos, value)
@@ -1063,22 +1141,6 @@ def _member_by_display_name(repos: Repos, value: str) -> Member | None:
         if candidate.email is not None and candidate.email.casefold() == wanted:
             return candidate
     return None
-
-
-def _local_member(repos: Repos) -> str | None:
-    ref = (os.environ.get("HIFA_MEMBER") or "").strip()
-    if ref:
-        member = repos.members.get(ref) or repos.members.get_by_email(ref)
-        return member.id if member is not None else None
-    members = _active_members(repos)
-    return members[0].id if len(members) == 1 else None
-
-
-def _active_members(repos: Repos) -> list[Member]:
-    workspace = repos.teams.workspace()
-    if workspace is None:
-        return []
-    return [member for member in repos.members.list(workspace.id) if member.is_active]
 
 
 # --- writes -----------------------------------------------------------------------------
@@ -1109,6 +1171,20 @@ def _emit_issue(row: dict[str, Any], payload: dict[str, Any]) -> None:
     )
 
 
+def _emit_comment(row: dict[str, Any], payload: dict[str, Any]) -> None:
+    """One comment: the table row, the canonical object or the id it was written with.
+
+    A comment carries no identifier, so `--quiet` prints its `id` — the only name the record
+    has, and the one the next reply needs for `--parent`.
+    """
+    output.emit(
+        row,
+        table_cols=COMMENT_TABLE_COLUMNS,
+        json_obj=payload,
+        quiet_obj=payload["id"],
+    )
+
+
 def _open_uow(db_flag: str | None) -> UnitOfWork:
     """Unit of work over the resolved SQLite file; a missing file is exit 3."""
     cfg = resolve_config(db_flag=db_flag)
@@ -1125,7 +1201,7 @@ def _open_uow(db_flag: str | None) -> UnitOfWork:
 
 def _actor(repos: Repos) -> Actor:
     """Who writes: the local member, when the workspace has exactly one."""
-    return Actor(member_id=_local_member(repos), source="cli", label="cli")
+    return Actor(member_id=members.local_member(repos), source="cli", label="cli")
 
 
 def _pair(value: str | None, clear: bool, *, flag: str, field: str, clear_flag: str) -> Any:
@@ -1361,6 +1437,25 @@ def _run_restore(*, db_flag: str | None, ref: str) -> tuple[dict[str, Any], dict
     return _table_row(payload), payload
 
 
+def _run_comment(
+    *, db_flag: str | None, ref: str, body: str, parent: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Write one comment and read back the row it left, for the table and the envelope."""
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        comment = comment_on_issue(
+            uow, CommentOnIssue(issue=ref, body=body, parent_id=parent), actor
+        )
+        with uow.read() as repos:
+            payload = _comment_canonical(comment)
+            row = _comment_row(repos, comment)
+    finally:
+        uow.close()
+    return row, payload
+
+
 def _reject_board_anchor(before: str | None, after: str | None) -> None:
     """A field edit carries no position: a board anchor is not one of its flags."""
     if before is not None or after is not None:
@@ -1465,6 +1560,38 @@ def _canonical(repos: Repos, issue: Issue) -> dict[str, Any]:
         "is_visible": bool(issue.is_visible),
         "created_at": _iso(issue.created_at),
         "updated_at": _iso(issue.updated_at),
+    }
+
+
+def _comment_canonical(comment: Comment) -> dict[str, Any]:
+    """Complete `comment` object in canonical order (no key is ever omitted)."""
+    return {
+        "id": comment.id,
+        "issue_id": comment.issue_id,
+        "parent_id": comment.parent_id,
+        "author_id": comment.author_id,
+        "body": comment.body,
+        "resolved_at": _iso(comment.resolved_at),
+        "edited_at": _iso(comment.edited_at),
+        "created_at": _iso(comment.created_at),
+        "updated_at": _iso(comment.updated_at),
+    }
+
+
+def _comment_row(repos: Repos, comment: Comment) -> dict[str, Any]:
+    """One row of the comment table: the issue it hangs from and the author it names.
+
+    Neither name is on the row: the issue is stored as its ULID and the author as a member.
+    An authorless comment (a memberless actor) stays `None`, and the table renders it `–`.
+    """
+    issue = repos.issues.get(comment.issue_id)
+    author = repos.members.get(comment.author_id) if comment.author_id else None
+    return {
+        "id": comment.id,
+        "issue": issue.identifier if issue is not None else None,
+        "author": author.display_name if author is not None else None,
+        "created": _iso(comment.created_at),
+        "body": comment.body,
     }
 
 
@@ -1583,4 +1710,11 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat().replace("+00:00", "Z")
 
 
-__all__ = ["ISSUE_TABLE_COLUMNS", "PRIORITY_GLYPHS", "create_command", "issue_app"]
+__all__ = [
+    "COMMENT_TABLE_COLUMNS",
+    "ISSUE_TABLE_COLUMNS",
+    "PRIORITY_GLYPHS",
+    "comment_command",
+    "create_command",
+    "issue_app",
+]

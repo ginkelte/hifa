@@ -22,6 +22,7 @@ def test_size_constants() -> None:
     assert rules.MAX_BODY == 50_000
     assert rules.MAX_DESCRIPTION == 100_000
     assert rules.MAX_SUBISSUE_DEPTH == 5
+    assert rules.MAX_COMMENT_DEPTH == 3
 
 
 # --- title -----------------------------------------------------------------------------
@@ -72,6 +73,25 @@ def test_validate_comment_body_rejects_too_long() -> None:
 
 def test_validate_comment_body_accepts_the_limit() -> None:
     assert len(rules.validate_comment_body("x" * rules.MAX_BODY)) == rules.MAX_BODY
+
+
+# --- comment depth ---------------------------------------------------------------------
+
+
+def test_validate_comment_parent_depth_accepts_the_last_depth() -> None:
+    assert rules.validate_comment_parent_depth(rules.MAX_COMMENT_DEPTH) is None
+
+
+def test_validate_comment_parent_depth_rejects_the_next_one() -> None:
+    with pytest.raises(Validation) as excinfo:
+        rules.validate_comment_parent_depth(rules.MAX_COMMENT_DEPTH + 1)
+    assert excinfo.value.rule == "COMMENT_DEPTH_EXCEEDED"
+    assert excinfo.value.field == "parent_id"
+    assert excinfo.value.message == "the thread is 3 deep; reply to a shallower comment"
+
+
+def test_validate_comment_parent_depth_accepts_a_root() -> None:
+    assert rules.validate_comment_parent_depth(1) is None
 
 
 # --- prioridad ------------------------------------------------------------------------
