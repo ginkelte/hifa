@@ -5,6 +5,13 @@
 
 * **comment:** a comment is a write, and both edges write it (HIFA-60) ([#29](https://github.com/ginkelte/hifa/issues/29)) ([1e79b48](https://github.com/ginkelte/hifa/commit/1e79b48425f91b90bc05a233e134013e13514009))
 
+# [0.10.0](https://github.com/ginkelte/hifa/compare/v0.9.1...v0.10.0) (2026-11-18)
+
+
+### Features
+
+* **comment:** a comment is a write, and both edges write it (HIFA-60) ([#29](https://github.com/ginkelte/hifa/issues/29)) ([1e79b48](https://github.com/ginkelte/hifa/commit/1e79b48425f91b90bc05a233e134013e13514009))
+
 ## [0.9.1](https://github.com/ginkelte/hifa/compare/v0.9.0...v0.9.1) (2026-11-17)
 
 
