@@ -986,11 +986,458 @@ def issue_detail(
     )
 
 
+# --- search -----------------------------------------------------------------------------
+
+#: The four messages that send a `MATCH` to the `like` path: an FTS5 engine error, an
+#: unreadable image, a build without the module and an index that is not there.
+SEARCH_RETRY_TRIGGERS: tuple[str, ...] = (
+    "fts5:",
+    "malformed",
+    "no such module: fts5",
+    "no such table",
+)
+
+#: A complete identifier and an identifier prefix, the two shapes the ranking bands read.
+_IDENT_EXACT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{1,9}-[0-9]{1,9}$")
+_IDENT_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{1,9}-[0-9]{0,9}$")
+
+#: Characters around the matched term in a `like` snippet, and the fallback's length.
+LIKE_WINDOW = 60
+SHORT_SNIPPET = 120
+MARK_START = "<mark>"
+MARK_END = "</mark>"
+
+
+@dataclass(frozen=True, slots=True)
+class SearchRow:
+    """One hit as the query returned it; `snippet` carries the literal marker pair."""
+
+    issue_id: str
+    identifier: str
+    title: str
+    state_name: str
+    state_type: str
+    priority: int
+    due_date: str | None
+    assignee_display_name: str | None
+    updated_at: str
+    snippet: str
+    score: float
+
+
+def _not(clause: str) -> str:
+    return f"NOT ({clause})"
+
+
+def _search_filter_clauses(filters: Any, params: dict[str, Any]) -> list[str]:
+    """Every `AND (…)` of the filters present, as constant fragments with bound values.
+
+    `filters` is the search filter object of the application layer: this module reads its
+    attributes and does not import it, which is the direction the layering allows.
+    """
+    negate = set(getattr(filters, "negate", ()) or ())
+    clauses: list[str] = []
+
+    scope = getattr(filters, "is_", None)
+    if scope not in {"archived", "trashed", "all"}:
+        clauses.append("i.trashed = 0")
+        clauses.append("i.archived_at IS NULL")
+    if scope == "open":
+        clauses.append("s.type NOT IN ('completed','canceled')")
+    elif scope == "closed":
+        clauses.append("s.type IN ('completed','canceled')")
+    elif scope == "archived":
+        clauses.append("i.archived_at IS NOT NULL")
+    elif scope == "trashed":
+        clauses.append("i.trashed = 1")
+
+    team = getattr(filters, "team", None)
+    if team:
+        params["team_key"] = team
+        clause = "i.team_id IN (SELECT id FROM team WHERE key = :team_key)"
+        clauses.append(_not(clause) if "team" in negate else clause)
+
+    state = getattr(filters, "state", None)
+    if state:
+        params["state"] = state
+        clause = (
+            "EXISTS (SELECT 1 FROM workflow_state ws WHERE ws.id = i.state_id"
+            " AND (lower(ws.name) = lower(:state) OR ws.type = lower(:state)))"
+        )
+        clauses.append(_not(clause) if "state" in negate else clause)
+
+    assignee = getattr(filters, "assignee", None)
+    if assignee:
+        lowered = assignee.strip().lower()
+        if lowered == "me":
+            clause = "i.assignee_id = (SELECT id FROM member ORDER BY created_at, id LIMIT 1)"
+        elif lowered == "none":
+            clause = "i.assignee_id IS NULL"
+        else:
+            params["assignee"] = assignee
+            clause = (
+                "i.assignee_id IN (SELECT id FROM member WHERE lower(email) = lower(:assignee)"
+                " OR lower(display_name) = lower(:assignee))"
+            )
+        if "assignee" in negate:
+            clause = "i.assignee_id IS NOT NULL" if lowered == "none" else _not(clause)
+        clauses.append(clause)
+
+    label = getattr(filters, "label", None)
+    if label:
+        params["label"] = label
+        clause = (
+            "EXISTS (SELECT 1 FROM issue_label il JOIN label l ON l.id = il.label_id"
+            " WHERE il.issue_id = i.id AND lower(l.name) = lower(:label))"
+        )
+        clauses.append(_not(clause) if "label" in negate else clause)
+
+    priority = getattr(filters, "priority", None)
+    if priority is not None and priority != "":
+        params["priority"] = int(priority)
+        clauses.append(
+            "i.priority <> :priority" if "priority" in negate else "i.priority = :priority"
+        )
+
+    due = getattr(filters, "due", None)
+    if due:
+        if due == "none":
+            clauses.append("i.due_date IS NULL")
+        elif due == "overdue":
+            params["today"] = params.get("today") or ""
+            clauses.append("i.due_date < :today AND s.type NOT IN ('completed','canceled')")
+        elif due == "today":
+            params["today"] = params.get("today") or ""
+            clauses.append("i.due_date = :today")
+        elif due == "week":
+            params["today"] = params.get("today") or ""
+            clauses.append("i.due_date BETWEEN :today AND date(:today, '+7 days')")
+        elif due[:1] in {">", "<"}:
+            params["due_date"] = due[1:]
+            clauses.append(f"i.due_date {due[0]} :due_date")
+        else:
+            params["due_date"] = due
+            clauses.append("i.due_date = :due_date")
+
+    return clauses
+
+
+def _identifier_bounds(text: Any) -> tuple[str, str]:
+    """`(exact, prefix)` derived from the predicate's single positive term.
+
+    An identifier is one word, so only a query whose whole text is one term can name one; a
+    complete identifier is band 0 and a prefix is band 2. Both are `""` otherwise, which is what
+    makes `identifier = ''` and `identifier LIKE ''` always false.
+    """
+    terms = tuple(getattr(text, "like_terms", ()) or ())
+    if len(terms) != 1:
+        return "", ""
+    candidate = terms[0].rstrip("*").strip()
+    exact = candidate.upper() if _IDENT_EXACT_RE.fullmatch(candidate) else ""
+    prefix = candidate.upper() + "%" if _IDENT_PREFIX_RE.fullmatch(candidate) else ""
+    return exact, prefix
+
+
+def _fts_order(order: str) -> str:
+    if order == "updated":
+        return "i.updated_at DESC, i.id ASC"
+    if order == "created":
+        return "i.created_at DESC, i.id ASC"
+    if order == "priority":
+        return "CASE i.priority WHEN 0 THEN 5 ELSE i.priority END ASC, i.updated_at DESC, i.id ASC"
+    if order == "due":
+        return "(i.due_date IS NULL) ASC, i.due_date ASC, i.id ASC"
+    return (
+        "band ASC, score DESC, CASE i.priority WHEN 0 THEN 5 ELSE i.priority END ASC,"
+        " i.updated_at DESC, i.id ASC"
+    )
+
+
+def _plain_order(order: str, *, ranked: bool) -> str:
+    if order == "updated":
+        return "i.updated_at DESC, i.id ASC"
+    if order == "created":
+        return "i.created_at DESC, i.id ASC"
+    if order == "priority":
+        return "CASE i.priority WHEN 0 THEN 5 ELSE i.priority END ASC, i.updated_at DESC, i.id ASC"
+    if order == "due":
+        return "(i.due_date IS NULL) ASC, i.due_date ASC, i.id ASC"
+    return "band ASC, i.updated_at DESC, i.id ASC" if ranked else "i.updated_at DESC, i.id ASC"
+
+
+#: Both CTEs are materialized: flattened into the join, SQLite probes the FTS5 virtual table
+#: once per row of `issue` (an index scan each time, ~68 ms over 10 000 rows) instead of reading
+#: the match set once. `AS MATERIALIZED` keeps the text of the query and makes the cost the one
+#: the budget describes: one `MATCH` plus one lookup per candidate.
+_FTS_CTE = """WITH fts AS MATERIALIZED (
+  SELECT rowid AS rid,
+         bm25(issue_fts, 10.0, 1.0, 0.0) AS bm,
+         snippet(issue_fts, -1, '<mark>', '</mark>', '…', 12) AS snip
+  FROM issue_fts
+  WHERE issue_fts MATCH :match
+),
+title_hit AS MATERIALIZED (
+  SELECT rowid AS rid FROM issue_fts WHERE issue_fts MATCH :match_title
+)
+"""
+
+_FTS_COLUMNS = """
+       i.id AS issue_id, i.identifier AS identifier, i.title AS title,
+       s.name AS state_name, s.type AS state_type, i.priority AS priority,
+       i.due_date AS due_date, m.display_name AS assignee_display_name,
+       i.updated_at AS updated_at, COALESCE(f.snip, '') AS snippet,
+       CASE WHEN i.identifier = :ident_exact THEN 0
+            WHEN t.rid IS NOT NULL THEN 1
+            WHEN i.identifier LIKE :ident_like ESCAPE '\\' THEN 2
+            ELSE 3 END AS band,
+       -COALESCE(f.bm, 0.0) AS score
+"""
+
+_FTS_FROM = """
+FROM issue i
+JOIN workflow_state s ON s.id = i.state_id
+LEFT JOIN member m ON m.id = i.assignee_id
+LEFT JOIN fts f ON f.rid = i.rowid
+LEFT JOIN title_hit t ON t.rid = i.rowid
+WHERE (f.rid IS NOT NULL OR i.identifier LIKE :ident_like ESCAPE '\\')
+"""
+
+_PLAIN_COLUMNS = """
+       i.id AS issue_id, i.identifier AS identifier, i.title AS title,
+       s.name AS state_name, s.type AS state_type, i.priority AS priority,
+       i.due_date AS due_date, m.display_name AS assignee_display_name,
+       i.updated_at AS updated_at, '' AS snippet,
+       {band} AS band, 0.0 AS score
+"""
+
+#: The `like` path reads the description too: its snippet is built from the text, not in SQL.
+_LIKE_COLUMNS = """
+       i.id AS issue_id, i.identifier AS identifier, i.title AS title,
+       s.name AS state_name, s.type AS state_type, i.priority AS priority,
+       i.due_date AS due_date, m.display_name AS assignee_display_name,
+       i.updated_at AS updated_at, i.description AS description, '' AS snippet,
+       {band} AS band, 0.0 AS score
+"""
+
+_PLAIN_FROM = """
+FROM issue i
+JOIN workflow_state s ON s.id = i.state_id
+LEFT JOIN member m ON m.id = i.assignee_id
+WHERE 1 = 1
+"""
+
+
+def _where(base: str, clauses: list[str]) -> str:
+    return base.rstrip() + "".join(f"\n  AND {clause}" for clause in clauses)
+
+
+def _count(conn: sqlite3.Connection, cte: str, from_where: str, params: dict[str, Any]) -> int:
+    row = conn.execute(f"{cte}SELECT COUNT(DISTINCT i.rowid){from_where}", params).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _escape_like(value: str) -> str:
+    """Escapes `\\`, `%` and `_` so a term is a literal inside a `LIKE` with `ESCAPE '\\'`."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _like_bindings(terms: tuple[str, ...], prefix: str) -> dict[str, Any]:
+    return {f"{prefix}{index}": f"%{_escape_like(term)}%" for index, term in enumerate(terms)}
+
+
+def _marked(text: str, start: int, length: int) -> str:
+    begin = max(0, start - LIKE_WINDOW)
+    end = min(len(text), start + length + LIKE_WINDOW)
+    return f"{text[begin:start]}{MARK_START}{text[start : start + length]}{MARK_END}{text[end:]}"
+
+
+def _like_snippet(title: str, description: str | None, term: str | None) -> str:
+    """The snippet of the `like` path: the first occurrence marked, or 120 characters of text.
+
+    `title` is searched first and the description second; with no occurrence, or with no
+    positive term at all, the answer is the description truncated to 120 characters, or the
+    title when the description is empty.
+    """
+    if term:
+        for haystack in (title, description or ""):
+            found = haystack.lower().find(term.lower())
+            if found != -1:
+                return _marked(haystack, found, len(term))
+    fallback = (description or "").strip() or title
+    return fallback[:SHORT_SNIPPET]
+
+
+def _search_row(row: sqlite3.Row | dict[str, Any], *, snippet: str | None = None) -> SearchRow:
+    return SearchRow(
+        issue_id=str(row["issue_id"]),
+        identifier=str(row["identifier"]),
+        title=str(row["title"]),
+        state_name=str(row["state_name"]),
+        state_type=str(row["state_type"]),
+        priority=int(row["priority"]),
+        due_date=None if row["due_date"] is None else str(row["due_date"]),
+        assignee_display_name=(
+            None if row["assignee_display_name"] is None else str(row["assignee_display_name"])
+        ),
+        updated_at=str(row["updated_at"]),
+        snippet=snippet if snippet is not None else str(row["snippet"] or ""),
+        score=float(row["score"]),
+    )
+
+
+def search(
+    conn: sqlite3.Connection,
+    *,
+    text: Any,
+    filters: Any,
+    order: str,
+    limit: int,
+    offset: int,
+    count: bool,
+    today: str,
+) -> tuple[list[SearchRow], int | None, Literal["fts", "like", "none"]]:
+    """Runs one search and answers `(rows, total, backend)`.
+
+    The three text states are decided from the predicate's own fields: a `MATCH` expression is
+    the `fts` path, a predicate with terms and no expression is the `like` path (with positives
+    or — when every term is negated — with negations only), and a predicate with neither is no
+    text at all: the filters alone, `backend="none"`. A `MATCH` that raises one of the four
+    messages of `SEARCH_RETRY_TRIGGERS` is retried once through the `like` path.
+
+    `limit` arrives already clamped and `limit + 1` rows are requested, so the caller derives
+    `has_more` and trims; `total` is computed only when `count` is set.
+    """
+    params: dict[str, Any] = {"limit_plus_one": limit + 1, "offset": offset, "today": today or ""}
+    clauses = _search_filter_clauses(filters, params)
+    ident_exact, ident_like = _identifier_bounds(text)
+    params["ident_exact"] = ident_exact
+    params["ident_like"] = ident_like
+
+    like_terms = tuple(getattr(text, "like_terms", ()) or ())
+    not_terms = tuple(getattr(text, "not_terms", ()) or ())
+    match = getattr(text, "match", None)
+    match_title = getattr(text, "match_title", None)
+
+    if match is not None:
+        params["match"] = match
+        params["match_title"] = match_title or match
+        from_where = _where(_FTS_FROM, clauses)
+        sql = (
+            f"{_FTS_CTE}SELECT{_FTS_COLUMNS}{from_where}"
+            f"\nORDER BY {_fts_order(order)}\nLIMIT :limit_plus_one OFFSET :offset"
+        )
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            if not any(trigger in str(exc) for trigger in SEARCH_RETRY_TRIGGERS):
+                raise
+        else:
+            total = _count(conn, _FTS_CTE, from_where, params) if count else None
+            return [_search_row(row) for row in rows], total, "fts"
+
+    if like_terms or not_terms:
+        return _like_page(
+            conn,
+            clauses=clauses,
+            params=params,
+            order=order,
+            count=count,
+            like_terms=like_terms,
+            not_terms=not_terms,
+        )
+
+    from_where = _where(_PLAIN_FROM, clauses)
+    columns = _PLAIN_COLUMNS.format(band=0)
+    sql = (
+        f"SELECT{columns}{from_where}\nORDER BY {_plain_order(order, ranked=False)}"
+        "\nLIMIT :limit_plus_one OFFSET :offset"
+    )
+    rows = conn.execute(sql, params).fetchall()
+    total = _count(conn, "", from_where, params) if count else None
+    return [_search_row(row) for row in rows], total, "none"
+
+
+def _like_page(
+    conn: sqlite3.Connection,
+    *,
+    clauses: list[str],
+    params: dict[str, Any],
+    order: str,
+    count: bool,
+    like_terms: tuple[str, ...],
+    not_terms: tuple[str, ...],
+) -> tuple[list[SearchRow], int | None, Literal["like"]]:
+    """The `like` path: the positives minus the negated ones, or negations alone."""
+    bindings = dict(params)
+    text_clauses: list[str] = []
+    first: str | None = None
+
+    if like_terms:
+        bindings.update(_like_bindings(like_terms, "p"))
+        for index in range(len(like_terms)):
+            text_clauses.append(
+                f"(i.title LIKE :p{index} ESCAPE '\\' OR i.description LIKE :p{index} ESCAPE '\\'"
+                f" OR i.identifier LIKE :p{index} ESCAPE '\\')"
+            )
+        first = like_terms[0].rstrip("*")
+        bindings["first_prefix"] = f"{_escape_like(first)}%"
+        bindings["first_contains"] = f"%{_escape_like(first)}%"
+        band = """CASE WHEN i.identifier = :ident_exact THEN 0
+            WHEN i.title LIKE :first_prefix ESCAPE '\\' THEN 1
+            WHEN i.title LIKE :first_contains ESCAPE '\\' THEN 2
+            ELSE 3 END"""
+    else:
+        band = "0"
+
+    bindings.update(_like_bindings(not_terms, "n"))
+    for index in range(len(not_terms)):
+        text_clauses.append(
+            f"NOT (i.title LIKE :n{index} ESCAPE '\\'"
+            f" OR COALESCE(i.description, '') LIKE :n{index} ESCAPE '\\')"
+        )
+
+    from_where = _where(_PLAIN_FROM, text_clauses + clauses)
+    columns = _LIKE_COLUMNS.format(band=band)
+    sql = (
+        f"SELECT{columns}{from_where}\nORDER BY {_plain_order(order, ranked=bool(like_terms))}"
+        "\nLIMIT :limit_plus_one OFFSET :offset"
+    )
+    rows = conn.execute(sql, bindings).fetchall()
+    total = _count(conn, "", from_where, bindings) if count else None
+    return (
+        [
+            _search_row(row, snippet=_like_snippet(str(row["title"]), _description(row), first))
+            for row in rows
+        ],
+        total,
+        "like",
+    )
+
+
+def _description(row: sqlite3.Row) -> str | None:
+    """The description of a `like` row: the snippet is built from it and never returned."""
+    try:
+        value = row["description"]
+    except (IndexError, KeyError):  # pragma: no cover - the query always selects it
+        return None
+    return None if value is None else str(value)
+
+
+def team_timezone(conn: sqlite3.Connection, *, team_key: str) -> str | None:
+    """The IANA zone of one team, or `None` when no team carries that key."""
+    row = conn.execute("SELECT timezone FROM team WHERE key = ?", (team_key,)).fetchone()
+    if row is None:
+        return None
+    value = row["timezone"]
+    return None if value is None else str(value)
+
+
 __all__ = [
     "DEFAULT_LIMIT",
     "DETAIL_INCLUDE",
     "MAX_LIMIT",
     "MAX_OFFSET",
+    "SEARCH_RETRY_TRIGGERS",
     "SORT_KEYS",
     "Board",
     "BoardGroup",
@@ -999,6 +1446,7 @@ __all__ = [
     "IssuePage",
     "LabelRef",
     "ListFilters",
+    "SearchRow",
     "board_view",
     "blocked_view",
     "decode_cursor",
@@ -1008,6 +1456,8 @@ __all__ = [
     "local_member",
     "list_view",
     "resolve_filters",
+    "search",
     "team_by_ref",
     "team_counts",
+    "team_timezone",
 ]

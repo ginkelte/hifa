@@ -9,11 +9,18 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 from urllib.parse import quote
 
-from hifa.domain.errors import CorruptDatabase, HifaError
+from hifa.domain.errors import (
+    Conflict,
+    CorruptDatabase,
+    DatabaseNotFound,
+    Fts5Unavailable,
+    HifaError,
+)
 
 PRAGMAS: Final[tuple[tuple[str, str], ...]] = (
     ("journal_mode", "WAL"),
@@ -77,6 +84,102 @@ def open_db(path: str | Path, *, readonly: bool = False) -> sqlite3.Connection:
 
 #: Canonical name; `connect` is the historical alias.
 connect = open_db
+
+
+PROBE_SQL: Final[str] = "SELECT type, name FROM sqlite_master WHERE type IN ('table','view')"
+
+#: The two message classes a file SQLite refuses answers; they are never copied raw.
+_NOT_A_DATABASE: Final[str] = "file is not a database"
+
+
+@dataclass(frozen=True, slots=True)
+class Probe:
+    """A read-only identification of one file. `conn` is open and the caller closes it.
+
+    The two sets are two projections of the one row `PROBE_SQL` returns and they are not
+    interchangeable: a **view** named `workspace` is in `objects` and not in `tables`.
+    `tables` is what a schema verdict asks about; `objects` is what "this file carries nothing
+    at all" asks about.
+    """
+
+    conn: sqlite3.Connection
+    tables: frozenset[str]
+    objects: frozenset[str]
+
+
+def _probe_error(exc: sqlite3.Error, path: str) -> HifaError:
+    """The four verdicts a failed probe read can answer, decided by the driver's message."""
+    message = str(exc)
+    low = message.lower()
+    if "unable to open database file" in low:
+        return DatabaseNotFound(f"database not found at {path}; run 'hifa init'", key=path)
+    if "attempt to write a readonly database" in low or "readonly database" in low:
+        return Conflict(
+            f"database '{path}' cannot be opened read-only: its directory is not writable",
+            rule="DB_READONLY",
+            code="DB_READONLY",
+        )
+    if "file is not a database" in low:
+        return CorruptDatabase(
+            "corrupt database: file is not a database; see 'hifa doctor'",
+            detail=_NOT_A_DATABASE,
+            key=path,
+        )
+    if "malformed" in low:
+        return CorruptDatabase(
+            "corrupt database: database disk image is malformed; see 'hifa doctor'",
+            detail="database disk image is malformed",
+            key=path,
+        )
+    return HifaError("the database probe answered an unexpected error", code="DB_ERROR")
+
+
+def open_probe(path: str | Path) -> Probe:
+    """Opens `path` read-only, applies **no** pragma and reads `PROBE_SQL` once.
+
+    `mode=ro` never creates a file, so a missing path is `DatabaseNotFound`; the read itself
+    raises `CorruptDatabase` for bytes SQLite refuses and `Conflict(code='DB_READONLY')` for a
+    WAL database in a directory the process cannot write (the reader cannot create its `-shm`).
+    A refusal closes the connection it opened before it raises.
+    """
+    target = Path(path).expanduser()
+    key = str(target)
+    uri = f"file:{quote(key)}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, isolation_level=None, check_same_thread=False)
+    except sqlite3.Error as exc:
+        raise _probe_error(exc, key) from exc
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(PROBE_SQL).fetchall()
+    except sqlite3.Error as exc:
+        conn.close()
+        raise _probe_error(exc, key) from exc
+    except BaseException:  # pragma: no cover - defensive: never leak the handle
+        conn.close()
+        raise
+
+    tables = frozenset(str(row["name"]) for row in rows if row["type"] == "table")
+    objects = frozenset(str(row["name"]) for row in rows)
+    return Probe(conn=conn, tables=tables, objects=objects)
+
+
+FTS5_ENABLED_SQL: Final[str] = (
+    "SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'"
+)
+
+
+def require_fts5(conn: sqlite3.Connection) -> None:
+    """Raise `Fts5Unavailable` when this connection's SQLite carries no FTS5 module.
+
+    One `SELECT` over `pragma_compile_options`, so the check works on a read-only connection
+    and creates no virtual table to find out.
+    """
+    if conn.execute(FTS5_ENABLED_SQL).fetchone() is None:
+        raise Fts5Unavailable(
+            "sqlite was built without fts5; install a build with ENABLE_FTS5",
+            hint="hifa db reindex needs an SQLite compiled with FTS5",
+        )
 
 
 def is_migrated(conn: sqlite3.Connection, *, expected: int) -> bool:
@@ -166,11 +269,16 @@ class RevisionWatch:
 
 
 __all__ = [
+    "FTS5_ENABLED_SQL",
     "PRAGMAS",
+    "PROBE_SQL",
     "Database",
+    "Probe",
     "RevisionWatch",
     "connect",
     "data_version",
     "is_migrated",
     "open_db",
+    "open_probe",
+    "require_fts5",
 ]
