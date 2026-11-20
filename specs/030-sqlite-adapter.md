@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 7
-spec_revision: 19
+spec_revision: 20
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -477,9 +477,13 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 
 `record` uses `executemany` (§2.5 SQL-8). The serialization of values to TEXT is fixed:
 `Priority` → `str(int)`, `bool` → `"1"`/`"0"`, `date` → `YYYY-MM-DD`, `datetime` → ISO-8601 `Z`,
-`None` → `NULL`, `str` → as is. `field` is the exact column name
-(`state_id`, `assignee_id`, `priority`, `due_date`, `title`, `description`, `estimate`,
-`project_id`, `cycle_id`, `parent_id`, `label`, `relation`, `archived_at`, `trashed`).
+`None` → `NULL`, `str` → as is. `field` is the writer's vocabulary in the two families
+**SPEC-050 §2.4.2** owns, and this table adds no name to them: a change to a column of `issue`
+carries that column's name (`state_id`, `assignee_id`, `priority`, `due_date`, `title`,
+`description`, `estimate`, `project_id`, `cycle_id`, `parent_id`, `archived_at`, `trashed`), and a
+record event that is not a column carries the noun of the write — `created` (the row
+`create_issue` writes when it inserts the issue, SPEC-040 §5.1 step 16), `relation`
+(`relate_issues`/`unrelate_issues`) and `label` (`add_label`/`remove_label`).
 
 ### 2.5 SQL of the critical operations
 
@@ -2006,6 +2010,18 @@ Feature: SQLite adapter
   shows a `SCAN`, the solution is a new index in a migration, not a change in the adapter.
 
 ## Notes
+
+- spec_revision 20 (2026-11-20): **the `field` a history row carries is stated in the two families, and
+  `created` is one of them (HIFA-49, round four).** `version` stays 7: no signature, column list,
+  statement, count or §7 scenario moves — the note beside `HistoryRepo.record` now repeats the vocabulary
+  SPEC-050 §2.4.2 owns instead of publishing a third list of its own.
+  (1) **The note said "the exact column name" and then listed two names that are not columns of
+  `issue`.** `field` is a column's name for a column change and the noun of the write for the record
+  events that are not columns; `label` and `relation` sat in a list introduced as column names, and
+  `created` — the row `create_issue` writes and SPEC-040 §7 asserts — was missing from it. The paragraph
+  now names both families, enumerates the three non-column nouns v1's tree writes (`created`,
+  `relation`, `label`) with the use case behind each, and points at SPEC-050 §2.4.2 as the one owner of
+  the rule. No name is added to either family and this spec declares no fourth noun.
 
 - spec_revision 18 (2026-11-20): **the item projection learns `milestone`, and the two collections the
   detail returns learn the trash (HIFA-49, D-072 §2–§3).** `version` 5 → 6: §2.6's `IssueListItem` gains
