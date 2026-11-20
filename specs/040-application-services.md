@@ -92,7 +92,8 @@ a `dict` of changes: the typed command is the only transport (R4).
 | `HistoryRow` | `history` | `@dataclass(frozen=True, slots=True)`: eleven fields, declared in the `history.py` block of §2.2 — the one shape the edges read a history row as | yes |
 | `HistoryPage` | `history` | `@dataclass(frozen=True, slots=True)`: `rows`, `window_size`, `truncated`, `last_activity: LastActivity \| None` — declared in the same block | yes |
 | `LastActivity` | `history` | `@dataclass(frozen=True, slots=True)`: `text`, `row_id` — the one-line summary under the title (SPEC-070 §2.5.7.2) | yes |
-| `PRIORITY_LABELS`, `DUE_DATE_FORMAT` | `history` | constants: the five priority labels of `v_priority` and the `20 Nov 2026` date shape — the two producers `priority`/`due_date` rows had none of (SPEC-030 §2.6) | yes |
+| `PRIORITY_LABELS`, `DUE_DATE_FORMAT` | `history` | constants: the five priority labels of `v_priority` and the `20 Nov 2026` date shape — the two producers `priority`/`due_date` rows had none of, declared **here**. The signature says how each arrives: `priorities: Mapping[int, str] = PRIORITY_LABELS` is a **default**, while `due_dates` defaults to `None` and `DUE_DATE_FORMAT` is the format that branch builds its map from; the read builds no map for either (SPEC-030 §2.4) | yes |
+| `wire_instant` | `history` | function: `(moment: datetime) -> str` — the one rendering of an instant on the wire, `2026-11-11T18:35:35Z` (seconds, UTC, `Z`), for the `created_at` of the CLI element, the REST element and the web element | yes |
 
 Read vocabulary, without exceptions: `list_<plural>` returns a tuple of summary rows;
 `<singular>_detail` returns the detail read model. `issue_detail` is the only one with a name of its
@@ -931,7 +932,7 @@ class HistoryRow:
     actor_label: str  # the actor's display name, or `someone` (§2.5.7.1 rule 4 of SPEC-070)
     sentence: str  # the wording of SPEC-070 §2.5.7, composed here and nowhere else (P2/P4)
     dot_color: str | None  # workflow_state.color for a `state_id` row, None for every other field
-    created_at: datetime  # UTC; the instant `<time datetime>` prints
+    created_at: datetime  # UTC; the row's own instant — `wire_instant` below renders the wire's string
 
 
 @dataclass(frozen=True, slots=True)
@@ -959,6 +960,21 @@ def history_rows(
 ) -> HistoryPage: ...
 
 
+def wire_instant(moment: datetime) -> str:
+    """`2026-11-11T18:35:35Z` — the one rendering of an instant on the wire.
+
+    Seconds, UTC, `Z`: the same shape SPEC-030 §2.4 stores a `datetime` in and the only one the three
+    edges publish. `HistoryRow.created_at` is a `datetime` because the adapter's type mapping yields one
+    (SPEC-030 §2.4, REQ-F030-18) and because `history_rows` sorts on it; this function is the row→wire
+    step that turns it into the element's `created_at`, and each edge calls it from its own serializer:
+    SPEC-050 §2.4.2's `HistoryEntry` from the CLI's element serialization, SPEC-060 §2.4.2's
+    `HistoryEntry` from the REST serializer and SPEC-070 §2.3.4's element from the web read model all
+    carry this string. No route, no read model and no template or filter formats an instant of its own,
+    and SPEC-070 §2.5.7.2's `time` row puts that ISO instant into `<time datetime>`.
+    """
+    ...
+
+
 # The one formatter of the history timeline: the CLI (`hifa issue history` and the HISTORY section of
 # `issue show --with`, SPEC-050 §2.5.3.2/§2.5.3.3), the REST envelope (SPEC-060 §2.4.2) and the two web
 # hosts (SPEC-070 §2.3.4/§2.5.7) all project the rows this function returns, and no edge owns a
@@ -969,16 +985,20 @@ def history_rows(
 # D-D's order, the index order of `idx_history_issue`, and the only order a story reads in -- so a
 # caller holding the read's newest-first window passes it as it is. This function sorts; no edge does.
 #
-# The five maps are SPEC-030 §2.6's, `{stored value: label}` each, resolved by the read and never here,
-# and never one lookup per row (§2.4 of SPEC-030 names the N+1 as the thing not to do): `states` (row 16),
-# `members` (row 13) and `parents` (row 17) cost statements, `priorities` and `due_dates` cost none
-# because a closed 0-4 and a calendar date are constants of this module -- defaults, so a caller that has
-# nothing to add passes nothing, and a read that wants to hand over its own map may. `due_dates=None`
-# means "label the dates this module formats": the map is built here from `DUE_DATE_FORMAT` for exactly
-# the distinct values the rows carry, which is why `due_date` rows render as `20 Nov 2026` and not as
-# `2026-11-20`. A value a map does not hold is a target that no longer exists and renders as
-# `<kind> (deleted)`; a kind with no map at all renders `changed <field>`. `domain/` is not imported for a
-# label: the labels arrive as strings.
+# The maps arrive in two families and only one is the read's. `states` (SPEC-030 §2.6 row 16), `members`
+# (row 13) and `parents` (row 17) are `{stored value: label}` and cost the read its statements; they are
+# resolved by the read and never here, and never one lookup per row (§2.4 of SPEC-030 names the N+1 as the
+# thing not to do). `priorities` and `due_dates` are **not** the read's at all: a closed 0-4 and a calendar
+# date are not lookups, so they are this module's constants below -- `PRIORITY_LABELS` and
+# `DUE_DATE_FORMAT` -- declared once here. They reach the function differently, and the signature says so:
+# `priorities` is a default -- `Mapping[int, str] = PRIORITY_LABELS`, so a caller that has nothing to add
+# passes nothing and a read that wants to hand over its own map may -- while `due_dates` is **not** a map
+# default: it defaults to `None`, and `DUE_DATE_FORMAT` is the format this function builds the map with
+# when that branch is taken. `due_dates=None` means "label the dates this module formats": the map is
+# built here from `DUE_DATE_FORMAT` for exactly the distinct values the rows carry, which is why `due_date`
+# rows render as `20 Nov 2026` and not as `2026-11-20`. A value a map does not hold is a target that no
+# longer exists and renders as `<kind> (deleted)`; a kind with no map at all renders `changed <field>`.
+# `domain/` is not imported for a label: the labels arrive as strings.
 #
 # `HistoryRow` is the only shape the edges read a row as, and it is declared above rather than described:
 # eleven fields, of which `old_value`/`new_value` are the raw pair (P7: the `--json` envelope and the
@@ -987,6 +1007,17 @@ def history_rows(
 # rows the window held (`window_size`, the N of `Show all N`) and whether it was full (`truncated`, which
 # is what makes an `N` a floor rather than a total) beside `last_activity`, the one-line summary the
 # panel renders under the title. No edge counts, slices or re-sorts anything it answers.
+#
+# **One field of the row changes type at the wire, and this module owns the change.** `created_at` is a
+# `datetime` here (it is what the adapter parses and what the sort reads) and a string on every payload
+# that publishes it, and `wire_instant` above is the only producer of that string. **Each of the three
+# edges calls it from its own serializer** -- SPEC-050 §2.4.2's `HistoryEntry` from the CLI's element
+# serialization, SPEC-060 §2.4.2's `HistoryEntry` from the REST serializer, and SPEC-070 §2.3.4's element
+# from the web read model -- while `history_rows` itself returns the `datetime` and converts nothing. No
+# route, no read model and no template or template filter formats an instant of its own: the `created_at`
+# row of SPEC-050 §2.4.2's table and of SPEC-060 §2.4.2's table is a `…Z` string, and SPEC-070 §2.5.7.2's
+# `time` row puts that ISO instant into `<time datetime>`, so a second rendering of the same instant would
+# be the way the two edges started printing different seconds.
 #
 # raises: nothing. An unknown `field`, an unresolvable value and a missing actor are answers, not
 # refusals: `changed <field>`, `<kind> (deleted)` and `someone`.
@@ -3063,7 +3094,8 @@ contract it must meet.
 
 - spec_revision 39 (2026-11-20): **the `created` row stops echoing the identifier, and the one
   formatter every edge renders history with is declared (HIFA-46, D-074).** `version` 10 → 11: §2.2
-  gains a read function and its `HistoryRow`, which is a signature this spec publishes.
+  gains a read function, its `HistoryRow` and the row→wire instant (`wire_instant`) that renders the
+  element's `created_at`, which are signatures this spec publishes.
   (1) **`create_issue` wrote `("created", None, saved.identifier)`** and the identifier is the identity
   of the issue the timeline already names, so every rendering had to skip a value that carried nothing.
   Step 16 of §5.1 now writes `("created", None, None)`; the rows already written are normalised by
@@ -3083,13 +3115,21 @@ contract it must meet.
   declares `HistoryRow` (eleven typed fields), `HistoryPage` (`rows`, `window_size`, `truncated`,
   `last_activity`) and `LastActivity` (`text`, `row_id`) in the voice `AddLabelResult` is declared in, and
   §2.2's symbol table lists all three; SPEC-070 §2.3.4 projects that row under one colour key instead of
-  describing a second shape.
+  describing a second shape. The row's one type change gets the producer it lacked: `created_at` is a
+  `datetime` in `HistoryRow` and a `…Z` string in every element, and `wire_instant` — declared beside the
+  formatter and called by the serializer of SPEC-050 §2.4.2, the serializer of SPEC-060 §2.4.2 and the
+  read model of SPEC-070 §2.3.4 — is the row→wire step, so no route, read model or template formats an
+  instant of its own.
   (4) **`priority` and `due_date` rows reached the grammar without a producer.** The grammar renders
   `priority "2"` as `High` and `due_date "2026-11-20"` as `20 Nov 2026`, and the read handed the formatter
   three maps (`states`, `members`, `parents`) — so two of the eight non-printable kinds of SPEC-030 §2.4 had
   nothing to resolve them. The module declares `PRIORITY_LABELS` (the five of `v_priority`) and
-  `DUE_DATE_FORMAT` (`20 Nov 2026`), and the signature takes both as defaults, so both kinds have a
-  producer that costs no statement.
+  `DUE_DATE_FORMAT` (`20 Nov 2026`), and the signature says how each arrives — `priorities` is a default
+  (`= PRIORITY_LABELS`), `due_dates` defaults to `None` and `DUE_DATE_FORMAT` is the format that branch
+  builds from — so both kinds have a producer that costs no statement — and the split is now stated the
+  way the code has it: **three maps come from the read** (`states`, `members`, `parents`) and **two from
+  this module**, with SPEC-030 §2.6 declaring only what it builds (`members`, `history_parents`, and the
+  `states` tuple the third is labelled from).
   (5) **Counts.** §7 does not move: the one assertion that changed is the value of a row, not the
   number of scenarios. No error code, `# raises:` line or command is added or removed.
 

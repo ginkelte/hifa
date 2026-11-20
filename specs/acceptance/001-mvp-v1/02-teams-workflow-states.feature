@@ -117,7 +117,7 @@ Feature: Teams and workflow states
     When I run "hifa state update Backlog --after Todo"
     Then the exit code is 0
     And the position of "Backlog" is greater than the position of "Todo"
-    And the table "schema_migration" still has 3 rows
+    And the table "schema_migration" still has 4 rows
 
   # D-035: deleting a state is not implemented — what happens to the issues that live in it is
   # undefined. The @deferred tag keeps these two out of the runnable set until the decision is made.

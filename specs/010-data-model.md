@@ -534,32 +534,43 @@ Applying a migration, step by step (`apply_migrations`):
 ```
 1. version = schema_version(conn)                     # PRAGMA user_version
 2. If version > MAX_VERSION ⇒ SchemaTooNew (exit 4): the database is from a newer binary.
-3. plan = [m for m in discover(migrations_dir) if m.version > version]  sorted by version
+3. Sweep the checksums of the migrations already recorded, before anything else:
+   for each m of discover(migrations_dir) that has a row in schema_migration:
+     checksum = sha256(bytes of the file)
+     different from the recorded one ⇒ MigrationChecksumMismatch (exit 6), abort the whole run,
+     whether or not a migration is pending; equal ⇒ nothing to do for that file.
+4. plan = [m for m in discover(migrations_dir) if m.version > version]  sorted by version
    If a file does not match ^\d{3}_[a-z0-9_]+\.sql$ ⇒ MigrationFailed (exit 6).
-4. If plan is empty ⇒ return MigrationResult(applied=[], from=to=version, backup=None).
-5. If backup ⇒ VACUUM INTO "hifa.db.bak-<version>"; error ⇒ BackupFailed (exit 6), nothing is touched.
-6. For each migration m of plan, in order:
-   6.1 checksum = sha256(bytes of the file)
-   6.2 if a row exists in schema_migration with version=m.version:
-         different checksum ⇒ MigrationChecksumMismatch (exit 6), abort the whole plan;
-         equal ⇒ m already applied: do not re-run, continue.
-   6.3 BEGIN IMMEDIATE; executescript(m.sql); 
-   6.4 INSERT INTO schema_migration(version, name, applied_at, checksum);
+5. If plan is empty ⇒ return MigrationResult(applied=[], from=to=version, backup=None).
+6. If backup ⇒ VACUUM INTO "hifa.db.bak-<version>"; error ⇒ BackupFailed (exit 6), nothing is touched.
+7. For each migration m of plan, in order:
+   7.1 if a row exists in schema_migration with version=m.version ⇒ m already applied:
+         do not re-run, continue.
+   7.2 BEGIN IMMEDIATE; executescript(m.sql);
+   7.3 INSERT INTO schema_migration(version, name, applied_at, checksum);
        UPDATE PRAGMA user_version = m.version;
-   6.5 COMMIT. Any error ⇒ ROLLBACK, MigrationFailed (exit 6); the file and
+   7.4 COMMIT. Any error ⇒ ROLLBACK, MigrationFailed (exit 6); the file and
        user_version stay consistent (either all or nothing).
-7. When applying 002, which creates the ledger, the rows for versions 1 and 2 are inserted in the
-   same transaction (the ledger is born knowing what already happened); 003 is registered normally in 6.4.
-8. return MigrationResult(applied=[...], from_version=version, to_version=last).
+8. When applying 002, which creates the ledger, the rows for versions 1 and 2 are inserted in the
+   same transaction (the ledger is born knowing what already happened); 003 is registered normally in 7.3.
+9. return MigrationResult(applied=[...], from_version=version, to_version=last).
 ```
 
-**The order is not cosmetic: step 2 precedes step 4, and `migrate.py` implements exactly that.** A database
-at `user_version = 5` has **no plan** — every file is already behind it — so a version check placed after the
-empty-plan return would answer `applied=()` and exit 0 for the one fixture §7 declares at exit 4
-(`schema_too_new`). The code raises `SchemaTooNew` before it compares the files with the cursor —
-`src/hifa/adapters/sqlite/migrate.py::apply_migrations`, the `if current > MAX_VERSION` that precedes
-`plan = [m for m in migrations if m.version > current]` — and the checksum sweep of step 6.2 runs before that
-return too, for the same reason: a run with nothing to apply is still a run that must refuse.
+**The order is not cosmetic: the version check precedes the sweep, and the sweep precedes the plan (and so
+the empty-plan return).**
+A database at `user_version = 5` has **no plan** — every file is already behind it — so a version check placed
+after the empty-plan return would answer `applied=()` and exit 0 for the one fixture §7 declares at exit 4
+(`schema_too_new`). The same holds one step over for the sweep: a database at 4 with an applied file edited
+is a plan of **zero** entries and still a run that must refuse — §7's changed-checksum fixture answers exit 6
+with an empty plan — so the sweep is its own step **3**, before `plan` is computed at step 4 and therefore
+before the empty-plan return at step 5, and not a per-migration check inside the apply loop.
+`src/hifa/adapters/sqlite/migrate.py::apply_migrations` is that order, in this sequence:
+`current = schema_version(conn)`, `migrations = discover(migrations_dir)`, the
+`if current > MAX_VERSION: raise SchemaTooNew`, then `ledger = _applied_checksums(conn)` and its
+`for migration in migrations:` loop that `raise MigrationChecksumMismatch` on a file whose `checksum` moved,
+and only then `plan = [m for m in migrations if m.version > current]` followed by
+`if not plan: return MigrationResult([], current, current, None)` — the sweep is written before the plan is
+computed, which is why the flow above publishes it there.
 
 `hifa db migrate` (SPEC-050 §2.5.5) is a wrapper: `open_db` → `apply_migrations` → prints
 `MigrationResult` as `--json` or one line per applied version. `hifa init` (SPEC-100) calls the

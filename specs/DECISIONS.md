@@ -4536,10 +4536,13 @@ it, and what it costs is one full scan of `issue_history` on the upgrade (`idx_h
 `created` first, newest last — because a story is read forward and because `idx_history_issue(issue_id,
 created_at)` already serves that order. The read model keeps its `DESC LIMIT 100` window (SQL-7 row 11) and
 **the formatter sorts** (SPEC-040 §2.2's `history_rows`): the order of a payload is decided where the
-payload is assembled and not in SQL, which is D-072 §1 applied to a second collection. Two surfaces read
-that ascending order and one does not: the timeline and `hifa issue history` print it forward, the CLI's
-`HISTORY` section too, and `--json` keeps the envelope's newest-first order because the envelope is the
-read's. `--limit N` keeps the **newest** N of the window and prints them forward — `git log -n`'s cut — and
+payload is assembled and not in SQL, which is D-072 §1 applied to a second collection. **One payload, one
+order:** the timeline, `hifa issue history` and its `--json` payload print it forward, and the CLI's
+`HISTORY` section too — `issue history --json` publishes the formatter's page, so its elements are the
+table's order and not the read's, and §2.4.3's list shape fixes `items` and not an issue's event order. The
+only newest-first rendering left is the `history` key of `issue show --json`'s envelope, which is the read's
+because that payload is (SPEC-050 §2.4.3) and because it is not a list verb of one issue. `--limit N` keeps
+the **newest** N of the window and prints them forward — `git log -n`'s cut — and
 the panel's cut is the **first** 8 (D-C), because the panel's reader starts at the top of the story. **The
 window is 100 and it is a floor, not a total:** the read cannot say how many events an issue has, so
 `Show all N` publishes the window's size and a full window prints `the last 100 events` — a hundred-row
@@ -4568,7 +4571,9 @@ a label would have moved a number every count in this corpus quotes. The **wordi
 SPEC-070 §2.5.7, and the two other specs quote it — SPEC-030 beside each writer, SPEC-050 in a terminal —
 which is the arrangement SPEC-050 §2.4.2 already used for the `field` rule. The row itself is declared once,
 as SPEC-040 §2.2's `HistoryRow` (eleven typed fields, `dot_color` the one colour key), and the web's element
-**is** that row plus `created_label`; the formatter answers `HistoryPage`, which carries `rows`,
+**is** that row plus `created_label` — with one type change, `created_at`, which the element carries as the
+`…Z` string SPEC-040 §2.2's `wire_instant` renders, the same string the CLI and the REST elements publish.
+The formatter answers `HistoryPage`, which carries `rows`,
 `window_size`, `truncated` and `last_activity` — the four facts a row cannot. It is
 `src/hifa/app/history.py::history_rows`, not a template (P4) and not `domain/` (a state's display name is not
 a concept the domain layer is asked to learn), and not a web-only step (P2) — the CLI verb, the REST envelope
@@ -4592,10 +4597,19 @@ rendering, so the CLI, the JSON envelope, the REST array and the two web hosts c
 dropped" was false of the surface that dropped one. The read drops it now — SQL-7 row 11 excludes a
 `board_order` row whose immediately preceding row of the same issue, by `id`, is a `state_id` row — which is
 the writers' **batch** and not `created_at`'s precision (33 of the measured database's 34 `board_order` rows
-are exactly `id − 1` from a `state_id` row), and every edge publishes the count the read returns. (c) The
-three milestone rows published one direction (`ISO → NULL`) while `apply_milestones` writes `NULL → ISO` on
-entering the state — the direction `started work` / `completed it` / `canceled it` renders — so both are
-declared, as `archived_at` already did.
+are exactly `id − 1` from a `state_id` row), so no surface publishes a row the read dropped and no surface
+drops one either. **Three surfaces publish the window the read returned and never cut it — the
+`HISTORY` section of `issue show --with`, the REST array of SPEC-060 §2.4.2 and the page's list — while
+two cut, in two different ways: the panel cuts without being asked (8 of the window, `Show all N`), and
+`issue history` cuts to a `--limit` the caller controls — 50 by default and 100 at most, so no flag
+publishes 50 of the read's 100-row window and `--limit 100` publishes the window (SPEC-050 §2.5.3.3).**
+The panel's 8 is a layout decision and not a number about the read (SPEC-030 §2.4, SPEC-070 §2.5.7.2).
+(c) The three milestone rows published one direction (`ISO → NULL`), and the writer does not have that
+direction for all three. `apply_milestones` stamps `NULL → ISO` on entering a state and nulls
+`completed_at`/`canceled_at` on returning to an open one, and it **never clears `started_at`**: so
+`completed_at` and `canceled_at` publish both directions, and `started_at` publishes the one the writer has
+(`started work`), with `cleared the start time` removed — the rule that keeps `comment_added` out of the
+table, applied to a direction.
 
 **What it wins over, and what it does not touch.** It **supersedes** SPEC-030's `spec_revision` 20 sentence
 that "this table adds no name to them" — the table now enumerates the writers' set, because the enumeration

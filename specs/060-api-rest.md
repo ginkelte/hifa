@@ -279,6 +279,9 @@ object it already parsed (R2 — append, never reorder). The row is the one SPEC
 
 - `old_value`/`new_value` are the **stored** TEXT, unchanged and never rewritten (P7). A client that
   wants the raw key of a state change still reads it here, exactly as `issue show --json` publishes it.
+- `created_at` is the `…Z` string SPEC-040 §2.2's `wire_instant` renders from the row's own `datetime`
+  (`2026-11-11T18:35:35Z`: seconds, UTC). This edge formats no instant: one producer serves all three
+  elements, which is why the CLI, the API and the dashboard cannot print different seconds for one row.
 - `old_label`/`new_label` are the **resolved** rendering of the same two, from the maps of
   SPEC-030 §2.6 (SQL-7 rows 13, 16 and 17, plus the two constants of SPEC-040 §2.2 for `priority` and
   `due_date`) and never from a join a client would have to run; `null` when the corresponding value is

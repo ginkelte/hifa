@@ -797,7 +797,7 @@ issue_vm = {
             "old_label": "Todo",
             "new_label": "In Progress",
             "dot_color": "#F2C94C",
-            "created_at": "2026-11-11T18:35:35Z",
+            "created_at": "2026-11-11T18:35:35Z",  # SPEC-040 §2.2's wire_instant(row.created_at)
             "created_label": "2 h ago",
         }
     ],
@@ -813,7 +813,7 @@ issue_vm = {
             "old_label": "Todo",
             "new_label": "In Progress",
             "dot_color": "#F2C94C",
-            "created_at": "2026-11-11T18:35:35Z",
+            "created_at": "2026-11-11T18:35:35Z",  # SPEC-040 §2.2's wire_instant(row.created_at)
             "created_label": "2 h ago",
         }
     ],
@@ -838,7 +838,14 @@ cannot produce: `created_label`, the relative stamp, because "now" is the edge's
 instant, not a distance from today. Within the element, `sentence` is the formatter's wording (§2.5.7 owns
 it), `old_label`/`new_label` are its resolved strings and `old_value`/`new_value` are the stored TEXT it
 keeps for the `data-*` attributes (P7 — a reader of the DOM can still see the key the row held);
-`created_at` is the ISO instant that goes into `<time datetime>` (§2.5.7).
+`created_at` is the ISO string SPEC-040 §2.2's `wire_instant` renders from `HistoryRow.created_at` —
+`2026-11-11T18:35:35Z`, seconds, UTC — and it goes into `<time datetime>` verbatim (§2.5.7). **The
+conversion is not the template's, and this layer performs it by calling the formatter's function:** the row
+carries a `datetime`, this read model calls `wire_instant` once for the element it builds, the CLI's
+element serializer and the REST serializer call the same function for theirs, and the template is handed a
+string. No route, no read model and no template or filter formats an instant of its own — §2.5.7.2's
+`time` row puts the ISO instant in `<time datetime>` and the relative stamp beside it — so `created_label`
+is the one thing this edge adds, the relative stamp, because "now" is its clock.
 
 **Four keys of the section are not the element's, and three of them are not this layer's either.**
 `history_panel` is the 8-row cut and is **layout**, which §2.5.7 gives to this layer (D-C).
@@ -1269,7 +1276,7 @@ stored key.
 | `label` | bug | – | `removed the label bug` |
 | `relation` | – | blocks HIFA-33 | `marked it as blocking HIFA-33` |
 | `relation` | blocks HIFA-33 | – | `removed the blocking relation to HIFA-33` |
-| `estimate` | – | 3 | `set the estimate to 3` |
+| `estimate` | – | 3 | `set the estimate to 3` (the trim is the grammar's, not the storage's: SPEC-030 §2.4 stores `3.0` and this row renders it `3`, and every estimation scale is whole, so the rule removes a trailing `.0` and nothing else) |
 | `estimate` | 3 | – | `cleared the estimate` |
 | `due_date` | – | 20 Nov 2026 | `set the due date to 20 Nov 2026` |
 | `due_date` | 20 Nov 2026 | – | `removed the due date` |
@@ -1277,7 +1284,6 @@ stored key.
 | `branch_name` | old | new | `changed the branch name` (a slug of the title the row above already shows) |
 | `board_order` | a | b | `reordered it in the column` — the row the read did **not** drop, i.e. every `board_order` row whose predecessor by `id` is not a `state_id` row (SPEC-030 §2.6's `WHERE`, SQL-7 row 11). A rank a move produced never reaches this table, so there is no conditional rendering here: the event the move names is the `state_id` row above it |
 | `started_at` | – | ts | `started work` |
-| `started_at` | ts | – | `cleared the start time` |
 | `completed_at` | – | ts | `completed it` |
 | `completed_at` | ts | – | `cleared the completion` |
 | `canceled_at` | – | ts | `canceled it` |
@@ -1295,6 +1301,12 @@ stored key.
 `field` a writer can store (SPEC-030 §2.4, 21 values) and none for a field nobody writes. The revision
 that lands HIFA-6's history row adds its sentence **in this table**, in the same PR that adds the writer
 (D-A binds it).
+
+**`started_at` has one row for the same reason.** It has a direction and no second one: `apply_milestones`
+stamps it on entering a `started` state when it was empty and never clears it (the return to an open type
+nulls `completed_at` and `canceled_at` only), so `cleared the start time` was the rendering of a row no
+writer could store and it is gone. `completed_at` and `canceled_at` keep both rows because both of their
+writers exist (SPEC-030 §2.4).
 
 #### 2.5.7.1 The fallbacks, as rules
 
@@ -2137,7 +2149,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R26** | **The page notices a foreign write by a change signal, never by a timer.** `GET /_/revision` answers `{"revision": <n>}` read from `PRAGMA data_version` on the process's single long-lived read connection (§2.1.3.1, §3, D-049); the number changes iff another connection committed since the previous read — which is what the CLI is, and what the process's own per-request connections are. The page carries the number it was rendered with (`<body data-revision>`, `page["revision"]`) and adopts the `HX-Revision` of an answer that replaced the collection; a panel, a row, the palette or the counters do not adopt (D-050); the poller (`hx-trigger="every {{ page.revision_poll }}"`, `hx-swap="none"`, visibility enforced in the client by cancelling `htmx:beforeRequest` while the tab is hidden — never as a `[condition]` filter, which the CSP's `script-src 'self'` makes unrunnable) reloads `page["refresh_url"]` into `#board`/`#issues-tbody` **only when the numbers differ**, so no request and no swap happens while nothing changed. The reload is **deferred, never forced**, while a detail panel is open, the quick add holds unsaved text or a drag is in flight; the last revision seen is applied as soon as the interaction ends (§2.6.8). The number is opaque — compared for equality, never ordered, never arithmetic, never displayed. Without JS nothing of this runs and a reload shows the new data (P5). The probe is a read: `--read-only` neither blocks it nor changes it. → **REQ-F070-15** |
 | **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The **seven** page forms of §2.1.2 — the quick add, the edit, `move`, the comment and the three layer writes — each have the `/_/` fragment of §2.1.3 that answers them, and each form on a fragment-bearing surface carries the `hx-*` that points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card or the panel after an edit (`?view=panel` answers the panel, for the description editor of §2.6.3), `204` with no body after a move, an archive, a delete or a restore, `200` with the one `<li>` a comment writes (§2.6.10), `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
 | **R28** | **A state-changing request from another origin is refused before the route runs, and a request with no origin information is allowed.** Every request whose method is outside `GET`/`HEAD`/`OPTIONS` is answered `403`, `text/plain` `cross-site write refused`, `Cache-Control: no-store` — returned by one middleware installed by `create_app` inside `_headers`, never raised as an exception — when `Sec-Fetch-Site` is `cross-site` or `same-site`, or when that header is absent and `Origin` names another authority or is `null`; `same-origin`, `none`, an `Origin` whose authority is `Host`'s, and a request with neither header are served. The comparison is the authority (host and port, compared case-insensitively, the scheme dropped), so a browser whose `Origin` says `https` behind a plain `http` tunnel still writes, and `Origin: null` — which names no authority — is refused. The guard reads no path, no route table, no table and no body, so it precedes the `HX-Request` `400` (R5), the read-only `403` (R18) and the use case, and a cross-site write to an unknown identifier is `403` rather than `404`. It does not authenticate, does not close the tunnel and does not make a header a credential — a client that sets its own headers can set any, and a same-origin page can write by definition; and it covers no read, because a cross-site read is served and its bytes are unreadable to the other origin (REQ-S005). → **REQ-F070-16** |
-| **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block, no comment composer (§2.6.10) — and every write but `restore` refuses it, the comment included — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind the two surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **they are its only consumers**; the row and the card never pass the keyword, and the asymmetry — page and panel pass it, collection members do not — is the rule and not an implementation detail. **The one route that shares the panel's call is not a third surface**: `GET /_/issues/{identifier}/history` (§2.1.4) re-renders the panel's own timeline with the panel's two `include` names and its keyword, so it answers what the panel already answers and adds no surface over the trash — a `Show all` on a trashed issue's panel is the panel talking, and its `200` is that `200`. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write, `archive` and a comment refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the four controls (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
+| **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block, no comment composer (§2.6.10) — and every write but `restore` refuses it, the comment included — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind those surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **the three surfaces of §2.1.4 that pass the keyword are its only consumers**: the page, the panel fragment and the history fragment — the first two are the two surfaces, and the third re-renders the second's own list. No other route passes it: the row and the card never do, and the asymmetry — page, panel and history fragment pass it, collection members do not — is the rule and not an implementation detail. **The one route that shares the panel's call is not a third surface**: `GET /_/issues/{identifier}/history` (§2.1.4) re-renders the panel's own timeline with the panel's two `include` names and its keyword, so it answers what the panel already answers and adds no surface over the trash — a `Show all` on a trashed issue's panel is the panel talking, and its `200` is that `200`. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write, `archive` and a comment refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the four controls (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
 
 Component-specific requirements:
 
