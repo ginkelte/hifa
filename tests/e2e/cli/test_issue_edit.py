@@ -128,7 +128,9 @@ def test_edit_with_a_state_of_another_team_exits_2(cli: Cli, other_team: str) ->
     assert result.exit_code == 2
     error = error_json(result)
     assert error["code"] == "validation_error"
-    assert "STATE_TEAM_MISMATCH" in result.stderr
+    assert error["field"] == "state_id"
+    assert error["details"] is None
+    assert error["message"] == "workflow state belongs to another team"
     assert cli.issue("ENG-1")["state_id"] == before_state
     assert len(cli.history("ENG-1")) == before_rows
 

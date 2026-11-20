@@ -130,8 +130,11 @@ def test_move_with_a_state_of_another_team_exits_2(cli: Cli, other_team: str) ->
     before_state = cli.issue("ENG-1")["state_id"]
     result = cli.run("issue", "move", "ENG-1", "--state", other_team, "--json")
     assert result.exit_code == 2
-    assert error_json(result)["code"] == "validation_error"
-    assert "STATE_TEAM_MISMATCH" in result.stderr
+    error = error_json(result)
+    assert error["code"] == "validation_error"
+    assert error["field"] == "state_id"
+    assert error["details"] is None
+    assert error["message"] == "workflow state belongs to another team"
     assert cli.issue("ENG-1")["state_id"] == before_state
 
 

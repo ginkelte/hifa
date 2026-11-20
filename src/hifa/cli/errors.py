@@ -10,12 +10,13 @@ Map: `0` ok · `1` `doctor` only · `2` validation/config · `3` not found ·
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 import typer
 
 from hifa.cli import output
 from hifa.config import ConfigError
-from hifa.domain.errors import HifaError, NotFound
+from hifa.domain.errors import HifaError
 
 EXIT_OK = 0
 EXIT_VALIDATION = 2
@@ -149,20 +150,28 @@ def error_field_for(exc: BaseException) -> str | None:
     return getattr(exc, "field", None)
 
 
-def error_details_for(exc: BaseException) -> dict[str, object] | None:
-    """`details` of the envelope: `null` for a 404, the mapping otherwise.
+def error_details_for(exc: BaseException) -> list[dict[str, object]] | None:
+    """`details` of the envelope: the multi-error list, or `null`.
 
-    A 404 publishes the noun of what is missing in `field` and the key in `message`, so the
-    `resource`/`key` mapping the exception carries stays an accessor and is never forwarded: one
-    fact, one place. A refusal keeps its rule/field/value mapping, which is where the rule the
-    user has to fix travels.
+    SPEC-060 §6.3 gives `details` exactly two shapes and no third — `null`, or the list
+    `[{"field": ..., "message": ...}]` that a refusal publishes when it reports **several**
+    validation errors, with `field` repeating the first one. The mapping an exception *carries*
+    is its accessor (`exc.details`, SPEC-020 §6): `rule`/`field`/`value` for a `Validation` or a
+    `Conflict`, `resource`/`key` for a `NotFound`, `labels`/`teams` for an ambiguous name. No
+    edge publishes that mapping — the rule travels in `message`, the 404's noun in `field`, the
+    ambiguous spellings in `message` — so this renderer forwards a list and answers `null` for
+    everything else. `LABEL_AMBIGUOUS` is one of those: its mapping is an accessor, and
+    `error.details` is `null` while `message` names the spellings and the levels.
     """
-    if isinstance(exc, NotFound):
-        return None
     details = getattr(exc, "details", None)
-    if isinstance(details, dict) and details:
-        return dict(details)
-    return None
+    if not isinstance(details, (list, tuple)):
+        return None
+    errors: list[dict[str, object]] = []
+    for item in details:
+        if not isinstance(item, Mapping) or not {"field", "message"} <= set(item):
+            return None
+        errors.append({"field": item["field"], "message": item["message"]})
+    return errors or None
 
 
 def error_payload(exc: BaseException) -> dict[str, object]:

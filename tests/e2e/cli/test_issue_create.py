@@ -146,7 +146,8 @@ def test_create_with_an_estimate_outside_the_scale_exits_2(
     error = json.loads(result.stderr)["error"]
     assert error["code"] == "validation_error"
     assert error["field"] == "estimate"
-    assert error["details"]["rule"] == "ESTIMATE_NOT_IN_SCALE"
+    assert error["details"] is None
+    assert error["message"] == "estimate is not part of the fibonacci scale"
     written = run("issue", "create", "After the rejection", "--json")
     assert written.exit_code == 0, written.stdout + written.stderr
     assert json.loads(written.stdout)["identifier"] == "ENG-1"
