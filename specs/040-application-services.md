@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 7
-spec_revision: 33
+spec_revision: 34
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -689,7 +689,8 @@ class AddLabelResult:
 # group, and `None` in every other case (R10). `create_if_missing` creates a team label of the issue's
 # team when neither level has the name (R22). A ref that is a ULID and exists nowhere is
 # `NotFound(resource='label')`; a ref that is a **name** and resolves at neither level is
-# `Validation(rule='LABEL_NOT_FOUND')` — §2.2 assigns that code to this verb alone, and `remove_label`
+# `Validation(rule='LABEL_NOT_FOUND')` — §2.2 assigns that code to this verb and to `create_issue`'s
+# `-l/--label` path (§5.1 step 10), and `remove_label`
 # answers the same input with `NotFound(resource='label')` (below). A **name** that fits more than one
 # row of one scope step is `Validation(rule='LABEL_AMBIGUOUS', field='ref')` (R22): two spellings inside
 # the issue's team, or two inside the workspace when the team step found none. The team step decides
@@ -742,7 +743,13 @@ def retire_label(uow: UnitOfWork, cmd: RetireLabel, actor: Actor) -> Label: ...
 def restore_label(uow: UnitOfWork, cmd: RestoreLabel, actor: Actor) -> Label: ...
 
 
-# raises: NotFound(label), Validation(LABEL_AMBIGUOUS), Conflict(LABEL_NOT_RETIRED)
+# raises: NotFound(label), Validation(LABEL_AMBIGUOUS),
+#         Conflict(LABEL_NOT_RETIRED|UNIQUE_LABEL_NAME)
+# Clearing `retired_at` puts the row back among the live ones, so the write is judged by the one
+# spelling rule of R22: a **live** case variant at the label's own level (`bug` beside a retired
+# `Bug`) is `Conflict(rule='UNIQUE_LABEL_NAME', field='name')`, compared over the rows with the same
+# `workspace_id` and `team_id` — a retired sibling is not the pair this refuses, and a case variant at
+# another level is a second label.
 
 # src/hifa/app/members.py  -- writes
 
@@ -1506,18 +1513,23 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
       `name` matches is `Validation(rule='LABEL_AMBIGUOUS', field='ref', value=<the reference as
       typed>)`** — never a silent pick of one row, which is the failure this refusal exists for: with
       `Bug` and `bug` in one team, a resolution that took the first matching row attached the wrong label
-      and answered as if nothing had happened. The refusal names the **spellings** it found —
-      `details={"labels": ["Bug", "bug"], "rule": "LABEL_AMBIGUOUS", "field": "ref", "value": "bug"}`,
-      `labels` in `name` ASC order so two runs over the same data print the same text — because "the name
-      is ambiguous" without the rows it fits leaves the caller with nothing to type. When the colliding
-      rows sit in **different levels** instead — two teams, or a team and the workspace, which only a
-      catalogue reference can see — the level is what the caller has to choose between, so the message
-      and `details` keep the team keys (`details={"teams": [...]}`, D-061) and no spelling is named. A
-      set that holds **both shapes** (a team's `Bug`, that team's `bug`, and the OPS team's `Bug`) is one
-      refusal carrying both keys: `labels` and `teams`. This rule is the **only** producer of
-      `LABEL_AMBIGUOUS`, and it is raised by every use case that resolves a label by name — the four
-      catalogue references, `add_label`, `remove_label`, `create_issue` (whose `labels` are the
-      `-l/--label` path of `issue create`, SPEC-050 §2.5) and `create_label`'s parent.
+      and answered as if nothing had happened. The refusal names the **spellings** it found in the
+      exception's own **accessor mapping** — `exc.details == {"labels": ["Bug", "bug"], "rule":
+      "LABEL_AMBIGUOUS", "field": "ref", "value": "bug"}`, `labels` in `name` ASC order so two runs over
+      the same data print the same text — because "the name is ambiguous" without the rows it fits
+      leaves the caller with nothing to type. That mapping is the domain consumer's (SPEC-020 §2.6) and
+      **no edge publishes it**: the wire `details` of the envelope is **`null`** on both edges
+      (SPEC-050 §2.4.5, SPEC-060 §6.3, D-062), and the names travel in `message`, which is complete on
+      its own — `label bug is ambiguous: 'Bug', 'bug'`. When the colliding rows sit in **different
+      levels** instead — two teams, or a team and the workspace, which only a catalogue reference can
+      see — the level is what the caller has to choose between, so the message and the accessor keep
+      the team keys (`exc.details["teams"]`, D-061) and no spelling is named; the message then reads
+      `label bug is ambiguous: it exists in ENG, OPS`. A set that holds **both shapes**
+      (a team's `Bug`, that team's `bug`, and the OPS team's `Bug`) is one refusal carrying both keys:
+      `labels` and `teams`. This rule is the **only** producer of `LABEL_AMBIGUOUS`, and it is raised by
+      every use case that resolves a label by name — the four catalogue references, `add_label`,
+      `remove_label`, `create_issue` (whose `labels` are the `-l/--label` path of `issue create`,
+      SPEC-050 §2.5) and `create_label`'s parent.
     - *Issue-scoped* (`add_label`, `remove_label`): a name resolves **in the issue's team, then in the
       workspace** (§5.6 step 4), the two steps read one at a time. A team match wins over a workspace one
       and two teams are never consulted, so the issue's team is the tie-breaker between **levels** — not
@@ -1541,8 +1553,9 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
       group of the other level is `Validation(rule='LABEL_GROUP_INVALID', field='parent')` (below), and
       a parent name that fits more than one row of that level is the `LABEL_AMBIGUOUS` refusal above. Its
       `field` is `ref` on every site of that rule, `parent` being the field the **group** refusals carry.
-  - **One spelling per level: `create_label` and `update_label` refuse a case variant, and the index
-    cannot help.** `create_label` refuses a `name` that a row of its own level already carries **in
+  - **One spelling per level: `create_label` and `update_label` refuse a case variant, `restore_label`
+    refuses to bring one back, and the index cannot help.** `create_label` refuses a `name` that a row
+    of its own level already carries **in
     another case**, and `update_label` refuses a rename onto one: `Conflict(rule='UNIQUE_LABEL_NAME',
     field='name')`, the code the exact repeat already gets, compared case-insensitively over the rows
     with the same `workspace_id` and the same `team_id` — **retired rows included**, because
@@ -1550,7 +1563,13 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
     changes only the row's **own** case (`Bug` → `BUG`) is allowed: the row is not a second spelling of
     itself, and refusing it would make a cosmetic fix need two steps. A case variant at **another**
     level is a second label and no conflict: a team `bug` beside a workspace `Bug` is the shape the
-    resolution above is built on.
+    resolution above is built on. **`restore_label` is the same property from the other direction**: it
+    writes `retired_at = NULL`, so it puts a row back among the live ones and refuses
+    `Conflict(rule='UNIQUE_LABEL_NAME', field='name')` when the label's own level already holds a
+    **live** case variant — a retired `Bug` restored beside a live `bug` is exactly the pair §1's
+    refusal exists for, and the write is where it must not be created. A retired sibling is not that
+    pair — the refusal is about the live set a name resolves against — and a variant at another
+    level is a second label, as above.
     **Why this is a rule of the use case and not of the schema.** Both partial unique indexes compare
     **binary** — the column carries no collation — so `Bug` and `bug` satisfy them both; the same rule as
     an index would be `COLLATE NOCASE` inside `uq_label_team` and `uq_label_ws`, and an applied migration
@@ -1558,18 +1577,20 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
     a rebuild of every `label` table — for a refusal that one read of `LabelRepo.list` over the level
     decides, in the transaction that already holds the row. The index keeps the exact repeat and stays
     the safety net; the use case owns the spelling, and D-070 records why.
-  - **Every path that writes a `label` row obeys it.** Four are the ones this layer and `init` own:
-    `create_label`, `update_label`, `add_label`'s `create_if_missing` — which cannot write a second
-    spelling at all, because a name that resolves at either level is used and nothing is created (§5.6
-    step 4), so its `UNIQUE_LABEL_NAME` survives only for an insert that loses a race — and `hifa init`'s
-    seed, which is a writer of this table like any other: it resolves its four names case-insensitively
-    (SPEC-100 R11bis), so a workspace that already carries `bug` keeps `bug`, gains no `Bug`, and reports
-    the entry as `skipped`.
-    The seed declines to write and never refuses, because a database whose labels are legal must not make
-    `init` fail — and skipping is also what keeps `init` idempotent and its exit set unchanged.
-    `hifa import` is the fifth writer and already behaves: SPEC-080 R10 resolves a name **casefolded**
-    across the workspace and the target team and creates only when nothing matched, so it cannot write a
-    second spelling either.
+  - **Every path that writes a `label` row obeys it.** Six are the ones this corpus names:
+    `create_label`, `update_label`, `restore_label` — which writes `retired_at = NULL` and is therefore a
+    writer of a **live** row, refused as above when a live case variant holds the name at its level —
+    `add_label`'s `create_if_missing`, which cannot write a second spelling at all because a name that
+    resolves at either level is used and nothing is created (§5.6 step 4), so its `UNIQUE_LABEL_NAME`
+    survives only for an insert that loses a race; `hifa init`'s seed, which is a writer of this table
+    like any other and resolves its four names case-insensitively (SPEC-100 R11bis), so a workspace that
+    already carries `bug` keeps `bug`, gains no `Bug`, and reports the entry as `skipped` — the seed
+    declines to write and never refuses, because a database whose labels are legal must not make `init`
+    fail, and skipping is also what keeps `init` idempotent and its exit set unchanged; and `hifa
+    import`, which does **not** get a pass. SPEC-080 R10 used to match a name across `(workspace-wide)
+    OR (target team)` and prefer the non-null `team_id`, a silent pick of one row the rule above
+    forbids; it now reads the target team and then the workspace one step at a time and rejects the row
+    with its own `ambiguous_label` verdict when a step carries two spellings (SPEC-080 §4.2 R10, §6.2).
   - **`create_label`.** `name` must have non-blank content after trimming, else
     `Validation(rule='LABEL_NAME_EMPTY', field='name')`. `color` is `'#6B6F76'` when the command brings
     `None`, and is validated against `#RRGGBB` (`COLOR_FORMAT`) either way. `description` is stored as
@@ -1604,8 +1625,10 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
     can decide (D-061).
   - **`restore_label`** writes `retired_at = NULL` and no other column. A label that is not retired is
     `Conflict(rule='LABEL_NOT_RETIRED')` — the same shape as the double retire, not a silent no-op,
-    because the family's layer already answers a repeated change with exit 4. It is the undo SPEC-050
-    §2.5.4 publishes as `label archive --undo`, and it is the only way back.
+    because the family's layer already answers a repeated change with exit 4 — and a label whose own
+    level holds a **live** case variant is `Conflict(rule='UNIQUE_LABEL_NAME', field='name')` instead of
+    a restore that recreates the pair of §1 (above). It is the undo SPEC-050 §2.5.4 publishes as `label
+    archive --undo`, and it is the only way back.
   - **Retiring a group retires the group only.** Its children keep their own `retired_at` and stay
     attachable: SPEC-020 R8 judges the label itself, `group_type` is still readable on the retired
     group, and the replacement of R10 keeps working for its children.
@@ -1658,7 +1681,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-35** | A comment thread stops at three: `comment_on_issue` refuses the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')` and inserts nothing, and the reply that lands at depth 3 is stored | 2 scenarios, one at the boundary and one past it |
 | **REQ-F040-36** | `comment_on_issue` refuses a trashed issue with `Validation(rule='ISSUE_TRASHED')` and an archived one with `InvalidTransition(rule='ISSUE_ARCHIVED')`, both before a parent is read, and writes no row either way | 2 scenarios, one per layer |
 | **REQ-F040-37** | `add_label` returns `AddLabelResult(issue, replaced)`; a label of a `singleSelect` group replaces every sibling the issue carries, in the same transaction and before the insert, and the removal is recorded as its own `('label', <replaced name>, NULL)` row before the attach row; a `multiSelect` group and a label outside any group replace nothing | 3 scenarios: one replacement, one group that must not replace, one no-op |
-| **REQ-F040-38** | `update_label` changes `name`, `color` and `description` only and judges the new name's uniqueness at the label's own level — case-insensitively, over every row of that level except its own, retired rows included; `create_label` refuses a **second spelling** of a name its level already carries (`Conflict(rule='UNIQUE_LABEL_NAME', field='name')`) and so does a rename onto one, while a rename that changes only the row's own case is allowed and a case variant at another level is a second label; `retire_label` refuses a label with any `issue_label` row (`Conflict(rule='LABEL_IN_USE')`) and an already retired one (`Conflict(rule='LABEL_RETIRED')`); `restore_label` clears `retired_at` and refuses a label that is not retired (`Conflict(rule='LABEL_NOT_RETIRED')`); a name that fits **more than one row of one scope step** is `Validation(rule='LABEL_AMBIGUOUS', field='ref')` on **every** reference that resolves a label by name — the four catalogue-scoped ones (`update_label`, `retire_label`, `restore_label`, `label_detail`), `add_label`, `remove_label`, `create_issue` (`issue create -l`) and `create_label`'s parent — with the spellings in `details.labels` when the rows share a level and the team keys in `details.teams` when they do not, and a **ULID** never reaching that rule; those four resolve a **name** with `LabelRepo.list(..., include_retired=True)`, retired rows included, so `restore_label`, a repeated `retire_label` and the rename of a retired label are reachable by name instead of answering `NotFound` | 9 scenarios: the rename, `LABEL_IN_USE`, `LABEL_RETIRED`, the undo with `LABEL_NOT_RETIRED`, `LABEL_AMBIGUOUS` across two teams, the rename of a retired row resolved by name, two spellings of one name inside one team refused by three verbs, the case-variant refusal of create and rename, and a case variant at another level read as a second label |
+| **REQ-F040-38** | `update_label` changes `name`, `color` and `description` only and judges the new name's uniqueness at the label's own level — case-insensitively, over every row of that level except its own, retired rows included; `create_label` refuses a **second spelling** of a name its level already carries (`Conflict(rule='UNIQUE_LABEL_NAME', field='name')`) and so does a rename onto one, while a rename that changes only the row's own case is allowed and a case variant at another level is a second label; `retire_label` refuses a label with any `issue_label` row (`Conflict(rule='LABEL_IN_USE')`) and an already retired one (`Conflict(rule='LABEL_RETIRED')`); `restore_label` clears `retired_at` and refuses a label that is not retired (`Conflict(rule='LABEL_NOT_RETIRED')`), and refuses to put a row back beside a **live case variant** at its level (`Conflict(rule='UNIQUE_LABEL_NAME', field='name')`) because that would recreate the pair the name rule forbids; a name that fits **more than one row of one scope step** is `Validation(rule='LABEL_AMBIGUOUS', field='ref')` on **every** reference that resolves a label by name — the four catalogue-scoped ones (`update_label`, `retire_label`, `restore_label`, `label_detail`), `add_label`, `remove_label`, `create_issue` (`issue create -l`) and `create_label`'s parent — with the spellings in `message` and in the exception's `exc.details` (`labels`) when the rows share a level and the team keys (`teams`) when they do not, while the wire `details` stays `null`; and a **ULID** never reaching that rule; those four resolve a **name** with `LabelRepo.list(..., include_retired=True)`, retired rows included, so `restore_label`, a repeated `retire_label` and the rename of a retired label are reachable by name instead of answering `NotFound` | 10 scenarios: the rename, `LABEL_IN_USE`, `LABEL_RETIRED`, the undo with `LABEL_NOT_RETIRED`, `LABEL_AMBIGUOUS` across two teams, the rename of a retired row resolved by name, two spellings of one name inside one team refused by three verbs, the case-variant refusal of create and rename, a case variant at another level read as a second label, and the restore that refuses to bring one back |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -2174,8 +2197,8 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `LABEL_NOT_RETIRED` | `Conflict` | restoring a label whose `retired_at` is already NULL | `restore_label` | 4 | 409 |
 | `LABEL_GROUP_INVALID` | `Validation` | a group with a parent, a group without `group_type`, or a `parent` that is not an existing group of the same level (`field` names `parent` or `group_type`) | `create_label` | 2 | 422 |
 | `LABEL_NAME_EMPTY` | `Validation` | a label name that is blank after trimming (`field='name'`) | `create_label`, `update_label` | 2 | 422 |
-| `LABEL_AMBIGUOUS` | `Validation` | a label **name** that fits more than one row of one scope step, retired rows included (`field='ref'`): the spellings it found when those rows share a level (`details.labels`), the team keys when they sit in different levels (`details.teams`, D-061), and both keys when a set holds both shapes | `add_label`, `remove_label`, `create_label` (its `parent`), `create_issue`, `update_label`, `retire_label`, `restore_label`, `label_detail` | 2 | 422 |
-| `UNIQUE_LABEL_NAME` | `Conflict` | repeated `(workspace_id, team_id, name)` on create or on rename, or a **second spelling** of it at that level (`Bug` beside `bug`, retired rows included; the exact repeat is the condition `LabelRepo.insert`/`update` reports as `DUPLICATE_LABEL`, which the use case translates into this name, and the case variant is the use case's own read — D-070) | `create_label`, `update_label`, `add_label` (only under `create_if_missing`) | 4 | 409 |
+| `LABEL_AMBIGUOUS` | `Validation` | a label **name** that fits more than one row of one scope step, retired rows included (`field='ref'`): the spellings travel in `message` (`label bug is ambiguous: 'Bug', 'bug'`) and in the exception's `exc.details` mapping (`labels`) when the rows share a level, the team keys when they sit in different levels (`teams`, D-061), and both keys when a set holds both shapes — the wire `details` is `null` (D-062) | `add_label`, `remove_label`, `create_label` (its `parent`), `create_issue`, `update_label`, `retire_label`, `restore_label`, `label_detail` | 2 | 422 |
+| `UNIQUE_LABEL_NAME` | `Conflict` | repeated `(workspace_id, team_id, name)` on create or on rename, or a **second spelling** of it at that level (`Bug` beside `bug`, retired rows included; the exact repeat is the condition `LabelRepo.insert`/`update` reports as `DUPLICATE_LABEL`, which the use case translates into this name, and the case variant is the use case's own read — D-070); `restore_label` raises it for a **live** case variant at the restored label's level | `create_label`, `update_label`, `restore_label`, `add_label` (only under `create_if_missing`) | 4 | 409 |
 | `COLOR_FORMAT` | `Validation` | color outside `#RRGGBB` | `create_label`, `update_label`, `add_label` (only under `create_if_missing`) | 2 | 422 |
 | `UNIQUE_STATE_NAME` | `Conflict` | repeated state `(team_id, name)` | `create_state`, `update_state` | 4 | 409 |
 | `STATE_TYPE_INVALID` | `Validation` | `state_type` outside the six types | `create_state`, `update_state` | 2 | 422 |
@@ -2242,7 +2265,7 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `archive_team` | team | `TEAM_HAS_OPEN_ISSUES` | `TEAM_ALREADY_ARCHIVED` | — |
 | `create_state` / `update_state` | team, state | `STATE_TYPE_INVALID`, `STATE_NAME_EMPTY`, `TEAM_ARCHIVED` | `UNIQUE_STATE_NAME` | — |
 | `create_label` | team | `LABEL_GROUP_INVALID`, `LABEL_NAME_EMPTY`, `LABEL_AMBIGUOUS`, `COLOR_FORMAT`, `TEAM_ARCHIVED` | `UNIQUE_LABEL_NAME` | — |
-| `update_label` / `retire_label` / `restore_label` | label | `LABEL_AMBIGUOUS`, plus `LABEL_NAME_EMPTY` and `COLOR_FORMAT` on `update_label` | `UNIQUE_LABEL_NAME` (`update_label` only), `LABEL_RETIRED`, `LABEL_IN_USE`, `LABEL_NOT_RETIRED` | — |
+| `update_label` / `retire_label` / `restore_label` | label | `LABEL_AMBIGUOUS`, plus `LABEL_NAME_EMPTY` and `COLOR_FORMAT` on `update_label` | `UNIQUE_LABEL_NAME` (`update_label` and `restore_label`), `LABEL_RETIRED`, `LABEL_IN_USE`, `LABEL_NOT_RETIRED` | — |
 | `create_member` / `update_member` / `deactivate_member` | member | `MEMBER_EMAIL_INVALID`, `MEMBER_NAME_EMPTY` | `UNIQUE_MEMBER_EMAIL`, `MEMBER_ALREADY_INACTIVE` | — |
 | `create_project` | team, member | `DATE_RANGE_INVERTED`, `PROJECT_TEAM_MISMATCH` | — | — |
 | `update_project` / `archive_project` | project, team, member | `DATE_RANGE_INVERTED` | — | — |
@@ -2257,9 +2280,10 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `list_blocked` | team | — | — | — |
 
 The two issue label verbs differ on exactly one input, and the difference is the vocabulary §2.2
-assigns: a **name** that resolves at neither level is `LABEL_NOT_FOUND` on `add_label` (exit 2; that
-verb is its only producer) and `NotFound(resource='label')` on `remove_label` (exit 3), which is also
-what both verbs answer for a ULID that exists nowhere.
+assigns: a **name** that resolves at neither level is `LABEL_NOT_FOUND` on `add_label` and on
+`create_issue`'s `-l/--label` path (exit 2; those are its two producers — §5.1 step 10 is the same
+resolution) and `NotFound(resource='label')` on `remove_label` (exit 3), which is also
+what `add_label` and `remove_label` both answer for a ULID that exists nowhere.
 
 `LABEL_AMBIGUOUS` is judged on the **reference**, so it appears in the `Validation` cell of every use
 case that resolves a label by name and in no other cell: `add_label`, `remove_label`, `create_label`
@@ -2280,9 +2304,11 @@ layer guarantees is the *accessor* those edges read: `NotFound.details` carries 
 `Validation.details` `rule`/`field` — plus the keys a refusal names, `labels` and `teams` on
 `LABEL_AMBIGUOUS` and `open_children` on `CLOSE_WITH_OPEN_CHILDREN`, which is the `details=` argument
 SPEC-020 §2.6 already lets a raise site carry — and `Conflict.details` `rule` (SPEC-020 §2.6, §6), and no
-member of that mapping is published as a nested payload — a 404 renders `"details": null` and the rule
-travels in `message` (D-062). The errors of this layer carry no SQL, table names nor paths: that is
-REQ-S060-03 and it is verified with a forced-500 test.
+member of that mapping is published as a nested payload. `LABEL_AMBIGUOUS` is the case worth spelling
+out: both edges render `"details": null` and carry the names in `message` (D-062), because the message
+is complete on its own and the mapping is for the domain consumer; a refusal whose `message` would be
+ambiguous without the mapping is a message to fix, not an envelope to widen. The errors of this layer
+carry no SQL, table names nor paths: that is REQ-S060-03 and it is verified with a forced-500 test.
 
 ## 7. Acceptance Criteria
 
@@ -2444,7 +2470,7 @@ Feature: Application use cases
     And the issue ENG-1 carrying no label
     When add_label is run on ENG-1 with "bug"
     Then Validation is raised with rule "LABEL_AMBIGUOUS" and field "ref"
-    And the details name the labels "Bug" and "bug"
+    And the exception's details name the labels "Bug" and "bug"
     And ENG-1 carries no label
     And no row was added to issue_history
     When remove_label is run on ENG-1 with "BUG"
@@ -2471,6 +2497,16 @@ Feature: Application use cases
     When add_label is run on ENG-1 with "BUG"
     Then ENG-1 carries the label "bug" of the ENG team
     And no Validation is raised
+
+  @REQ-F040-38
+  Scenario: restore refuses to bring back a second live spelling
+    Given the workspace labels "Bug" and "bug", as a database written before D-070 may carry them
+    And the label "Bug" is retired
+    And the ULID of the retired "Bug"
+    When restore_label is run with that ULID
+    Then Conflict is raised with rule "UNIQUE_LABEL_NAME" and field "name"
+    And the label "Bug" is still retired
+    And the label "bug" is still live
 
   @REQ-F040-26
   Scenario: create_if_missing creates a label of the issue's team and links it
@@ -2754,6 +2790,14 @@ Feature: Application use cases
     Then the title of ENG-1 is "New"
 ```
 
+**Two scenarios of this section are the target, not the current build.** `create_label`'s ambiguous
+`parent` and `restore_label`'s refusal of a **live** case variant are the two requirements this delta
+declares and the open label-implementation PR (`feat/labels-impl`, HIFA-14) lands in its next commit. The
+build this revision was reviewed against still resolves a parent with `next(...)` — measured: exit 0,
+`High` parented under `SEVERITY` where `Severity` and `severity` both existed — and restores a retired
+row without reading its level. Every other scenario above was measured on that build; these two are the
+contract it must meet.
+
 ## 8. Regeneration checklist
 
 1. Read `SPEC-000` (§2 A1-A8), `SPEC-020` (§2.1-§2.6 in full) and `SPEC-030` (§2.2 `UnitOfWork`,
@@ -2851,6 +2895,34 @@ Feature: Application use cases
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 34 (2026-11-20): **round two of the label review: one wire shape for `details`, the
+  `replaced` sibling, and the two writers round one missed (HIFA-14, D-070's amendment).** `version`
+  stays 7: §2.2 keeps the `def`s it declares, and what changes is what they publish — a detail of R22's
+  contract, not a new member of it.
+  (1) **`details` had two shapes on the wire.** R22 described the ambiguity mapping as if an edge
+  published it, while §6 and SPEC-060 §6.3 publish `details` as `null` or a list of `{field, message}`.
+  The mapping is the exception's accessor (`exc.details`, SPEC-020 §2.6) and the wire `details` of a
+  `LABEL_AMBIGUOUS` envelope is **`null`**; the names and, for a mixed set, the level keys live in
+  `message`, which is complete on its own — the split D-062 fixed for `field`. R22, §6's row, REQ-F040-38
+  and §6's payload paragraph say it once, the same way.
+  (2) **`LABEL_NOT_FOUND` had two scopes.** §2.2's `add_label` line called it "this verb alone", §6's note
+  "its only producer" and §6's matrix cell already gave it to `create_issue`. All three now say the same
+  thing: `add_label` and `create_issue`'s `-l` path; `unlabel` answers `NotFound`.
+  (3) **`restore_label` can create the pair R22 forbids.** "Every path that writes a `label` row" left
+  out the one write that makes a row **live** again: restoring a retired `Bug` beside a live `bug`
+  produces exactly the state §1 refuses. It now refuses with
+  `Conflict(rule='UNIQUE_LABEL_NAME', field='name')` when its own level holds a live case variant, with a
+  cell in §6 and a scenario in §7.
+  (4) **`hifa import` was called a writer that already behaved.** SPEC-080 R10 preferred the
+  `team_id IS NOT NULL` row across `(workspace) OR (team)` — a silent pick. It now reads one level at a
+  time and rejects the row with `ambiguous_label`; §4.1's writer bullet says so instead of the false
+  claim.
+  (5) **`create_label`'s ambiguous `parent` is declared here and lands in the implementation PR**
+  (`feat/labels-impl`, HIFA-14), in its next commit, as does `restore_label`'s refusal; §7 says which two
+  scenarios are the target rather than the measured build.
+  §7 goes 58 → **59** inline scenarios and REQ-F040-38 counts ten; the `.feature` corpus does not move —
+  17 files and 240 scenarios.
 
 - spec_revision 33 (2026-11-20): **a label name can be ambiguous inside one level, and this spec said it
   could not (HIFA-14, review of the label implementation, D-070).** `version` 6 → 7: §2.2's `raises:`

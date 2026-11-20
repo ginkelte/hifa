@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 7
-spec_revision: 14
+version: 8
+spec_revision: 15
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -79,7 +79,7 @@ of this spec use and returns an app with exactly the routes of §2.5 (R2).
 | C1 | Resource prefix: `/api/v1`. Changing the shape of a payload ⇒ `/api/v2`, not a flag. |
 | C2 | All handlers are declared `def`, **never** `async def` (the core is synchronous and uses SQLite). FastAPI runs them in the AnyIO threadpool. |
 | C3 | Path `REF` = `identifier` (`ENG-123`, case-insensitive) **or** a 26-char ULID. It is resolved in that order. |
-| C4 | The API is **id-first**: it accepts ULIDs in `label_ids`, `project`, `cycle`, `assignee`. Accepting names is the CLI's prerogative (SPEC-050), not the API's. `state` accepts an id or a name because the name is unique per team. **Single exception:** the `/issues/{ref}/labels` subresource (§2.5.1) accepts an id **or** a name, because `add_label`/`remove_label` (SPEC-040) resolve both and the name is unique per team. |
+| C4 | The API is **id-first**: it accepts ULIDs in `label_ids`, `project`, `cycle`, `assignee`. Accepting names is the CLI's prerogative (SPEC-050), not the API's. `state` accepts an id or a name because the name is unique per team. **Single exception:** the `/issues/{ref}/labels` subresource (§2.5.1) accepts an id **or** a name, because `add_label`/`remove_label` (SPEC-040) resolve both. A label name is **not** unique per team in the sense this sentence used to claim: the indexes compare binary, so identical spellings at one level are possible and are **refused** by SPEC-040 R22 (`LABEL_AMBIGUOUS`, 422) instead of being picked; the name resolves case-insensitively in the issue's team and then in the workspace. |
 | C5 | Request `Content-Type: application/json` (or no body). Any other type ⇒ 415. Body > 1 MiB ⇒ 413. |
 | C6 | Input models are `extra="forbid"`: an unknown field ⇒ 422 with `field` = the field name. |
 | C7 | Response: UTF-8 JSON, no `{"data": ...}` wrapper. Lists use the envelope of §2.6. |
@@ -675,10 +675,12 @@ N endpoints are called (the edge iterates, just like the CLI: SPEC-040 GAP-05). 
 linked ⇒ 404 `not_found` with `field: "label_link"`, and a **reference** that resolves nowhere ⇒ 404
 `not_found` with `field: "label"` — `field` is the `resource` of the `NotFound` (SPEC-020 §2.6), so the
 two 404s differ and the CLI publishes the same pair for the same input (SPEC-050 §2.4.5). The label is
-resolved the same way as `ref`: ULID first, name after (case-insensitive, within the issue's team); a
-label from another team ⇒ 422 `validation_error` (`rule='LABEL_TEAM_MISMATCH'`, SPEC-040 §6), a retired
-label ⇒ 409 `conflict` (`rule='LABEL_RETIRED'`). Neither route creates labels: `create_if_missing=False`
-always.
+resolved the same way as `ref`: ULID first, name after — case-insensitively in the **issue's team and
+then in the workspace**, the order `add_label`/`remove_label` declare (SPEC-040 R22, §5.6); a level that
+answers the name with two spellings is 422 `validation_error` with `field: "ref"`
+(`LABEL_AMBIGUOUS`); a label from another team ⇒ 422 `validation_error` (`rule='LABEL_TEAM_MISMATCH'`,
+SPEC-040 §6), a retired label ⇒ 409 `conflict` (`rule='LABEL_RETIRED'`). Neither route creates labels:
+`create_if_missing=False` always.
 
 Filter semantics (identical to SPEC-050 §2.5.3, translated to HTTP):
 
@@ -1202,6 +1204,11 @@ internal data. The exact text is contract: the tests assert it.
   so that the client's parser does not change shape.
 - `details` is `null` or a list `[{"field": "...", "message": "..."}]` with **all** the validation
   errors when there is more than one; `field` repeats the first one.
+- `LABEL_AMBIGUOUS` is the case worth naming: its `details` is **`null`**, and the spellings (and, when
+  the rows span levels, the team keys) travel in `message` — `label bug is ambiguous: 'Bug', 'bug'`,
+  `label bug is ambiguous: it exists in ENG, OPS`. The mapping that carries the same names is the
+  exception's accessor (`exc.details`, SPEC-020 §2.6); no edge publishes it, so `details` keeps its two
+  shapes and gains no third (SPEC-040 R22, D-062).
 - `Content-Type: application/json; charset=utf-8`. Never `text/plain`, never HTML.
 
 ## 7. Acceptance Criteria
@@ -1443,6 +1450,20 @@ Feature: hifa REST API
 - File upload: `attachments` are links (SPEC-000 §1).
 
 ## 11. Notes
+
+- spec_revision 15 (2026-11-20): **C4's "unique per team" is false for a label name, and `details` keeps
+  two shapes (HIFA-14, round two of the label review, D-070's amendment).** `version` 7 → 8: §2.2's C4 is
+  a convention of the public contract and its label clause changes.
+  (1) **C4 justified accepting a name with a uniqueness the schema does not impose.** `uq_label_team`
+  and `uq_label_ws` compare **binary**, so `Bug` and `bug` coexist at one level; the sentence now says
+  the name resolves case-insensitively in the issue's team and then in the workspace, that identical
+  spellings at one level are refused by SPEC-040 R22 (`LABEL_AMBIGUOUS`, 422) instead of picked, and
+  §2.5.1 publishes the same 422 for `POST`/`DELETE /issues/{ref}/labels`.
+  (2) **`details` was described with two shapes and one section implied a third.** §6.3 now names
+  `LABEL_AMBIGUOUS` explicitly: its `details` is `null`, the spellings and level keys travel in
+  `message`, and the mapping that carries them is the exception's accessor (`exc.details`) that this edge
+  does not serialize (SPEC-020 §2.6, SPEC-040 R22, D-062). No envelope key is added or removed; §7 stays
+  at 26 scenarios.
 
 - spec_revision 14 (2026-11-20): **`q` does not move the order, and §2.4's config rule now says what the
   models actually do (HIFA-7, third review round).** `version` 6 → 7: §2.4's normative instruction

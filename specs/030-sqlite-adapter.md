@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 5
-spec_revision: 15
+spec_revision: 16
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -425,7 +425,7 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 | Method | Signature | Notes |
 |---|---|---|
 | `get` | `(label_id: str) -> Label \| None` | |
-| `get_by_name` | `(workspace_id: str, team_id: str \| None, name: str) -> Label \| None` | two lookups: team and workspace (`team_id IS NULL`) |
+| `get_by_name` | `(workspace_id: str, team_id: str \| None, name: str) -> Label \| None` | **exact** `name` match — `name = ?`, not `casefold` — with two lookups: team and workspace (`team_id IS NULL`). For **internal keys** only (an import's own values, a seed's own string); a **user-supplied** name must never be resolved with it: SPEC-040 R22 requires `list(..., include_retired=True)` plus a `casefold` compare and the `LABEL_AMBIGUOUS` refusal when a level matches twice, because this method returns one row and so cannot report that there were two. No signature change. |
 | `list` | `(workspace_id: str, *, team_id: str \| None \| Unset = UNSET, include_retired: bool = False) -> list[Label]` | `UNSET` = no team filter; `None` = workspace labels only |
 | `insert` | `(label: Label) -> Label` | `uq_label_team` / `uq_label_ws` → `Conflict(rule='DUPLICATE_LABEL')` |
 | `update` | `(label: Label) -> Label` | `RETURNING *` |
@@ -1978,6 +1978,14 @@ Feature: SQLite adapter
   shows a `SCAN`, the solution is a new index in a migration, not a change in the adapter.
 
 ## Notes
+
+- spec_revision 16 (2026-11-20): **`LabelRepo.get_by_name` is an exact read, and the table now says so
+  (HIFA-14, round two of the label review, D-070's amendment).** `version` stays 5: the signature is the
+  one §2.4 already declared. The method matches `name = ?` (no `casefold`) and returns **one** row, so a
+  user-supplied name resolved with it picks a spelling silently — the failure SPEC-040 R22 closes. Its
+  note is now explicit: exact match for internal keys (a seed's or an import's own strings), and a
+  user-supplied name goes through `list(..., include_retired=True)` plus the `casefold` compare and the
+  `LABEL_AMBIGUOUS` refusal. No row of §7 moves.
 
 - spec_revision 15 (2026-11-20): **the probe raises the two classes the corpus publishes, splits its one
   read into two sets, and admits the third verdict it was measured to have (HIFA-7, fifth review round,
