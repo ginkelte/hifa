@@ -24,12 +24,18 @@ from hifa.domain.enums import RelationType
 
 @pytest.fixture
 def fan(world: World) -> World:
-    """`ENG-7` with five edges, inserted in an order that is neither the answer nor its reverse.
+    """`ENG-7` with six edges, inserted in an order that is neither the answer nor its reverse.
 
-    Insertion: `related` to ENG-30, `blocks` to ENG-20, `duplicate` to ENG-5, `blocks` to ENG-9,
-    and `ENG-8 blocks ENG-7` last — which reads as `blocked_by` from ENG-7. The declaration is
-    `blocks`, `blocked_by`, `duplicate`, `related`, `similar`, then the far end's identifier as
-    text, so `ENG-20` precedes `ENG-9` inside `blocks`.
+    Insertion: `related` to ENG-30, `blocks` to ENG-20, `blocks` to ENG-9, `blocks` to ENG-3,
+    `duplicate` to ENG-5, and `ENG-8 blocks ENG-7` last — which reads as `blocked_by` from ENG-7.
+    The declaration is `blocks`, `blocked_by`, `duplicate`, `related`, `similar`, then the far
+    end's identifier as text.
+
+    The three `blocks` far ends are the point of the fixture: the text order is `ENG-20`,
+    `ENG-3`, `ENG-9`, the insertion order is `ENG-20`, `ENG-9`, `ENG-3` and the reverse is
+    `ENG-3`, `ENG-9`, `ENG-20` — the middle one of the text order is not the middle one the rows
+    arrive in, so the insertion order, its reverse and the fetch order all differ from the
+    published trio, and only the comparison on the identifier produces it.
     """
     now = world.clock.now()  # type: ignore[attr-defined]
     with world.uow.write() as tx:
@@ -41,14 +47,16 @@ def fan(world: World) -> World:
                 ("ENG-20", 20),
                 ("ENG-5", 5),
                 ("ENG-9", 9),
+                ("ENG-3", 3),
                 ("ENG-8", 8),
             )
         }
         for identifier, relation_type in (
             ("ENG-30", RelationType.RELATED),
             ("ENG-20", RelationType.BLOCKS),
-            ("ENG-5", RelationType.DUPLICATE),
             ("ENG-9", RelationType.BLOCKS),
+            ("ENG-3", RelationType.BLOCKS),
+            ("ENG-5", RelationType.DUPLICATE),
         ):
             tx.issues.add_relation(
                 IssueRelation(
@@ -80,12 +88,21 @@ def readings(detail: IssueDetail) -> list[tuple[str, str]]:
     return pairs
 
 
-def test_the_relations_come_out_in_the_declared_order(fan: World) -> None:
-    """Reading first, then the far end's identifier as text — never the order the rows arrive in."""
+def test_the_relations_come_out_in_the_declared_reading_then_identifier_order(
+    fan: World,
+) -> None:
+    """Reading first, then the far end's identifier compared as text — never the arrival order.
+
+    The three `blocks` rows arrive `ENG-20, ENG-9, ENG-3` and are published `ENG-20, ENG-3,
+    ENG-9`, which is neither that order nor its reverse: it is the lexicographic comparison of
+    the identifiers, where `ENG-3` precedes `ENG-9` because the characters after `ENG-` are
+    compared one by one.
+    """
     detail = boards.issue_detail(Database(fan.path), "ENG-7")
 
     assert readings(detail) == [
         ("blocks", "ENG-20"),
+        ("blocks", "ENG-3"),
         ("blocks", "ENG-9"),
         ("blocked_by", "ENG-8"),
         ("duplicate", "ENG-5"),
@@ -96,12 +113,15 @@ def test_the_relations_come_out_in_the_declared_order(fan: World) -> None:
 def test_the_published_order_is_neither_the_insertion_order_nor_its_reverse(fan: World) -> None:
     """The fixture's guard: an implementation that echoed the fetch order could not pass above.
 
-    The rows are inserted `related/ENG-30, blocks/ENG-20, duplicate/ENG-5, blocks/ENG-9`, and the
-    edge read from the other end last, so the insertion order and its reverse both differ from the
-    published one. A fixture that happened to be inserted in the answer's order would pass without
-    testing the sort at all.
+    The rows are inserted `related/ENG-30, blocks/ENG-20, blocks/ENG-9, blocks/ENG-3,
+    duplicate/ENG-5`, and the edge read from the other end last, so the insertion order and its
+    reverse both differ from the published one. Within `blocks` the three orders are all distinct
+    — fetched `ENG-20, ENG-9, ENG-3`, reversed `ENG-3, ENG-9, ENG-20`, published `ENG-20,
+    ENG-3, ENG-9` — so a sort on the reading alone, which is stable and would echo the fetch
+    order, cannot produce the answer. A fixture that happened to be inserted in the answer's
+    order would pass without testing the tie-break at all.
     """
-    inserted = ["ENG-30", "ENG-20", "ENG-5", "ENG-9", "ENG-8"]
+    inserted = ["ENG-30", "ENG-20", "ENG-9", "ENG-3", "ENG-5", "ENG-8"]
     with fan.uow.read() as tx:
         identifiers = {
             str(row["id"]): str(row["identifier"])
@@ -114,12 +134,21 @@ def test_the_published_order_is_neither_the_insertion_order_nor_its_reverse(fan:
 
     asking_id = detail.issue.id
     fetched = [identifiers[str(row[1] if str(row[0]) == asking_id else row[0])] for row in rows]
-    published = [identifier for _reading, identifier in readings(detail)]
+    published = readings(detail)
 
     assert fetched == inserted
-    assert published != fetched
-    assert published != list(reversed(fetched))
-    assert sorted(published) == sorted(fetched)
+    assert [far for _reading, far in published] != fetched
+    assert [far for _reading, far in published] != list(reversed(fetched))
+    assert sorted(far for _reading, far in published) == sorted(fetched)
+
+    trio = {"ENG-20", "ENG-9", "ENG-3"}
+    fetched_blocks = [far for far in fetched if far in trio]
+    published_blocks = [far for reading, far in published if reading == "blocks"]
+
+    assert fetched_blocks == ["ENG-20", "ENG-9", "ENG-3"]
+    assert published_blocks == ["ENG-20", "ENG-3", "ENG-9"]
+    assert published_blocks != fetched_blocks
+    assert published_blocks != list(reversed(fetched_blocks))
 
 
 def test_the_collections_are_keyed_in_the_order_the_object_carries(fan: World) -> None:

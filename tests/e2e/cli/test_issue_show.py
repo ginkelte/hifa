@@ -401,26 +401,47 @@ def test_a_trashed_far_end_is_absent_from_the_relations(cli: Cli) -> None:
 
 # --- the inherited order -----------------------------------------------------------------
 
+#: The six edges of the fan fixture, in the order they are inserted: `(asking, type, far end)`.
+#: Neither the published order nor its reverse: `blocks` holds three rows inserted `ENG-20,
+#: ENG-9, ENG-3` and published `ENG-20, ENG-3, ENG-9`, and the row read from the other end
+#: (`ENG-8 blocks ENG-1`, which is `blocked_by` here) is inserted last and published third.
+FAN_EDGES: tuple[tuple[str, str, str], ...] = (
+    ("ENG-1", "related", "ENG-30"),
+    ("ENG-1", "blocks", "ENG-20"),
+    ("ENG-1", "blocks", "ENG-9"),
+    ("ENG-1", "blocks", "ENG-3"),
+    ("ENG-1", "duplicate", "ENG-5"),
+    ("ENG-8", "blocks", "ENG-1"),
+)
 
-def test_the_relations_come_out_in_the_declared_order(cli: Cli) -> None:
-    """Reading first, then the far end's identifier as text; the fetch order is neither.
 
-    The edges are inserted `related/ENG-30, blocks/ENG-20, duplicate/ENG-5, blocks/ENG-9` and
-    `ENG-8 blocks ENG-1` last, so both the insertion order and its reverse differ from the answer:
-    `blocks` first, `ENG-20` before `ENG-9` as text, then the inverse, the duplicate and the one
-    symmetric edge.
+def test_the_relations_come_out_in_the_declared_reading_then_identifier_order(
+    cli: Cli,
+) -> None:
+    """Reading first, then the far end's identifier compared as text; the fetch order is neither.
+
+    The three `blocks` rows arrive `ENG-20, ENG-9, ENG-3` and are published `ENG-20, ENG-3,
+    ENG-9`: the middle one of the text order is not the middle one the rows arrive in, so the
+    insertion order, its reverse and the order the rows are fetched in all differ from the
+    answer, and only the lexicographic comparison of the identifiers produces it.
     """
-    inserted = [("related", "ENG-30"), ("blocks", "ENG-20"), ("duplicate", "ENG-5")]
-    shown = _fan(cli, inserted)
+    shown, fetched = _fan(cli)
+    # The far end of each edge as ENG-1 sees it: the one row read from the other end names ENG-8.
+    inserted = [other if asking == "ENG-1" else asking for asking, _type, other in FAN_EDGES]
 
-    assert shown == ["ENG-20", "ENG-9", "ENG-8", "ENG-5", "ENG-30"]
-    assert shown != [other for _type, other in inserted]
-    assert shown != list(reversed([other for _type, other in inserted]))
+    assert shown == ["ENG-20", "ENG-3", "ENG-9", "ENG-8", "ENG-5", "ENG-30"]
+    assert fetched == inserted
+    assert shown != inserted
+    assert shown != list(reversed(inserted))
+
+    trio = {"ENG-20", "ENG-9", "ENG-3"}
+    assert [far for far in fetched if far in trio] == ["ENG-20", "ENG-9", "ENG-3"]
+    assert [far for far in shown if far in trio] == ["ENG-20", "ENG-3", "ENG-9"]
 
 
 def test_the_relations_section_and_issue_relations_print_one_order(cli: Cli) -> None:
     """The section is the row of `issue relations`, read through the same call."""
-    _fan(cli, [("related", "ENG-30"), ("blocks", "ENG-20"), ("duplicate", "ENG-5")])
+    _fan(cli)
 
     section = cli.run("issue", "show", "ENG-1", "--with", "relations")
     listed = cli.run("issue", "relations", "ENG-1")
@@ -428,6 +449,7 @@ def test_the_relations_section_and_issue_relations_print_one_order(cli: Cli) -> 
     assert section.exit_code == listed.exit_code == 0
     assert far_ends(sections(section)["RELATIONS"][1:]) == far_ends(listed.stdout.splitlines()[1:])
     assert [row.split()[0] for row in sections(section)["RELATIONS"][1:]] == [
+        "blocks",
         "blocks",
         "blocks",
         "blocked",
@@ -438,23 +460,24 @@ def test_the_relations_section_and_issue_relations_print_one_order(cli: Cli) -> 
 
 def test_the_relation_elements_carry_the_stored_row_only(cli: Cli) -> None:
     """Five keys, and the type is one of the four stored values — never a direction."""
-    _fan(cli, [("related", "ENG-30"), ("blocks", "ENG-20"), ("duplicate", "ENG-5")])
+    _fan(cli)
 
     document = payload(cli.run("issue", "show", "ENG-1", "--with", "relations", "--json"))
 
-    assert len(document["relations"]) == 5
+    assert len(document["relations"]) == 6
     for row in document["relations"]:
         assert tuple(row) == ("id", "issue_id", "related_issue_id", "type", "created_at")
         assert row["type"] in {"blocks", "duplicate", "related", "similar"}
 
 
-def _fan(cli: Cli, inserted: list[tuple[str, str]]) -> list[str]:
-    """Build the five-edge fixture and answer the far ends the detail publishes, in order.
+def _fan(cli: Cli) -> tuple[list[str], list[str]]:
+    """Build the six-edge fixture; answer `(published far ends, fetched far ends)`, in order.
 
-    The identifiers are renamed by hand because the point of the fixture is their text: `ENG-20`
-    sorts before `ENG-9`, and the assertion is about the comparison on the string.
+    The identifiers are renamed by hand because the point of the fixture is their text: `ENG-3`
+    sorts before `ENG-9` and `ENG-20` before `ENG-3`, so the answer is the identifier compared
+    character by character and cannot be the order the rows were inserted or fetched in.
     """
-    for title in ("Asking", "A", "B", "C", "D", "E"):
+    for title in ("Asking", "A", "B", "C", "D", "E", "F"):
         cli.create(title)
     numbers = {
         row["identifier"]: row["number"] for row in cli.rows("SELECT identifier, number FROM issue")
@@ -465,6 +488,7 @@ def _fan(cli: Cli, inserted: list[tuple[str, str]]) -> list[str]:
         ("ENG-4", "ENG-9"),
         ("ENG-5", "ENG-20"),
         ("ENG-6", "ENG-8"),
+        ("ENG-7", "ENG-3"),
     )
     for old, _new in renames:
         cli.execute(
@@ -476,22 +500,29 @@ def _fan(cli: Cli, inserted: list[tuple[str, str]]) -> list[str]:
             "UPDATE issue SET identifier = ? WHERE identifier = 'TMP-' || ?",
             (new, numbers[old]),
         )
-    for relation_type, other in inserted:
-        assert cli.run("issue", "relate", "ENG-1", relation_type, other).exit_code == 0
-    assert cli.run("issue", "relate", "ENG-1", "blocks", "ENG-9").exit_code == 0
-    assert cli.run("issue", "relate", "ENG-8", "blocks", "ENG-1").exit_code == 0
+    for asking, relation_type, other in FAN_EDGES:
+        assert cli.run("issue", "relate", asking, relation_type, other).exit_code == 0
 
     identifiers = {
         row["id"]: row["identifier"] for row in cli.rows("SELECT id, identifier FROM issue")
     }
     asking = cli.issue("ENG-1")["id"]
     document = payload(cli.run("issue", "show", "ENG-1", "--with", "relations", "--json"))
-    return [
+    published = [
         identifiers[
             str(row["related_issue_id"]) if row["issue_id"] == asking else str(row["issue_id"])
         ]
         for row in document["relations"]
     ]
+    fetched = [
+        str(
+            identifiers[
+                str(row["related_issue_id"]) if row["issue_id"] == asking else str(row["issue_id"])
+            ]
+        )
+        for row in cli.rows("SELECT issue_id, related_issue_id FROM issue_relation ORDER BY rowid")
+    ]
+    return published, fetched
 
 
 # --- the format --------------------------------------------------------------------------
