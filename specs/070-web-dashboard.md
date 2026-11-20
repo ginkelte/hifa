@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 7
-spec_revision: 27
+version: 8
+spec_revision: 28
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -429,7 +429,7 @@ declares nothing of its own beyond the render model of §2.3.5 (D-016):
 | State | Request | Status | What the reader sees |
 |---|---|---|---|
 | **empty** | no `q`, or a `q` that is only spaces | `200` | the search box, focused — `vm.autofocus` is `True` in this state only, and it is an HTML attribute, not a script — and the empty-state block of `partials/empty_state.html`: the sentence `search the workspace` and no result list. `search_issues` is **not called**: there is nothing to search for, and this is the state a click on the sidebar entry produces (D-063) |
-| **results** | `q` (a valid query) with ≥ 1 hit | `200` | the search box carrying `q`, `len(hits)` under it, and one `<li>` per hit: identifier, `state_name` coloured from `state_color`, `priority_glyph`, `updated_label`, the title, and the snippet |
+| **results** | `q` (a valid query) with ≥ 1 hit | `200` | the search box carrying `q`, `len(hits)` under it, and one `<li>` per hit: identifier, the state's name (`state_name`, in a `<span data-state-type="{{ hit.state_type }}">` — no colour, §2.3.5), `priority_glyph`, `updated_label`, the title, and the snippet |
 | **no results** | `q` (a valid query) with 0 hits | `200` | the search box carrying `q`, and the empty-state block with `nothing matches 'deploy'`. **Not** a `404` and **not** an error: the request was valid and the answer is that the workspace holds nothing (SPEC-090 §6) |
 | **error** | `q` that SPEC-090 §6 refuses (`query_too_long`, `invalid_filter`, `invalid_limit`) | `422` | the search box carrying `q` **unchanged**, the sentence of §6 (`invalid value: <domain message>`), and no result list — a page that keeps the reader's query is a page they can fix |
 
@@ -484,8 +484,11 @@ declares nothing of its own beyond the render model of §2.3.5 (D-016):
 #### 2.1.9 What this page is not
 
 - It is **not** `/_/palette` (`Cmd+K`): the palette is a fragment with two phases (R19) and its own
-  contract, and this page declares nothing about it. The palette is a separate ticket — this revision
-  contracts the page alone, and neither route may borrow the other's markup.
+  contract, and this page declares nothing about it — not its markup, not its phases, not its fragment.
+  The palette is a separate ticket and this revision contracts the page alone, so neither route borrows
+  the other's markup. The **one** rule that already binds it is R21's: that rule is about every edge of
+  this layer that composes a query, it names the palette as one of them, and it says so for the day the
+  palette ships (§4 R21).
 - It is **not** the board's or the list's `q` (D-025): that one is a `LIKE` over the title inside
   `ListFilters`. This one is the whole grammar of SPEC-090 and it ranks by bm25.
 - It has **no fragments**: no pagination fragment, no infinite scroll, no live-updating box, no
@@ -819,7 +822,6 @@ search_vm = {
             "snippet_html": "…&lt;b&gt;<mark>login</mark> with <mark>SSO</mark>…",  # escaped + server-side <mark>
             "state_name": "In Progress",
             "state_type": "started",
-            "state_color": "#F2994A",
             "priority": 2,
             "priority_glyph": "H",
             "updated_label": "3d ago",  # the relative stamp of issue_vm (§2.3.4)
@@ -852,6 +854,14 @@ them in every state (R3):
 - `snippet_html` is the **only** HTML of a hit: `build_search_vm` splits SPEC-090's snippet on
   `MARK_START`/`MARK_END`, escapes each piece and rejoins it around the literal `<mark>`/`</mark>`
   (R17). `title`, `identifier`, `state_name` and the labels are plain text the template escapes.
+- **A hit carries no colour, and this page invents none.** `SearchHit` of SPEC-090 §2.2 has
+  `state_name` and `state_type` and no `state_color`, and this route performs no second read: the model
+  is built from the page's one `search_issues(db, query, now=…)` call (§2.1.4, D-016). A `state_color`
+  key would therefore have had no producer at all — neither the use case nor the adapter returns one, and
+  a read of `workflow_state` per hit is what the one-call rule forbids. The template prints `state_name`
+  and carries `state_type` as `data-state-type`, so a stylesheet can key off the type; nothing colours a
+  hit today. `row_vm` and `issue_vm` keep their `state_color`, because the board and the list read it
+  from the query that already joins `workflow_state` (SPEC-030 §2.6).
 - `priority_glyph` is the one of SPEC-050 §2.4.1 (`– U H M L`), computed by the same helper `row_vm`
   uses; `updated_label` is `_relative(updated_at, now)` like `issue_vm`'s.
 - **The template compares nothing.** It takes two truthiness branches and prints one class:
@@ -1893,7 +1903,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R18** | **Read-only is visible.** With `can_write=False` no write `<form>` and no drag control are rendered; only reading remains. A `POST` in that mode ⇒ `403`, with `error.html` from a page route and `partials/fragment_error.html` from a `/_/` route. → **REQ-F070-04** |
 | **R19** | **Palette in two phases.** With an empty `q` the server responds with **actions only** and does not query the database; with a non-empty `q` it adds up to 8 issues. The list is a `<ul role="listbox">` with `aria-activedescendant`; `Enter` navigates with `location.assign` (not `hx-get`) so the URL stays in the history. → **REQ-F070-07** |
 | **R20** | **Shortcuts with a focus guard.** `j/k/c///Esc` are ignored if `event.target` is `input`, `textarea`, `select` or `[contenteditable]` (except `Esc` and `Cmd+Enter`). `j`/`k` move **real focus** (`tabindex="-1"` + `:focus-visible`), not a class, and survive an htmx swap. → **REQ-F070-08** |
-| **R21** | **Search with state in the URL, and a page that never answers `400`.** `/search?q=` is a full page and `GET /_/palette` is the fragment of the same query; both compose the `SearchQuery` from `parse_query(q)` + their parameters and call `search_issues(db, query, now=…)` (SPEC-090 §2.3, D-016, D-064) — `now` is the instant this layer's clock read, the same one `updated_label` uses. `q` travels in the query string, never in the body nor in a cookie. The page has exactly four states and no fifth (§2.1.8, D-063): **empty** (`200`, no `q`, the use case is not called), **results** (`200`), **no results** (`200`, `hits=[]` from a valid query) and **error** (`422`, a query SPEC-090 §6 refuses, re-rendered with `refusal_sentence(refusal)` and the query kept). It answers `400` for none of them: a missing query is the empty state and a malformed one is a validation. → **REQ-F070-11** |
+| **R21** | **Search with state in the URL, and a page that never answers `400`.** `/search?q=` is a full page and `GET /_/palette` is the fragment of the same query. **This rule binds every edge of this layer that composes a query**, and this revision ships exactly one of them: such an edge composes the `SearchQuery` from `parse_query(q)` plus its own parameters and calls `search_issues(db, query, now=…)` (SPEC-090 §2.3, D-016, D-064) — `now` is the instant this layer's clock read, the same one `updated_label` uses — and the palette, when its own ticket lands, is one of them, which is why §2.1.9 says the page contracts itself alone while this rule already names the palette's call. `q` travels in the query string, never in the body nor in a cookie. The page has exactly four states and no fifth (§2.1.8, D-063): **empty** (`200`, no `q`, the use case is not called), **results** (`200`), **no results** (`200`, `hits=[]` from a valid query) and **error** (`422`, a query SPEC-090 §6 refuses, re-rendered with `refusal_sentence(refusal)` and the query kept). It answers `400` for none of them: a missing query is the empty state and a malformed one is a validation. → **REQ-F070-11** |
 | **R22** | **Keyset HTML pagination (D-011).** `limit` 1-200 default 50; cursor = opaque `base64url(sort_key + "\|" + issue.id)` generated by `encode_cursor` (SPEC-030 §2.6); `has_more` comes from requesting `limit + 1` (never `COUNT(*)`); `next_url` carries `cursor`. There is no `?page=N`. `offset` (0-500) exists **only** for `list.html` infinite scroll, is mutually exclusive with `cursor`, and its cap does not come from this spec. Invalid `sort`, `cursor` or `offset`, or `cursor` + `offset` together ⇒ `422` with `error.html`. → **REQ-F070-12** |
 | **R23** | **The sidebar is a per-request read.** `page["teams"]` is built from the database on every request that renders a page; it is never captured once in `create_app`, never stored on `app.state` and never memoized for the life of the process. The CLI is the **other writer** of that same SQLite file (D-030), so a team created by `hifa team create` while `hifa serve` is running must appear in the sidebar on the **next request**, with no restart. The active team is marked and the block is never hidden, not even with a single team. → **REQ-F070-13** |
 | **R24** | **`default_team` is never absent, and the root never guesses.** `config.py` always resolves `[cli].default_team` — the configured value, else `[team].key`, which itself defaults to `DEFAULT_TEAM_KEY` (SPEC-100 §2.3) — so "2+ teams and no default" is **not** a reachable state and is not what the picker is for. What `GET /` does, in this order: (1) the resolved default names a team that exists ⇒ `303` to `/{key}/board`; (2) exactly one non-archived team ⇒ `303` to it (this is the fresh-database case, where the default key exists); (3) **canonical picker case** — the default names a team that is **not in the database** (a second team created under another key, a regenerated `.bak`, a `.hifa.toml` copied from another workspace) and there are 2+ non-archived teams ⇒ `200` `team_picker.html` (§2.3.8) listing every team and linking to `/{team}/board`, with `reason = "several_teams"`; (4) **secondary case** — the caller passed no default at all (`create_app(default_team=None)`: embedding, tests, a bootstrap that skipped config) and there are 2+ teams ⇒ the same `200` picker, with `reason = "no_default_team"`; (5) no teams ⇒ `404` `error.html`. It never picks by `created_at`, alphabetical order, cookie or session, and never answers `404` when a usable answer exists. → **REQ-F070-14** |
@@ -2880,6 +2890,21 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 28 (2026-11-20): **a hit carries no colour, and the one rule the palette inherits is
+  named where it is decided (HIFA-7, second review round).** `version` 7 → 8, because §2.1.8's results
+  row, §2.1.9 and §2.3.5 all change.
+  (1) **`state_color` had no producer on this page's hit.** §2.3.5's `search_vm` required it while
+  `SearchHit` (SPEC-090 §2.2) and `SearchRow` (§2.4 of that document) carry `state_name`/`state_type`
+  only, and this spec declares no second read that could fetch a colour per hit — so the key asked for a
+  field nothing returns. It is gone: the hit prints `state_name` with `data-state-type` for the
+  stylesheet, and the bullet says why no colour exists here while `row_vm` keeps its own (the board and
+  the list read the colour in the query that already joins `workflow_state`).
+  (2) **R21 constrained a route §2.1.9 declares out of scope.** R21 said "both compose the `SearchQuery`
+  … call `search_issues(db, query, now=…)`" while §2.1.9 said the palette "is a separate ticket — this
+  revision contracts the page alone", and no parameter of that call was ever named here. R21 is now
+  explicit that it is a rule for **every edge that composes a query**, that this revision ships one of
+  them, and that the palette is one when it ships; §2.1.9 carries the matching sentence, so the two
+  sections no longer exclude and constrain the same route in silence.
 - spec_revision 27 (2026-11-20): **the review round of HIFA-7 closed four holes around the `/search` page
   and corrected the record of what the revision before it changed (HIFA-7).** `version` 6 → 7, because
   §2.1.4, §2.1.8, §2.2, §2.3.5, §6 and R21 all change:

@@ -4,7 +4,7 @@ title: FTS5 full-text search
 component: application
 status: review
 version: 3
-spec_revision: 6
+spec_revision: 7
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/search.py
@@ -711,6 +711,10 @@ Normative notes:
 
 ### 5.3 `like` path (fallback)
 
+Two forms, one per text state the port rules of §2.4 distinguish. This is the first — a query with at
+least one **positive** term, which is R14a's text case and R14b's retry — and its bands are decided by
+the query's first positive term:
+
 ```sql
 SELECT i.id, i.identifier, i.title, s.name, s.type, i.priority, i.due_date,
        m.display_name, i.updated_at, '' AS snippet,
@@ -731,6 +735,35 @@ LIMIT :limit_plus_one OFFSET :offset
 ```
 
 The snippet of this path is computed after the fetch, in `SearchService`, following R15.
+
+**The form with no positive term.** `hifa search -bug` carries text and has no positive term, so R4
+returns `match=None` and R14a sends the query here with a predicate made only of negations. The form
+above cannot express it: `:p0`, `:first_prefix` and `:first_contains` are derived from a *first
+positive* term, and there is none. The same query is emitted as this one:
+
+```sql
+SELECT i.id, i.identifier, i.title, s.name, s.type, i.priority, i.due_date,
+       m.display_name, i.updated_at, '' AS snippet,
+       0 AS band
+FROM issue i
+JOIN workflow_state s ON s.id = i.state_id
+LEFT JOIN member m    ON m.id = i.assignee_id
+WHERE NOT ( i.title LIKE :n0 ESCAPE '\' OR i.description LIKE :n0 ESCAPE '\' )
+  [ AND NOT ( i.title LIKE … OR i.description LIKE … ) for each further negated term ]
+  AND i.trashed = 0 AND i.archived_at IS NULL
+ORDER BY i.updated_at DESC, i.id ASC
+LIMIT :limit_plus_one OFFSET :offset
+```
+
+Its bindings are exactly the negated terms (`:n0`, `:n1`, …), the parameters of the filters present,
+`:limit_plus_one` and `:offset`: it binds **no** `:p0`, no `:first_prefix`, no `:first_contains` and no
+`:ident_exact` — an identifier candidate is derived from a positive term and there is none. `band` is
+the constant `0`, because there is nothing to rank above anything else, and the order is the tail of the
+first form without the band: `i.updated_at DESC, i.id ASC`. The rows are the issues whose title and
+description carry none of the negated terms, under the same visibility and filter rules as the first
+form; the snippet follows R15's last case (no positive term ⇒ the description truncated to 120
+characters, or the title). A query with neither a positive nor a negated term is **not** this form: it
+is §2.4's `backend="none"`, with no text predicate at all.
 
 ## 6. Errors
 
@@ -929,6 +962,15 @@ Feature: Full-text search over issues
     Then a snippet contains the literal "<form>"
     And a snippet contains the literal "<mark>"
 
+  Scenario: a purely negative query goes through the like path
+    Given the 3 issues of the Background, none of whose titles carries "bug"
+    And an issue "Bug del deploy" whose title carries "bug"
+    When "hifa search -bug" is executed
+    Then the exit code is 0
+    And backend is "like"
+    And the result holds the 3 issues of the Background and not "Bug del deploy"
+    And every hit has score 0.0 and a snippet of R15's last case
+
   Scenario: a filters-only search adds no text predicate
     Given 3 issues, one of them in state "Done"
     When "hifa search --state Done --json" is executed
@@ -1035,7 +1077,7 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
 |---|---|---|---|
 | `hifa search` (table) | not reachable: no query and no filter is `query_empty`, exit 2, `stdout` untouched | empty `stdout`, `0 issues` on `stderr` — the empty-collection line of SPEC-050 §2.4.1, exit 0; `--quiet` prints nothing | §6's sentence on `stderr` and its exit code; `stdout` stays empty |
 | `hifa search --json` | the same `query_empty` | `{"hits": [], "total": null, "has_more": false, "backend": "fts"\|"like"\|"none", "took_ms": …}` — `total` is `0` only with `--count` | the error envelope of SPEC-050 §2.4.5, exit 2 or 6 |
-| `hifa db reindex` | an empty database rebuilds `0` issues: `{"reindexed": 0}`, exit 0 — "there was nothing to rebuild" is a success, not a no-op error | — | exit 3 `database_not_found`, or exit 6 `fts5_unavailable` on a build without FTS5 or `corrupt_database` on an unreadable image, SPEC-100 R21 |
+| `hifa db reindex` | an empty database rebuilds `0` issues: `{"reindexed": 0}`, exit 0 — "there was nothing to rebuild" is a success, not a no-op error | — | exit 3 `database_not_found` (no such file) or `not_a_hifa_database` (a file that opens but is not a hifa database); exit 6 `fts5_unavailable` on a build without FTS5 or `corrupt_database` on an image SQLite refuses — the set is `0, 3, 6` and does not move (SPEC-100 R21, D-066) |
 
 - **No loading state.** The command is one synchronous query against a local file: there is no progress
   to report and no partial output to flush. A long search prints nothing until it has its rows.
@@ -1051,6 +1093,22 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
 
 ## 12. Notes
 
+- spec_revision 7 (2026-11-20): **the `like` path can now express a query with no positive term, and the
+  two failures of the only write this component authorises are named by the file each one refuses
+  (HIFA-7, second review round).** `version` stays 3: §2.2, §2.3 and §2.4 do not move — the port already
+  distinguished the three text states, and what was missing was the SQL that compiles the second one.
+  (1) **§5.3 had one form and R14a names two states.** The block bound `:p0`, `:first_prefix` and
+  `:first_contains` from a *first positive* term, so `hifa search -bug` — a predicate that is only
+  `AND NOT (…)` — had no normative SQL to compile to, and an implementation had to invent one. §5.3 now
+  carries both forms, says which bindings the no-positive form needs (the negated terms, the filters of
+  the query, `:limit_plus_one` and `:offset`, and no positive-term parameter at all, `:ident_exact`
+  included), and fixes its constant band, its order and the R15 case its snippet comes from. §7 gains one
+  inline scenario for it: 27 → **28** inline scenarios.
+  (2) **§11 publishes the same set SPEC-100 R21 does, with the code that reaches each exit.**
+  `not_a_hifa_database` at `3` for a file that opens but is not a hifa database, `corrupt_database` at
+  `6` for an image SQLite itself refuses, next to `database_not_found` (`3`) and `fts5_unavailable` (`6`):
+  the set is `0, 3, 6` and it does not move (D-066). The `.feature` corpus does not move either — 17
+  files, **240** scenarios (228 `Scenario` + 12 `Scenario Outline`).
 - spec_revision 6 (2026-11-20): **the review round of HIFA-7 settled the three signatures this document
   published without saying how they are called, and closed eight contradictions it carried with its own
   edges.** `version` 2 → 3, because §2.3 and §2.4 both change shape:

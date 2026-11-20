@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 6
-spec_revision: 31
+spec_revision: 32
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -1141,7 +1141,7 @@ Adding them here would be moving edge logic into the application layer.
 |---|---|---|
 | `base64url` | 050, 060 | cursor codec, not an operation: `encode_cursor`/`decode_cursor` live in the keyset of SPEC-030 (D-011); 040 only transports the opaque string |
 | `render`, `to_json`, `board_vm`, `snippet` | 050, 060, 070 | formatting and view models: `cli/output.py`, `api/schemas.py`, `web/readmodels.py` (D-028) |
-| `basename`, `parse_query`, `fetch` | 050, 070 | CLI/JS helpers (paths and query string), they do not touch the database |
+| `basename`, `fetch` | 050, 070 | CLI/JS helpers (paths and query string), they do not touch the database |
 | `create_app` | 060 | ASGI factory of SPEC-060 |
 | `bootstrap` | 050 | workspace startup, SPEC-100 §2.5 |
 | `doctor`, `migrate`, `reindex`, `resolve_config` | 050 | `doctor`/`reindex` are from SPEC-100 §2.6, `migrate` from SPEC-030 §2.3, `resolve_config` from SPEC-100 §2.1 |
@@ -1152,6 +1152,15 @@ Adding them here would be moving edge logic into the application layer.
 | `_one_anchor`, `model_validator`, `model_dump` | 060 | Pydantic internals in the input schema |
 | `issue_history` | 050 | **table** name quoted in prose (`issue_history(field="state_id")`), not a function |
 | `use_case` | 050 | generic marker in an example (`result = use_case(...)`), not a real symbol |
+
+**`parse_query` is not an edge helper, and this table listed it that way for nine revisions.**
+It is `app/search.py::parse_query(raw) -> ParsedQuery`, the public parser of **SPEC-090 §2.3** and the
+first half of the one search entry point this port declares (`search_issues`, above): every
+parser-touching edge calls it and then composes its `SearchQuery` from the `ParsedQuery` (D-064). It
+touches no database and returns no page, so it is not an operation of §2.2 either — its signature, its
+`ParsedQuery` and its five fields belong to the section that owns the search contract, and a second
+declaration here would be the second spelling of one function. An edge that needs it reads SPEC-090 §2.3,
+not this table.
 
 Closing rule: `scripts/spec_contract_check.py` (SPEC-000 §6) compares the `def`s of §2.2 against the
 names invoked by the three edges and fails if a port name does not exist here or if an edge
@@ -2676,6 +2685,16 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 32 (2026-11-20): **`parse_query` is the application layer's, and the table of edge names
+  said otherwise (HIFA-7, second review round).** `version` stays 6: §2.2 declares the same `def`s it
+  declared, and the only change is to a classification of §4's reference table. `parse_query` sat in the
+  list of "edge names that are NOT part of the port" as a "CLI/JS helper" while SPEC-090 §2.3 puts it in
+  `app/search.py` and SPEC-070's route table calls `app.search.parse_query(q)` — an application symbol
+  filed as edge code, which is the one direction A3 forbids the edges to move in. It is out of that table;
+  a paragraph under it says where the function lives and why it gets no §2.2 row of its own; and the
+  older bullet of this Notes section that repeated the mistake (the presentation-helper inventory) is
+  corrected in place, because it is a claim about the contract and not a record of an event. The three
+  edges' calls are unchanged, and so is the `search_issues` row of the same table.
 - spec_revision 31 (2026-11-20): **`search_issues` takes the instant, and this is the only port of the
   read family that does** (HIFA-7 review round). `version` 5 → 6: §2.2's declaration gains
   `*, now: datetime`, `now` aware and in UTC, and the paragraph of §1 says why — a read use case has no
@@ -3062,6 +3081,7 @@ Feature: Application use cases
   - `create_relation`/`delete_relation` are not added as aliases of `relate_issues`/`unrelate_issues`:
     two write functions for the same table would duplicate validations (R1). If an edge insists
     on those names, the adapter goes in the edge.
-  - The presentation helpers (`base64url`, `render`, `to_json`, `basename`, `parse_query`, `fetch`,
-    `board_vm`, `snippet`) are **not** part of the port: §2.3 documents why and where they live.
+  - The presentation helpers (`base64url`, `render`, `to_json`, `basename`, `fetch`, `board_vm`,
+    `snippet`) are **not** part of the port: §2.3 documents why and where they live. (`parse_query` was
+    listed here in error and is removed: it is the application-layer parser of SPEC-090 §2.3, rev 32.)
 

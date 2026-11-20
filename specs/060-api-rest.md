@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 5
-spec_revision: 12
+version: 6
+spec_revision: 13
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -596,6 +596,7 @@ class AttachmentCreate(BaseModel):
 class SearchHit(BaseModel):
     """The flat hit of SPEC-090 §2.2 — eleven fields, in this order, and no `issue` wrapper (D-064)."""
 
+    model_config = ConfigDict(from_attributes=True)
     issue_id: str
     identifier: str
     title: str
@@ -676,7 +677,7 @@ Filter semantics (identical to SPEC-050 §2.5.3, translated to HTTP):
 | `project`, `cycle` | id; `cycle=none` ⇒ `cycle_id IS NULL` (alias of `no_cycle=true`) |
 | `parent` | `issue.id` or `identifier`; `parent=none` ⇒ `parent_id IS NULL` (root issues only) |
 | `ids` | list of `identifier`/ULID, `IN`; it wins over the rest of the filters |
-| `q` | FTS5 search delegated to SPEC-090; with `q` the default `order` becomes `relevance` (see R9) |
+| `q` | the **title filter** of D-025 (SPEC-030 §2.6): `i.title LIKE '%term%' ESCAPE '\'` over `ListFilters.q`, case-insensitive, `%`/`_`/`\` escaped inside the term, an empty or blank `q` dropped. It declares no `MATCH`, no `backend` and no ranking, and it does not touch `order`; the workspace search is `GET /api/v1/search` (§2.5.4, SPEC-090 §2.5) |
 | `open` | `true` ⇒ `is_open = 1`; `false` ⇒ no `is_open` filter |
 | `archived` | `exclude` ⇒ `archived_at IS NULL`; `include` ⇒ no filter; `only` ⇒ `archived_at IS NOT NULL` |
 | `trashed` | `true` ⇒ `trashed = 1` (implies `open=false` and `archived=include`) |
@@ -801,12 +802,20 @@ class TeamList(BaseModel):
 # The five keys and the eleven-field SearchHit are SPEC-090 §2.2: this class repeats them and
 # defines neither. `score` is higher = better, never negative; `total` is null without `count`.
 class SearchPage(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     hits: list[SearchHit]
     total: int | None
     has_more: bool
     backend: Literal["fts", "like", "none"]
     took_ms: float
 ```
+
+Both are **output models** and both carry `model_config = ConfigDict(from_attributes=True)`, which §2.4
+makes mandatory for every one of them. That is not decoration: `search_issues` returns the **frozen
+dataclasses** of SPEC-090 §2.2, so `SearchPage.model_validate(page)` and `SearchHit.model_validate(hit)`
+are the conversion — every field is read by attribute, the nested hits included, and no edge builds a
+`dict` or calls `model_dump()` on the way in. A schema without the config rejects the use case's own
+return value.
 
 | Param | Contract |
 |---|---|
@@ -838,8 +847,14 @@ Rules:
   paginating because a changed order is an error, not a silent restart at the first page.
 - The cursor is not a security token: it is not signed. A tampered cursor can only produce a
   422 or a shifted page.
-- With `q` present and no explicit `order`, the order is FTS5 relevance (`score` DESC) and
-  keyset pagination uses `(score, id)`; in that case `order` is not accepted (422 if sent).
+- `q` does **not** change the order, and no order is refused because `q` is present. The title filter of
+  D-025 is one predicate among many in `ListFilters` (SPEC-030 §2.6): it produces no score, no band and
+  no `relevance`, and `order` stays the one the client sent or `manual.asc` by default (D-011). The
+  keyset is the same `(key, id)` with and without `q`, because the filter narrows the rows and never
+  reorders them. There is no `relevance` in this route's vocabulary: §2.4's `OrderField` carries
+  `created_at`, `updated_at`, `priority`, `due_date`, `sort_order`, `board_order` and `number`, and the
+  order vocabulary of the row of §2.5.1 is `manual`, `created`, `updated`, `priority` and `due`. The
+  search that ranks by `bm25` is `GET /api/v1/search` (§2.5.4, SPEC-090 §2).
 
 Equivalence with the CLI (SPEC-050 §2.5.3), so that a script can migrate from one to the other without
 guessing:
@@ -1414,9 +1429,25 @@ Feature: hifa REST API
 
 ## 11. Notes
 
+- spec_revision 13 (2026-11-20): **`q` on the issue listing has one meaning, and it is not the search's
+  (HIFA-7, second review round).** `version` 5 → 6, because §2.5.1's filter table and §2.6's order rule
+  both change.
+  (1) **§2.5.1 and §2.6 published an FTS5 search on a route that has none.** They said `q` was "FTS5
+  search delegated to SPEC-090" and that "with `q` the default `order` becomes `relevance`", which
+  contradicts SPEC-090 §2.5, D-025, SPEC-030 §2.6 and SPEC-040 §4 — every one of them says the listing's
+  `q` is a `LIKE '%term%'` over `title` — and `relevance` is not even a member of this document's own
+  `OrderField` (§2.4). `q` is now the title filter of D-025 and nothing else: no `MATCH`, no `backend`, no
+  ranking, no band, and no effect on `order`, with the sentence pointing at the route that does search
+  (§2.5.4).
+  (2) **`SearchHit` and `SearchPage` now declare `from_attributes`.** §2.4 makes it mandatory for every
+  output model and these two, added in revision 12, carried no `model_config` — while the use case
+  returns SPEC-090's frozen dataclasses, so the schemas could not validate what they were written to
+  publish. One sentence under them states that `model_validate` over the dataclasses **is** the
+  conversion.
+  (3) **A citation of the note below pointed at §2.2 for a class §2.4.4 declares**; it now says §2.4.4.
 - spec_revision 12 (2026-11-20): **the search hit this edge publishes is the one SPEC-090 declares, flat
   and eleven fields, and a refused search keeps its own code (HIFA-7 review round, D-064).** `version`
-  4 → 5, because §2.2's `SearchHit` changes shape:
+  4 → 5, because the `SearchHit` of §2.4.4 changes shape:
   (1) **`SearchHit(issue: IssueOut, snippet, score)` is gone.** It was the nested shape D-064 retired and
   this document never heard of the decision — D-064's `Touches:` did not name SPEC-060, so it got no
   `spec_revision` bump in that round. It now publishes the eleven flat fields in the order of SPEC-090

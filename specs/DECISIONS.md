@@ -3304,3 +3304,96 @@ and omits **SPEC-060**, which publishes the same hit as `SearchHit(issue: IssueO
 pointer in that round and got neither. SPEC-060 is added here and its revision 12 does the work; the lesson
 is the one SPEC-030's rev 12 already wrote down about D-059 — a decision whose `Touches:` list is short by
 one spec produces a corpus with two shapes for one payload.
+
+## D-066 — `not_a_hifa_database` names the file, and the edge that refuses it names the exit
+
+**Date:** 2026-11-20 · **Wins:** SPEC-100 R21/§6 (the detection, its two rows and the sequence of the
+rebuild) · **Touches:** SPEC-100 §2.6, §2.7, §4.3 (R21), §6, §7, §11; SPEC-050 §6, §11; SPEC-090 §11,
+§12; `specs/INDEX.md`
+
+**The rule.** `hifa db reindex` reads the file before it writes to it: one
+`SELECT name FROM sqlite_master` and the two tables a hifa database cannot lack — `workspace`, the marker
+`hifa init` already uses (R14c), and `issue`, the table the rebuild indexes. A file that **opens** and is
+**valid SQLite** but carries no both ⇒ `not_a_hifa_database`, exit `3`, nothing written. A file that
+**SQLite itself refuses** (`file is not a database`, `database disk image is malformed`) ⇒
+`corrupt_database`, exit `6`. The exit set of the verb does not move: `0, 3, 6`.
+
+**Why the code had to come back.** SPEC-100's revision 9 removed `not_a_hifa_database` from R21 and sent
+"another tool's SQLite file" to `corrupt_database`, on the argument that the corpus maps every unreadable
+file to that class. The input does not behave that way: a valid foreign file opens, passes
+`require_fts5(conn)`, has its virtual table created by the repair path and fails only at the rebuild, with
+`no such table: main.issue` — which SPEC-030 §6 maps to `DB_NOT_MIGRATED`, a code that says the schema is
+older than the binary. The published answer for a foreign file was therefore a code about a migration that
+will never exist, for a file no migration can ever touch: not a code without a producer, worse — a producer
+that answers something else.
+
+**Why two exits for one code.** `hifa init` publishes `not_a_hifa_database` at exit `2` and keeps it: what
+it refuses is the `--db` **argument** — the user named a path expecting it to be free, and `--force` is the
+override — which is what `2` means in SPEC-050 §6. `db reindex` refuses something else: the **database** it
+was told to operate on is not a hifa database, and that is what `3` carries for every command of the corpus
+(`database_not_found`, `not_found`). One name for one condition, with each edge's exit saying what it had to
+refuse. The alternative — a second code such as `not_a_hifa_database_for_reindex` — would have been a second
+spelling of one fact, which is the class of defect this corpus keeps removing. `NotAHifaDatabase` is the
+class of the `db` group (`code = "not_a_hifa_database"`, no `field`); `init` goes on raising the
+`Validation` of R14c with the same lowercase code, and both surfaces are rows of SPEC-050 §6.
+
+**What it also fixed.** The same round made the rebuild's statement sequence executable. The three triggers
+of SPEC-090 §3.1 are `AFTER INSERT/DELETE/UPDATE ON issue`, so they belong to `issue` and not to the index:
+`DROP TABLE issue_fts` takes the virtual table and its shadow tables and leaves all three in `sqlite_master`,
+and the verbatim `CREATE TRIGGER issue_fts_ai` that revision 9 prescribed raises `trigger issue_fts_ai
+already exists` inside the transaction. R21 prints the sequence it means — `CREATE VIRTUAL TABLE IF NOT
+EXISTS`, `DROP TRIGGER IF EXISTS` for each of the three names, the three `CREATE TRIGGER`s,
+`VALUES('rebuild')` — so every starting state (both present, table gone, triggers gone, both gone) ends at
+exit `0` with the index rebuilt and the triggers back.
+
+**The alternatives rejected.** (1) *Keep `corrupt_database` and correct SPEC-030's mapping so the rebuild
+error becomes `corrupt_database`* — the mapping is right about a migration state and wrong only about this
+input; rewriting it would make every `no such table` a corruption. (2) *Detect with `PRAGMA user_version`
+instead of `sqlite_master`* — a foreign file has `user_version 0`, which is also what an unmigrated hifa
+database has, so the check could not tell them apart. (3) *Check the columns of `issue` as well* — the two
+table names are the declared verdict; a column check would be a second statement, and a second rule to keep
+in sync with SPEC-010, for a file that has already answered the question this command asks. (4) *Leave the
+detection to the migration path* — nothing in `migrate()` runs on a database whose `user_version` is
+current, and a foreign file has no `user_version` at all, so the file would reach the rebuild with its
+schema still unexamined.
+
+**Verification.** SPEC-100 §7: the recreate scenario drops the table **and** the triggers and asserts exit
+`0`, the triggers back and `backend="fts"`; the refusal scenario asserts exit `3` `not_a_hifa_database` for
+a valid SQLite file carrying a `notes` table and exit `6` `corrupt_database` for a file with no SQLite
+header. SPEC-050 §6 publishes the `NotAHifaDatabase` row and SPEC-090 §11 publishes the same set. The
+sequence was executed against SQLite 3.53.1 from a database whose `issue_fts` had been dropped with the
+three triggers left in place.
+
+## Amendments to D-063, D-064 and D-065 (second review round, 2026-11-20)
+
+Appended, not rewritten, for the reason the block above gives: these decisions were reviewed against the
+corpus, not against their own prose.
+
+**D-063, the listing's `q`.** The rule says what it does not change: "the board/list `q`, which is the title
+filter of D-025". True, and unenforced. SPEC-060 §2.5.1 and §2.6 described `GET /api/v1/issues?q=` as
+"FTS5 search delegated to SPEC-090", with `order` defaulting to a `relevance` that is not even a member of
+that document's `OrderField`, and D-063's `Touches:` did not name SPEC-060 — so the one row of the corpus
+that contradicted the decision survived the round that wrote it. SPEC-060 rev 13 now says the filter: no
+`MATCH`, no `backend`, no ranking, no band and no effect on `order`. The lesson is the one D-064's third
+amendment already wrote about the same document: a decision whose `Touches:` list is short by one spec
+produces a corpus with two meanings for one parameter.
+
+**D-063, the palette's call.** SPEC-070 R21 fixed the palette's composition — "both compose the
+`SearchQuery` … call `search_issues(db, query, now=…)`" — while §2.1.9 of the same document said the palette
+"is a separate ticket — this revision contracts the page alone". A spec may not exclude a route and
+constrain its call in the same breath without saying so: R21 now states that the rule binds **every edge
+that composes a query**, that this revision ships one of them, and that the palette is one when it ships;
+§2.1.9 carries the matching sentence. Nothing of the palette's markup, its two phases or its fragment is
+contracted here — the exclusion stands, and the inheritance of the call rule is named.
+
+**D-064, the parser's layer.** The rule makes `parse_query(raw) -> ParsedQuery` the public parser of
+`app/search.py`. SPEC-040 §4's table of "edge names that are NOT part of the port" went on filing it as a
+"CLI/JS helper (paths and query string), they do not touch the database" for nine revisions — an
+application-layer symbol described as edge code, which is the direction A3 forbids the edges to move in.
+SPEC-040 rev 32 removes the row, states the owner (SPEC-090 §2.3) and why the function gets no §2.2 row of
+its own, and corrects the older bullet of its Notes that had repeated the classification.
+
+**D-065, the second carrier of the code.** The rule ends "`not_a_hifa_database` stays where it was born, the
+`hifa init` refusal of R14c". It now has a second surface: `db reindex` answers the same code at exit `3`
+for a file that opens and is not a hifa database (D-066). `fts5_unavailable` is untouched — one producer,
+`require_fts5(conn)`, the same two call sites — and the exit set of `db reindex` is still `0, 3, 6`.
