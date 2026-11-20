@@ -66,9 +66,21 @@ class HistoryRepo(BaseRepo):
         return len(rows)
 
     def list_for_issue(self, issue_id: str, *, limit: int = 100) -> list[IssueHistory]:
+        """The issue's newest rows, oldest-of-the-window last, with the rank a move wrote removed.
+
+        A `board_order` row is dropped when the history row immediately before it, by `id`, is a
+        `state_id` row: the two are one record batch, so the move already names the event and the
+        rank is its consequence and not a second one.
+        """
         rows = self._all(
-            f"SELECT {COLUMNS} FROM issue_history WHERE issue_id = ?"
-            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            f"SELECT {COLUMNS} FROM issue_history h"
+            " WHERE h.issue_id = ?"
+            " AND NOT (h.field = 'board_order' AND COALESCE(("
+            "   SELECT p.field FROM issue_history p"
+            "   WHERE p.issue_id = h.issue_id AND p.id < h.id"
+            "   ORDER BY p.id DESC LIMIT 1"
+            " ), '') = 'state_id')"
+            " ORDER BY h.created_at DESC, h.id DESC LIMIT ?",
             (issue_id, limit),
         )
         return [

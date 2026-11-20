@@ -460,3 +460,78 @@ def test_the_trash_predicates_do_not_follow_the_include_trashed_keyword(world) -
     assert detail is not None
     assert detail.trashed is True
     assert detail.children == ()
+
+
+def test_the_detail_resolves_a_parent_a_history_row_names(world) -> None:
+    """`history_parents` maps the ids the window names to the identifiers a reader prints."""
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        parent = make_issue(tx, world)
+        issue = make_issue(tx, world)
+        tx.history.record(
+            issue.id,
+            [("parent_id", None, parent.id)],
+            actor_id=world.members["ana"].id,
+            now=now,
+        )
+
+    with world.uow.read() as tx:
+        detail = issue_detail(tx.issues.connection, "ENG-2", include=frozenset({"history"}))
+
+    assert detail is not None
+    assert detail.history_parents == {parent.id: parent.identifier}
+
+
+def test_the_detail_without_a_parent_row_carries_no_parent_map(world) -> None:
+    with world.uow.write() as tx:
+        issue = make_issue(tx, world)
+        tx.history.record(
+            issue.id,
+            [("title", "Old", "New")],
+            actor_id=world.members["ana"].id,
+            now=world.clock.now(),  # type: ignore[attr-defined]
+        )
+
+    with world.uow.read() as tx:
+        detail = issue_detail(tx.issues.connection, "ENG-1", include=frozenset({"history"}))
+
+    assert detail is not None
+    assert detail.history_parents == {}
+
+
+def test_the_parent_lookup_costs_one_statement_for_the_kind(world) -> None:
+    """Three distinct parents and one parent pay the same single lookup."""
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        parents = [make_issue(tx, world) for _ in range(3)]
+        plain = make_issue(tx, world)
+        one = make_issue(tx, world)
+        many = make_issue(tx, world)
+        tx.history.record(
+            one.id,
+            [("parent_id", None, parents[0].id)],
+            actor_id=world.members["ana"].id,
+            now=now,
+        )
+        tx.history.record(
+            many.id,
+            [
+                ("parent_id", parents[0].id, parents[1].id),
+                ("parent_id", parents[1].id, parents[2].id),
+                ("parent_id", parents[2].id, None),
+            ],
+            actor_id=world.members["ana"].id,
+            now=now,
+        )
+
+    include = frozenset({"history"})
+    with world.uow.read() as tx:
+        no_parent, _ = _statements(tx.issues.connection, plain.identifier, include)
+        one_parent, one_detail = _statements(tx.issues.connection, one.identifier, include)
+        many_parents, many_detail = _statements(tx.issues.connection, many.identifier, include)
+
+    assert len(one_parent) == len(no_parent) + 1
+    assert len(many_parents) == len(no_parent) + 1
+    assert one_detail is not None and many_detail is not None
+    assert len(one_detail.history_parents) == 1
+    assert len(many_detail.history_parents) == 3
