@@ -926,18 +926,26 @@ class HistoryRow:
     field: str  # the writer's name, one of the 21 values of SPEC-030 §2.4
     old_value: str | None  # the stored TEXT of the old side, untouched (P7)
     new_value: str | None  # the stored TEXT of the new side, untouched (P7)
-    old_label: str | None  # the old side resolved: a state, a member, an identifier, `High`, `20 Nov 2026`
-    new_label: str | None  # the same for the new side; None when that side is NULL or names no target
+    old_label: (
+        str | None
+    )  # the old side resolved: a state, a member, an identifier, `High`, `20 Nov 2026`
+    new_label: (
+        str | None
+    )  # the same for the new side; None when that side is NULL or names no target
     actor_id: str | None  # issue_history.actor_id, the ULID; None when the writer had no actor
     actor_label: str  # the actor's display name, or `someone` (§2.5.7.1 rule 4 of SPEC-070)
     sentence: str  # the wording of SPEC-070 §2.5.7, composed here and nowhere else (P2/P4)
     dot_color: str | None  # workflow_state.color for a `state_id` row, None for every other field
-    created_at: datetime  # UTC; the row's own instant — `wire_instant` below renders the wire's string
+    created_at: (
+        datetime  # UTC; the row's own instant — `wire_instant` below renders the wire's string
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class LastActivity:
-    text: str  # "<actor_label> <sentence> · <relative>", the one dim line under the title (§2.5.7.2)
+    text: (
+        str  # "<actor_label> <sentence> · <relative>", the one dim line under the title (§2.5.7.2)
+    )
     row_id: int  # the HistoryRow.id the line links to
 
 
@@ -945,7 +953,9 @@ class LastActivity:
 class HistoryPage:
     rows: list[HistoryRow]  # oldest-first: the read's window, sorted by (created_at, id) — D-D
     window_size: int  # len(rows) as the read returned it, ≤ 100: the N of `Show all N` (§2.5.7.2)
-    truncated: bool  # window_size == the read's LIMIT, so older rows may exist: a floor, never a total
+    truncated: (
+        bool  # window_size == the read's LIMIT, so older rows may exist: a floor, never a total
+    )
     last_activity: LastActivity | None  # None only when `rows` is empty
 
 

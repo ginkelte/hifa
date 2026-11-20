@@ -45,7 +45,9 @@ from pathlib import Path
 from typing import Final, Sequence
 
 MIGRATIONS_DIR: Final[str] = "migrations"  # package resource (importlib.resources)
-MAX_VERSION: Final[int] = 4  # 001_init, 002_schema_migration, 003_team_previous_key, 004_history_created_backfill
+MAX_VERSION: Final[int] = (
+    4  # 001_init, 002_schema_migration, 003_team_previous_key, 004_history_created_backfill
+)
 
 
 @dataclass(frozen=True)
