@@ -99,6 +99,13 @@ def _member(db: Path) -> str:
     return str(name)
 
 
+def _state_color(db: Path, name: str) -> str:
+    """The colour the workspace stores for one state: what the rail dot has to carry."""
+    with sqlite3.connect(db) as conn:
+        found = conn.execute("SELECT color FROM workflow_state WHERE name = ?", (name,)).fetchone()
+    return str(found[0])
+
+
 def _section(response_text: str) -> str:
     match = SECTION.search(response_text)
     assert match is not None, "the timeline is missing"
@@ -174,6 +181,39 @@ def test_the_last_activity_line_names_the_newest_event(
     assert " · " in line.group(1)
     # The line is the anchor a click scrolls to: the id of the newest row of the list.
     assert re.search(r'<a href="#event-\d+">', line.group(1)) is not None
+
+
+def test_a_drag_inside_one_column_is_a_row_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`reordered it in the column` reaches a reader: a drag is an event, not a field name.
+
+    No edge test rendered this row before, which is how a read could drop one and keep every suite
+    green; the page is one of the three surfaces that publish the window, so the wording is here.
+    """
+    world = _person(tmp_path, monkeypatch)
+    _run("issue", "create", "Second issue")
+    _run("issue", "move", "ENG-1", "-s", "Todo", "--after", "ENG-2")
+
+    section = _section(world.client.get(f"/ENG/issue/{world.identifier}").text)
+
+    assert _sentences(section)[-1] == f"{_member(world.db)} reordered it in the column"
+    assert "board_order" not in section
+
+
+def test_the_rail_dot_carries_the_colour_of_the_state_the_row_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`dot_color` is rendered as `style="background: …"`, not merely carried in the payload."""
+    world = _person(tmp_path, monkeypatch)
+    _run("issue", "move", "ENG-1", "-s", "Backlog")
+    color = _state_color(world.db, "Backlog")
+
+    section = _section(world.client.get(f"/ENG/issue/{world.identifier}").text)
+    moved = [row for row in EVENT.findall(section) if "moved from Todo to Backlog" in row]
+
+    assert len(moved) == 1
+    assert f'<span class="history-dot" style="background: {color}"></span>' in moved[0]
 
 
 # --- the cut and the expansion -----------------------------------------------------------
