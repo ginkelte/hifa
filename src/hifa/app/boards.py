@@ -1,4 +1,4 @@
-"""Board, listing and detail reads used by the web edge.
+"""Board, listing and detail reads shared by the CLI and the web edge.
 
 Thin functions over `adapters/sqlite/reads.py`: they resolve the team reference (key or ULID)
 and translate a missing row into `NotFound`. They contain no SQL and never open a write
@@ -19,6 +19,10 @@ from hifa.domain.errors import NotFound, Validation
 #: Collections a detail read asks for. Owned by `issue_detail`, which rejects any other name.
 DETAIL_INCLUDE: frozenset[str] = reads.DETAIL_INCLUDE
 
+#: The include names a rendered detail asks for: every name the read gates except `attachments`,
+#: whose list no edge renders — nothing can write an attachment row yet.
+RENDERED_INCLUDE: frozenset[str] = DETAIL_INCLUDE - {"attachments"}
+
 #: How a relation row reads from one end, in the order the detail publishes. `blocks` first, its
 #: inverse second, then the symmetric types: the same vocabulary the `issue relations` table uses,
 #: declared once so that the sort and the section headings cannot drift apart.
@@ -36,7 +40,7 @@ RELATION_READINGS: tuple[str, ...] = (
 DETAIL_COLLECTIONS: tuple[str, ...] = ("comments", "relations", "history", "children")
 
 
-def _relation_reading(relation: IssueRelation, asking_id: str) -> str:
+def relation_reading(relation: IssueRelation, asking_id: str) -> str:
     """How one stored row reads from `asking_id`: its own type, or the inverse from the far end."""
     direction = "out" if relation.issue_id == asking_id else "in"
     return relation.type.name_as_seen(direction)
@@ -57,7 +61,7 @@ def _ordered_relations(
 
     def key(pair: tuple[IssueRelation, IssueListItem]) -> tuple[int, str]:
         relation, far = pair
-        return (rank[_relation_reading(relation, asking_id)], far.identifier)
+        return (rank[relation_reading(relation, asking_id)], far.identifier)
 
     return tuple(sorted(relations, key=key))
 
@@ -325,6 +329,7 @@ __all__ = [
     "DETAIL_COLLECTIONS",
     "DETAIL_INCLUDE",
     "RELATION_READINGS",
+    "RENDERED_INCLUDE",
     "board_counts",
     "database_ok",
     "detail_collections",
@@ -333,6 +338,7 @@ __all__ = [
     "list_blocked",
     "list_issues",
     "list_teams",
+    "relation_reading",
     "require_team",
     "resolve_filters",
     "startup_state",

@@ -585,7 +585,7 @@ _ITEM_COLUMNS = """
        ), '[]') AS labels_json
 """
 
-#: The three joins every projection above needs: the state, the team, the assignee and the
+#: The four joins every projection above needs: the state, the team, the assignee and the
 #: milestone of the row, so that one row of `IssueListItem` is one statement.
 _ITEM_JOINS = """
 JOIN workflow_state s ON s.id = i.state_id

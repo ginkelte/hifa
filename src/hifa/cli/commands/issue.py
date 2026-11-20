@@ -38,10 +38,12 @@ from hifa.adapters.sqlite.uow import Repos, UnitOfWork
 from hifa.app import members
 from hifa.app.boards import (
     DETAIL_COLLECTIONS,
+    RENDERED_INCLUDE,
     detail_collections,
     issue_detail,
     list_blocked,
     list_issues,
+    relation_reading,
 )
 from hifa.app.commands import (
     UNSET,
@@ -74,7 +76,16 @@ from hifa.cli import output
 from hifa.cli.context import CliContext, resolve_team
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
 from hifa.config import ConfigError, resolve_config
-from hifa.domain.entities import Comment, Issue, IssueHistory, Label, Member, Team
+from hifa.domain.entities import (
+    Comment,
+    Cycle,
+    Issue,
+    IssueHistory,
+    Label,
+    Member,
+    Project,
+    Team,
+)
 from hifa.domain.errors import HifaError, NotFound
 
 issue_app = typer.Typer(
@@ -104,11 +115,6 @@ RELATION_EDGE_COLUMNS: tuple[str, ...] = ("id", "type", "issue_id", "related_iss
 #: Columns of the row `issue comment` prints.
 COMMENT_TABLE_COLUMNS: tuple[str, ...] = ("id", "issue", "author", "created", "body")
 
-#: `--with` values `issue show` prints, in the order the object carries them. `attachments` is a
-#: value of the flag that this version refuses: nothing can write an attachment row yet, so the
-#: payload has no key for one and the command says so instead of printing an empty list.
-SHOW_COLLECTIONS: tuple[str, ...] = ("comments", "relations", "history", "children")
-
 #: Section title of each collection and the columns of its table.
 SHOW_SECTIONS: dict[str, tuple[str, ...]] = {
     "comments": ("id", "author", "created", "body"),
@@ -116,13 +122,6 @@ SHOW_SECTIONS: dict[str, tuple[str, ...]] = {
     "history": ("when", "actor", "field", "from", "to"),
     "children": ("identifier", "title"),
 }
-
-#: Columns of the key-value block of `issue show`: the widest key is 8 cells, so the two-space
-#: separator puts every value at column 11.
-SHOW_KEY_WIDTH = 10
-
-#: Empty cell of the block, as the table renderer draws it.
-EMPTY = "–"
 
 #: Priority -> single-cell glyph.
 PRIORITY_GLYPHS: dict[int, str] = {0: "–", 1: "U", 2: "H", 3: "M", 4: "L"}
@@ -873,10 +872,10 @@ def _requested_collections(values: list[str] | None) -> tuple[str, ...]:
                 code="invalid_option",
                 field="with",
             )
-        if token not in SHOW_COLLECTIONS:
+        if token not in DETAIL_COLLECTIONS:
             raise CliError(
-                f"unknown --with value '{token}'; expected comments, relations, history,"
-                " children or attachments",
+                f"unknown --with value '{token}'; expected {', '.join(DETAIL_COLLECTIONS)}"
+                " or attachments",
                 code="invalid_option",
                 field="with",
             )
@@ -888,10 +887,10 @@ def _requested_collections(values: list[str] | None) -> tuple[str, ...]:
 def _include_names(requested: tuple[str, ...]) -> frozenset[str]:
     """The `include` names the read is called with: the requested collections it gates.
 
-    Only two of the four collections are gates of the read; `relations` and `children` are read on
-    every call and are not names of that set, so passing them would be refused as unknown.
+    Only the collections the read gates are names of that set; `relations` and `children` are read
+    on every call and passing them would be refused as unknown.
     """
-    return frozenset(name for name in requested if name in {"comments", "history"})
+    return frozenset(name for name in requested if name in RENDERED_INCLUDE)
 
 
 def _run_show(
@@ -918,8 +917,10 @@ def _run_show(
     finally:
         uow.close()
 
-    # `parent` and `milestone` come from the detail read: it is the read that answers `null` for a
-    # parent in the trash and the one that joins the milestone's name.
+    # `project`, `cycle`, `parent` and `milestone` come from the detail read: it is the read that
+    # answers `null` for a parent in the trash and the one that joins the milestone's name.
+    payload["project"] = _project_ref(detail.project)
+    payload["cycle"] = _cycle_ref(detail.cycle)
     payload["parent"] = None if detail.parent is None else _identifier_ref(detail.parent)
     payload["milestone"] = _milestone_ref(detail.issue)
     if requested:
@@ -1024,11 +1025,6 @@ def _history_item(entry: IssueHistory) -> dict[str, Any]:
     }
 
 
-def _relation_reading(relation: Any, far: IssueListItem, asking_id: str) -> str:
-    """How one stored row reads from `asking_id`: the type, or its inverse from the far end."""
-    return relation.type.name_as_seen("out" if relation.issue_id == asking_id else "in")
-
-
 def _relation_section_row(relation: Any, far: IssueListItem, *, asking_id: str) -> dict[str, Any]:
     """One row of the relations table: the reading, then the far end it points at.
 
@@ -1036,7 +1032,7 @@ def _relation_section_row(relation: Any, far: IssueListItem, *, asking_id: str) 
     word of the stored vocabulary, and the table is the human surface of it.
     """
     return {
-        "reads as": _relation_reading(relation, far, asking_id).replace("_", " "),
+        "reads as": relation_reading(relation, asking_id).replace("_", " "),
         "identifier": far.identifier,
         "title": far.title,
         "state": far.state_name,
@@ -1210,9 +1206,9 @@ def _assignee_filter(repos: Repos, ref: str | None, *, mine: bool) -> str | None
 
 
 def _not_found(field: str, ref: str, *, noun: str | None = None) -> CliError:
-    """Exit 3 naming the flag whose reference matched nothing."""
+    """Exit 3 in the one sentence both edges print for a reference that matched nothing."""
     return CliError(
-        f"{noun or field} not found: {ref}",
+        f"{noun or field} '{ref}' does not exist",
         code="not_found",
         field=field,
         exit_code=EXIT_NOT_FOUND,
@@ -1510,9 +1506,7 @@ def _show_block(payload: dict[str, Any]) -> list[str]:
         ("Updated", payload["updated_at"]),
     )
     lines = [f"{payload['identifier']}  {payload['title']}"]
-    lines.extend(
-        f"{key:<{SHOW_KEY_WIDTH}}{EMPTY if value is None else value}" for key, value in fields
-    )
+    lines.extend(output.key_value_lines(fields))
     return lines
 
 
@@ -2162,6 +2156,18 @@ def _identifier_ref(issue: Any) -> dict[str, Any]:
 
 def _parent_ref(parent: Issue | None) -> dict[str, Any] | None:
     return None if parent is None else _identifier_ref(parent)
+
+
+def _project_ref(project: Project | None) -> dict[str, Any] | None:
+    """`{id, name}` of the issue's project, or `None` when it has none."""
+    return None if project is None else {"id": project.id, "name": project.name}
+
+
+def _cycle_ref(cycle: Cycle | None) -> dict[str, Any] | None:
+    """`{id, number, name}` of the issue's cycle, or `None` when it has none."""
+    if cycle is None:
+        return None
+    return {"id": cycle.id, "number": cycle.number, "name": cycle.name}
 
 
 def _milestone_ref(item: IssueListItem) -> dict[str, Any] | None:

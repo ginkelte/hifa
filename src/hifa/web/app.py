@@ -97,10 +97,6 @@ ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
 #: The guard's one sentence: a statement about the caller, not about the instance, and a
 #: different sentence from the read-only refusal so a reader can tell which one answered.
 CROSS_SITE_REFUSAL = "cross-site write refused"
-#: The collections the detail page and the panel ask the read for: the names it gates whose
-#: collection the read model carries. Its third gate, `attachments`, has no key here — nothing
-#: can write an attachment row yet — so asking for it would pay for a list this edge drops.
-DETAIL_COLLECTIONS = frozenset({"comments", "history"})
 
 
 class FragmentRequiresHtmx(Exception):
@@ -519,7 +515,7 @@ def issue_page(request: Request, team: str, ref: str) -> Response:
     """
     db = _database(request)
     entity = boards.require_team(db, team)
-    detail = boards.issue_detail(db, ref, include=DETAIL_COLLECTIONS, include_trashed=True)
+    detail = boards.issue_detail(db, ref, include=boards.RENDERED_INCLUDE, include_trashed=True)
     canonical = detail.issue.identifier
     if ref != canonical or detail.team.key != entity.key:
         return RedirectResponse(f"/{detail.team.key}/issue/{canonical}", status_code=303)
@@ -777,7 +773,7 @@ def issue_panel_fragment(request: Request, identifier: str) -> Response:
     archived issue kept a form every write of which is refused.
     """
     detail = boards.issue_detail(
-        _database(request), identifier, include=DETAIL_COLLECTIONS, include_trashed=True
+        _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
     )
     vm = _issue_detail_vm(request, detail, surface="panel")
     response = _render(
@@ -1051,7 +1047,7 @@ def comments_fragment(request: Request, identifier: str) -> HTMLResponse:
     trash keeps its two surfaces — the page and the panel — so this read answers `404` for a
     trashed reference like the row and the card fragments do.
     """
-    detail = boards.issue_detail(_database(request), identifier, include=DETAIL_COLLECTIONS)
+    detail = boards.issue_detail(_database(request), identifier, include=boards.RENDERED_INCLUDE)
     vm = _issue_detail_vm(request, detail)
     return _render(
         request,
@@ -1095,7 +1091,9 @@ def comment_fragment(
             controls=readmodels.COMMENT_FORM_FIELDS,
             draft=fields.get("body", ""),
         )
-    detail = boards.issue_detail(_database(request), comment.issue_id, include=DETAIL_COLLECTIONS)
+    detail = boards.issue_detail(
+        _database(request), comment.issue_id, include=boards.RENDERED_INCLUDE
+    )
     vm = _issue_detail_vm(request, detail)
     response = _render(
         request,
@@ -1561,7 +1559,7 @@ def _layer_refusal(
     box is a paragraph they have to type again.
     """
     detail = boards.issue_detail(
-        _database(request), identifier, include=DETAIL_COLLECTIONS, include_trashed=True
+        _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
     )
     control, message = (
         _refusal(exc, identifier=detail.issue.identifier, verb=verb, controls=controls)
@@ -1655,7 +1653,7 @@ def _issue_page_error(
     message §6 composes for it and, for the confirmation, the block the reader has to reopen.
     """
     detail = boards.issue_detail(
-        _database(request), identifier, include=DETAIL_COLLECTIONS, include_trashed=True
+        _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
     )
     if exc is None:
         control, message = (
@@ -1702,7 +1700,7 @@ def _issue_edit_fragment(
     detail = boards.issue_detail(
         _database(request),
         identifier,
-        include=DETAIL_COLLECTIONS if view == "panel" else frozenset(),
+        include=boards.RENDERED_INCLUDE if view == "panel" else frozenset(),
         include_trashed=view == "panel",
     )
     message = form_error or next((text for text in (form_errors or {}).values() if text), None)
