@@ -5,6 +5,7 @@
   <header class="detail-head">
     <a class="identifier" href="{{ vm.url }}">{{ vm.identifier }}</a>
     <h1 class="detail-title">{{ vm.title }}</h1>
+    {% if vm.last_activity %}<p class="dim last-activity"><a href="#event-{{ vm.last_activity.row_id }}">{{ vm.last_activity.text }}</a></p>{% endif %}
     <div class="detail-actions">
       <span class="dot" style="background: {{ vm.state_color }}"></span>
       <span class="state-name">{{ vm.state_name }}</span>
@@ -79,6 +80,7 @@
         </ul>
       </section>
       {% endif %}
+      {% include "partials/history.html" %}
       <section id="comments">
         <h2>Comments</h2>
         {% include "partials/comments.html" %}
@@ -97,17 +99,6 @@
         <dt>Created</dt><dd>{{ vm.created_label }}</dd>
         <dt>Updated</dt><dd>{{ vm.updated_label }}</dd>
       </dl>
-      {% if vm.history %}
-      <section class="history">
-        <h2>History</h2>
-        <ul>
-          {% for entry in vm.history %}
-          <li><span class="history-field">{{ entry.field }}</span> {{ entry.actor_name or "unknown" }}: {{ entry.old_label }} → {{ entry.new_label }}
-            <span class="stamp">{{ entry.created_label }}</span></li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endif %}
     </aside>
   </div>
 </article>

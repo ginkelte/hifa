@@ -1,0 +1,8 @@
+<li class="history-item" id="event-{{ entry.id }}" tabindex="0"
+    aria-label="{{ entry.actor_label }} {{ entry.sentence }}, {{ entry.created_label }}">
+  {% if entry.day_label %}<span class="history-day" aria-hidden="true">{{ entry.day_label }}</span>{% endif %}
+  <span class="history-rail" aria-hidden="true"><span class="history-dot"{% if entry.dot_color %} style="background: {{ entry.dot_color }}"{% endif %}></span></span>
+  <span class="history-avatar" aria-hidden="true">{{ entry.actor_initials }}</span>
+  <span class="history-sentence"><span class="history-actor">{{ entry.actor_label }}</span> {{ entry.sentence }}</span>
+  <time class="history-time" datetime="{{ entry.created_at }}" title="{{ entry.created_at }}">{{ entry.created_label }}</time>
+</li>

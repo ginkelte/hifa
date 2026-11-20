@@ -1,0 +1,11 @@
+{% if vm.history_entries %}
+<section class="history">
+  <h2>History</h2>
+  {% include "partials/history_list.html" %}
+  {% if vm.history_hidden > 0 %}
+  <button type="button" class="btn history-all"
+          hx-get="/_/issues/{{ vm.identifier }}/history?limit=100"
+          hx-target="#history-list" hx-swap="outerHTML">Show all {{ vm.history_window }}</button>
+  {% endif %}
+</section>
+{% endif %}

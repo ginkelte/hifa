@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage
+from hifa.app.history import SOMEONE, WINDOW_SIZE, HistoryPage, history_rows, wire_instant
 from hifa.domain.entities import WorkflowState
 from hifa.domain.identifier import parse as parse_identifier
 from hifa.web.markdown import render_markdown
@@ -104,6 +105,11 @@ def _stamp(moment: datetime | None) -> str:
     if moment is None:
         return ""
     return f"{MONTHS[moment.month - 1]} {moment.day} {moment.hour:02d}:{moment.minute:02d}"
+
+
+def _day_stamp(day: date) -> str:
+    """`11 Nov 2026`: the label of the day a run of events opens."""
+    return f"{day.day} {MONTHS[day.month - 1]} {day.year}"
 
 
 def _relative(moment: datetime | None, now: datetime | None) -> str:
@@ -353,6 +359,10 @@ def build_board_vm(
 # --- detail ---------------------------------------------------------------------------
 
 
+#: How many rows the panel shows before offering the rest of the window.
+PANEL_HISTORY_ROWS = 8
+
+
 def author_name(members: Mapping[str, str], author_id: str | None) -> str | None:
     """The member who wrote a comment or performed a history entry (never the assignee).
 
@@ -362,6 +372,26 @@ def author_name(members: Mapping[str, str], author_id: str | None) -> str | None
     if not author_id:
         return None
     return members.get(author_id)
+
+
+def _history_page(
+    detail: IssueDetail, *, states: Sequence[WorkflowState] = (), now: datetime | None = None
+) -> HistoryPage:
+    """The one formatter's page for the history window of one detail read.
+
+    The state map resolves a move and carries the colour of its dot; the member and parent maps
+    are the read's. `now` only feeds the one-line summary under the title, so a caller without a
+    clock still gets the rows.
+    """
+    rows = tuple(states) or tuple(getattr(detail, "states", ()))
+    return history_rows(
+        detail.history,
+        states={state.id: state.name for state in rows},
+        members=detail.members,
+        parents=getattr(detail, "history_parents", None),
+        state_colors={state.id: state.color for state in rows},
+        now=now,
+    )
 
 
 def build_issue_vm(
@@ -440,16 +470,32 @@ def build_issue_vm(
                 "url": f"/{other.team_key}/issue/{other.identifier}",
             }
         )
-    history = [
-        {
-            "field": entry.field,
-            "actor_name": author_name(detail.members, entry.actor_id),
-            "old_label": entry.old_value or "",
-            "new_label": entry.new_value or "",
-            "created_label": _relative(entry.created_at, now),
-        }
-        for entry in detail.history
-    ]
+    page = _history_page(detail, states=states, now=now)
+    history: list[dict[str, object]] = []
+    previous_day: date | None = None
+    for entry in page.rows:
+        day = entry.created_at.date()
+        history.append(
+            {
+                "id": entry.id,
+                "field": entry.field,
+                "actor_id": entry.actor_id,
+                "actor_label": entry.actor_label,
+                "actor_initials": (
+                    SOMEONE if entry.actor_label == SOMEONE else initials(entry.actor_label)
+                ),
+                "sentence": entry.sentence,
+                "old_value": entry.old_value,
+                "new_value": entry.new_value,
+                "old_label": entry.old_label,
+                "new_label": entry.new_label,
+                "dot_color": entry.dot_color,
+                "created_at": wire_instant(entry.created_at),
+                "created_label": _relative(entry.created_at, now),
+                "day_label": None if day == previous_day else _day_stamp(day),
+            }
+        )
+        previous_day = day
 
     errors = {
         name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS + COMMENT_FORM_FIELDS
@@ -494,6 +540,16 @@ def build_issue_vm(
             "comments": comments,
             "relations": relations,
             "history": history,
+            "history_panel": history[:PANEL_HISTORY_ROWS],
+            "history_window": page.window_size,
+            "history_hidden": max(0, page.window_size - PANEL_HISTORY_ROWS),
+            "history_truncated": page.truncated,
+            "history_floor": f"the last {WINDOW_SIZE} events" if page.truncated else None,
+            "last_activity": (
+                None
+                if page.last_activity is None
+                else {"text": page.last_activity.text, "row_id": page.last_activity.row_id}
+            ),
             "estimate_label": "\u2013" if item.estimate is None else f"{item.estimate:g} pts",
             "project_label": "\u2013" if detail.project is None else detail.project.name,
             "cycle_label": (

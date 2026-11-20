@@ -1038,6 +1038,27 @@ def issue_move_page(
     return RedirectResponse(f"/{entity.key}/issue/{issue.identifier}", status_code=303)
 
 
+@router.get("/_/issues/{identifier}/history", dependencies=[HTMX])
+def history_fragment(request: Request, identifier: str, limit: str = "100") -> HTMLResponse:
+    """Answer the whole list of one issue's events: the `<ol>` the expansion replaces.
+
+    The same read, the same two names and the same keyword as the panel, so `Show all` on a
+    trashed issue answers `200` exactly as the panel does. `limit` names the window the control
+    asks for and is not an argument: the window is the read's, and a fragment cannot be asked for
+    more. The answer carries no control of its own — the swap has already put the whole window
+    where the panel's cut was — and it keeps the one dim line that says a full window is a floor.
+    """
+    detail = boards.issue_detail(
+        _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
+    )
+    vm = _issue_detail_vm(request, detail)
+    return _render(
+        request,
+        "partials/history_list.html",
+        {"page": _page(request, title=detail.issue.identifier, nav="issue"), "vm": vm},
+    )
+
+
 @router.get("/_/comments/{identifier}", dependencies=[HTMX])
 def comments_fragment(request: Request, identifier: str) -> HTMLResponse:
     """Answer the whole list of one issue's comments: the `<ol>` the `outerHTML` swap replaces.
@@ -1628,6 +1649,7 @@ def _issue_detail_vm(
         confirm_open=confirm_open,
     )
     panel = surface == "panel"
+    vm["history_entries"] = vm["history_panel"] if panel else vm["history"]
     vm["comment_composer_id"] = "panel-comment-body" if panel else "comment-body"
     vm["comment_draft"] = draft or ""
     vm["comment_composer_fragment"] = f"/_/comments/{detail.issue.identifier}" if panel else None

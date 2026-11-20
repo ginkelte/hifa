@@ -5,6 +5,7 @@
     <a class="btn btn-ghost" href="{{ vm.url }}">Open</a>
   </header>
   <h2 class="panel-title">{{ vm.title }}</h2>
+  {% if vm.last_activity %}<p class="dim last-activity"><a href="#event-{{ vm.last_activity.row_id }}">{{ vm.last_activity.text }}</a></p>{% endif %}
   <dl class="meta">
     <dt>State</dt><dd><span class="dot" style="background: {{ vm.state_color }}"></span>{{ vm.state_name }}</dd>
     <dt>Priority</dt><dd><span class="glyph{% if vm.is_urgent %} is-urgent{% endif %}">{{ vm.priority_glyph }}</span>{{ vm.priority_label }}</dd>
@@ -58,6 +59,7 @@
     {% endif %}
   </div>
   {% endif %}
+  {% include "partials/history.html" %}
   <section id="comments">
     <h3>Comments</h3>
     {% include "partials/comments.html" %}
