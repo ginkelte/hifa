@@ -265,6 +265,27 @@ def test_the_history_section_prints_the_story_oldest_first_and_at_most_100(cli: 
     assert "state_id" not in result.stdout
 
 
+def test_a_short_history_reads_as_a_story_oldest_first(cli: Cli) -> None:
+    """Two events, two rows, oldest first — and the stored ULIDs never reach the output.
+
+    The 120-row test pins the cap and the direction; this one pins that a history short enough to
+    have no cut is still a story: `created` first, the move second, each cell a sentence.
+    """
+    cli.create("Fix SSO login", "--state", "Backlog")
+    assert cli.run("issue", "move", "ENG-1", "-s", "Todo").exit_code == 0
+
+    result = cli.run("issue", "show", "ENG-1", "--with", "history")
+
+    assert result.exit_code == 0, out(result)
+    rows = sections(result)["HISTORY"]
+    assert rows[0].split() == ["WHEN", "ACTOR", "EVENT"]
+    assert len(rows) == 3
+    assert rows[1].endswith("created the issue")
+    assert rows[2].endswith("moved from Backlog to Todo")
+    for state in cli.rows("SELECT id FROM workflow_state"):
+        assert str(state["id"]) not in result.stdout
+
+
 # --- the collections, through the envelope -----------------------------------------------
 
 
