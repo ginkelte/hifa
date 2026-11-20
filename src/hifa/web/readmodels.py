@@ -489,6 +489,7 @@ def build_issue_vm(
         )
         previous_day = day
 
+    panel_rows = history[:PANEL_HISTORY_ROWS]
     errors = {
         name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS + COMMENT_FORM_FIELDS
     }
@@ -532,9 +533,11 @@ def build_issue_vm(
             "comments": comments,
             "relations": relations,
             "history": history,
-            "history_panel": history[:PANEL_HISTORY_ROWS],
+            # The panel's cut and the count of what it hides are one subtraction: `history_hidden`
+            # is measured against the rows the panel really renders, so the two cannot disagree.
+            "history_panel": panel_rows,
             "history_window": page.window_size,
-            "history_hidden": max(0, page.window_size - PANEL_HISTORY_ROWS),
+            "history_hidden": max(0, page.window_size - len(panel_rows)),
             # One key, one fact: the sentence the dim line prints when the window came back full.
             # `page.truncated` is a floor and never a total, so the string says "the last N events"
             # and no second boolean publishes the same thing for nobody to read.

@@ -1654,10 +1654,12 @@ def _issue_detail_vm(
         confirm_open=confirm_open,
     )
     panel = surface == "panel"
-    vm["history_entries"] = vm["history_panel"] if panel else vm["history"]
-    # Only the panel is cut at eight, so only the panel has a `Show all` to offer: the page already
-    # prints the whole window, and a control there would expand what the reader can see.
-    vm["history_hidden"] = vm["history_hidden"] if panel else 0
+    # One decision, one local: only the panel shortens the timeline to eight rows, so only the panel
+    # has anything for a `Show all` to expand. The rows it prints and the count it promises are both
+    # read off this one answer instead of each deciding for itself five lines apart.
+    shortened = panel
+    vm["history_entries"] = vm["history_panel"] if shortened else vm["history"]
+    vm["history_hidden"] = vm["history_hidden"] if shortened else 0
     vm["comment_composer_id"] = "panel-comment-body" if panel else "comment-body"
     vm["comment_draft"] = draft or ""
     vm["comment_composer_fragment"] = f"/_/comments/{detail.issue.identifier}" if panel else None
