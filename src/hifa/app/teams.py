@@ -223,7 +223,7 @@ def bootstrap(
             if existing_ws is not None
             else None
         )
-        already_initialized = existing_ws is not None and existing_team is not None
+        already_initialized = existing_ws is not None
 
         # 1. workspace (by url_key)
         if existing_ws is None:
