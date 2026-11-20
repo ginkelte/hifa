@@ -448,7 +448,9 @@ def show_command(
     ctx: typer.Context,
     ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
     collections: list[str] | None = typer.Option(
-        None, "--with", help="comments, relations, history or children (repeatable)."
+        None,
+        "--with",
+        help="comments, relations, history or children (repeatable); attachments is refused.",
     ),
     db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
     json_output: bool = typer.Option(False, "--json", help="JSON output."),
