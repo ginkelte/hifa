@@ -471,6 +471,14 @@ def build_issue_vm(
                 "sentence": entry.sentence,
                 "old_value": entry.old_value,
                 "new_value": entry.new_value,
+                # The two `data-*` attributes and the hover title are decided here, not in Jinja: a
+                # side the row does not have is the empty attribute (never the string `None`), and
+                # only a replaced title has an old value worth hovering.
+                "data_old": entry.old_value if entry.old_value is not None else "",
+                "data_new": entry.new_value if entry.new_value is not None else "",
+                "title_attr": (
+                    entry.old_value if entry.field == "title" and entry.old_value else None
+                ),
                 "old_label": entry.old_label,
                 "new_label": entry.new_label,
                 "dot_color": entry.dot_color,
