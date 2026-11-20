@@ -248,7 +248,10 @@ def test_detail_renders_the_issue(seeded: SimpleNamespace) -> None:
     assert "moved from Backlog to Todo" in history.group(1)
     assert "state_id" not in history.group(1)
     assert member_name in history.group(1)
-    assert "01M" not in history.group(1)
+    # The two ULIDs are on the row as `data-old`/`data-new` and are never text, so the assertion
+    # about what a reader sees is made over the markup stripped of its tags.
+    assert 'data-old="' in history.group(1)
+    assert "01M" not in re.sub(r"<[^>]+>", " ", history.group(1))
 
 
 def test_detail_by_ulid_redirects_to_the_identifier(seeded: SimpleNamespace) -> None:

@@ -1,5 +1,7 @@
 <li class="history-item" id="event-{{ entry.id }}" tabindex="0"
-    aria-label="{{ entry.actor_label }} {{ entry.sentence }}, {{ entry.created_label }}">
+    data-old="{{ entry.old_value if entry.old_value is not none else '' }}"
+    data-new="{{ entry.new_value if entry.new_value is not none else '' }}"
+    {% if entry.field == "title" and entry.old_value %}title="{{ entry.old_value }}" {% endif %}aria-label="{{ entry.actor_label }} {{ entry.sentence }}, {{ entry.created_label }}">
   {% if entry.day_label %}<span class="history-day" aria-hidden="true">{{ entry.day_label }}</span>{% endif %}
   <span class="history-rail" aria-hidden="true"><span class="history-dot"{% if entry.dot_color %} style="background: {{ entry.dot_color }}"{% endif %}></span></span>
   <span class="history-avatar" aria-hidden="true">{{ entry.actor_initials }}</span>

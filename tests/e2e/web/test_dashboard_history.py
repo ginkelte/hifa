@@ -30,6 +30,8 @@ SENTENCE = re.compile(r'<span class="history-sentence">(.*?)</span>\s*<time', re
 TIME = re.compile(r'<time class="history-time" datetime="([^"]+)"')
 #: A ULID of the table: 26 characters of Crockford's base32.
 ULID = re.compile(r"\b[0-9A-HJKMNP-TV-Z]{26}\b")
+#: One tag, opening or closing: what `_visible` takes away.
+TAG = re.compile(r"<[^>]+>")
 
 
 def _run(*args: str) -> None:
@@ -103,6 +105,11 @@ def _section(response_text: str) -> str:
     return match.group(0)
 
 
+def _visible(markup: str) -> str:
+    """The text a reader sees: every tag — and so every `data-*` a tag carries — taken away."""
+    return TAG.sub(" ", markup)
+
+
 def _sentences(response_text: str) -> list[str]:
     """The text of every event of the timeline, in the order it is printed."""
     return [
@@ -133,7 +140,10 @@ def test_the_timeline_reads_as_sentences_oldest_first(
         f"{member} moved from Backlog to Todo",
     ]
     assert "state_id" not in section
-    assert ULID.search(section) is None
+    # The raw pair is on the row as `data-old`/`data-new`, so a reader of the DOM can still see
+    # the ULID the row held: what this asserts is that no ULID reaches the *text*.
+    assert 'data-old="' in section and 'data-new="' in section
+    assert ULID.search(_visible(section)) is None
     assert "→" not in section
 
 
@@ -270,7 +280,10 @@ def test_a_state_that_is_gone_reads_as_the_kind_and_the_word(
     section = _section(world.client.get(f"/ENG/issue/{world.identifier}").text)
 
     assert "state (deleted)" in section
-    assert ULID.search(section) is None
+    # The two unknown ULIDs are what the row stored: they stay on `data-old`/`data-new` and never
+    # enter the text, so the assertion is about the visible words and not about the markup.
+    assert 'data-old="01M75KV68MF9TYWEK2GHWPNBZZ"' in section
+    assert ULID.search(_visible(section)) is None
     assert "→" not in section
 
 
@@ -290,6 +303,47 @@ def test_an_unknown_field_and_an_unknown_actor_are_named_and_never_raised(
 
 
 # --- the markup --------------------------------------------------------------------------
+
+
+def test_the_row_carries_the_stored_pair_and_the_text_carries_only_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`data-old`/`data-new` hold what the row stored; the sentence holds the two labels only.
+
+    The pair is the one place a ULID is allowed to be — on the DOM, never in the text a CSS
+    `content:` or a screen reader could pick up (§2.5.7.1 rule 1). A side the row does not have
+    is an empty attribute and never the string `None`.
+    """
+    world = _person(tmp_path, monkeypatch)
+    _run("issue", "move", "ENG-1", "-s", "Backlog")
+    with sqlite3.connect(world.db) as conn:
+        ids = dict(conn.execute("SELECT name, id FROM workflow_state").fetchall())
+
+    section = _section(world.client.get(f"/ENG/issue/{world.identifier}").text)
+    rows = EVENT.findall(section)
+    created, moved = rows[0], rows[-1]
+
+    assert 'data-old=""' in created and 'data-new=""' in created
+    assert f'data-old="{ids["Todo"]}"' in moved
+    assert f'data-new="{ids["Backlog"]}"' in moved
+    assert "moved from Todo to Backlog" in _visible(moved)
+    assert ULID.search(_visible(moved)) is None
+
+
+def test_a_title_row_keeps_the_old_title_in_its_title_attribute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The replaced title is the row's `title`, and the row is focusable — not a hover-only note."""
+    world = _person(tmp_path, monkeypatch)
+    _add(world.db, field="title", old="Old title", new="New title")
+
+    section = _section(world.client.get(f"/ENG/issue/{world.identifier}").text)
+    row = EVENT.findall(section)[-1]
+
+    assert 'title="Old title"' in row
+    assert 'tabindex="0"' in row
+    assert "changed the title to \u201cNew title\u201d" in _visible(row)
+    assert "Old title" not in _visible(row)
 
 
 def test_the_timeline_is_a_list_of_times_and_not_a_table(
