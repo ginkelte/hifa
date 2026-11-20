@@ -28,7 +28,9 @@ from hifa.domain.errors import (
 )
 
 MIGRATIONS_DIR: Final[str] = "migrations"
-MAX_VERSION: Final[int] = 3  # 001_init, 002_schema_migration, 003_team_previous_key
+MAX_VERSION: Final[int] = (
+    4  # 001_init, 002_schema_migration, 003_team_previous_key, 004_history_created_backfill
+)
 
 MIGRATION_RE: Final[re.Pattern[str]] = re.compile(r"^(?P<version>\d{3})_[a-z0-9_]+\.sql$")
 

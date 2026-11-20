@@ -56,14 +56,14 @@ def user_tables(conn: sqlite3.Connection) -> set[str]:
 def test_migration_on_empty_database(db_path: Path) -> None:
     result = migrate(db_path)
 
-    assert result.applied == [1, 2, 3]
+    assert result.applied == [1, 2, 3, 4]
     assert result.from_version == 0
-    assert result.to_version == MAX_VERSION == 3
+    assert result.to_version == MAX_VERSION == 4
     assert result.backup_path is None  # base virgen: no hay nada que respaldar
 
     conn = open_db(db_path, readonly=True)
     try:
-        assert schema_version(conn) == 3
+        assert schema_version(conn) == 4
         assert user_tables(conn) == DOMAIN_TABLES
         assert len(user_tables(conn)) == 17
 
@@ -83,11 +83,12 @@ def test_migration_on_empty_database(db_path: Path) -> None:
         rows = conn.execute(
             "SELECT version, name, applied_at, checksum FROM schema_migration ORDER BY version"
         ).fetchall()
-        assert [row["version"] for row in rows] == [1, 2, 3]
+        assert [row["version"] for row in rows] == [1, 2, 3, 4]
         assert [row["name"] for row in rows] == [
             "001_init.sql",
             "002_schema_migration.sql",
             "003_team_previous_key.sql",
+            "004_history_created_backfill.sql",
         ]
         assert all(len(row["checksum"]) == 64 for row in rows)
         assert all(row["applied_at"].endswith("Z") for row in rows)
@@ -99,14 +100,14 @@ def test_migration_is_idempotent(db_path: Path) -> None:
     first = migrate(db_path)
     second = migrate(db_path)
 
-    assert first.applied == [1, 2, 3]
-    assert second == MigrationResult([], 3, 3, None)
+    assert first.applied == [1, 2, 3, 4]
+    assert second == MigrationResult([], 4, 4, None)
 
     conn = open_db(db_path)
     try:
         (count,) = conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()
-        assert count == 3
-        assert schema_version(conn) == 3
+        assert count == 4
+        assert schema_version(conn) == 4
     finally:
         conn.close()
 
@@ -126,7 +127,7 @@ def test_altered_checksum_aborts(db_path: Path, migrations_dir: Path, tmp_path: 
 
     conn = open_db(db_path)
     try:
-        assert schema_version(conn) == 3  # nothing was touched
+        assert schema_version(conn) == 4  # nothing was touched
     finally:
         conn.close()
 
@@ -135,7 +136,7 @@ def test_newer_binary_database_is_left_untouched(db_path: Path) -> None:
     migrate(db_path)
     conn = open_db(db_path)
     try:
-        conn.execute("PRAGMA user_version = 4")
+        conn.execute("PRAGMA user_version = 5")
     finally:
         conn.close()
 
@@ -146,7 +147,7 @@ def test_newer_binary_database_is_left_untouched(db_path: Path) -> None:
 
     conn = open_db(db_path)
     try:
-        assert schema_version(conn) == 4
+        assert schema_version(conn) == 5
         assert user_tables(conn) == DOMAIN_TABLES
     finally:
         conn.close()
@@ -162,7 +163,7 @@ def test_backup_before_migrating_database_with_data(
     assert migrate(db_path, only_init).applied == [1]
     result = migrate(db_path, migrations_dir)
 
-    assert result.applied == [2, 3]
+    assert result.applied == [2, 3, 4]
     assert result.backup_path is not None
     backup = Path(result.backup_path)
     assert backup.exists() and backup.stat().st_size > 0
@@ -228,5 +229,85 @@ def test_fts_records_rows_after_insert(db_path: Path) -> None:
             ).fetchone()[0]
             == 0
         )
+    finally:
+        conn.close()
+
+
+def test_the_created_row_loses_the_identifier_it_echoed(
+    db_path: Path, migrations_dir: Path, tmp_path: Path
+) -> None:
+    """Migration 004 nulls `new_value` on every `created` row and touches no other row."""
+    up_to_three = tmp_path / "up_to_three"
+    up_to_three.mkdir()
+    for name in ("001_init.sql", "002_schema_migration.sql", "003_team_previous_key.sql"):
+        shutil.copy(migrations_dir / name, up_to_three / name)
+    assert migrate(db_path, up_to_three).applied == [1, 2, 3]
+
+    conn = open_db(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO workspace (id, name, url_key, created_at)"
+            " VALUES ('ws1', 'WS', 'ws', '2026-11-08T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO team (id, workspace_id, key, name, created_at, updated_at)"
+            " VALUES ('tm1', 'ws1', 'ENG', 'Engineering', '2026-11-08T00:00:00Z',"
+            " '2026-11-08T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO workflow_state (id, team_id, name, type, position)"
+            " VALUES ('st1', 'tm1', 'Todo', 'unstarted', 1.0)"
+        )
+        for number in (1, 2, 3):
+            conn.execute(
+                "INSERT INTO issue (id, workspace_id, team_id, number, identifier, title,"
+                " state_id, created_at, updated_at)"
+                " VALUES (?, 'ws1', 'tm1', ?, ?, ?, 'st1',"
+                " '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')",
+                (f"is{number}", number, f"ENG-{number}", f"Issue {number}"),
+            )
+            conn.execute(
+                "INSERT INTO issue_history (issue_id, field, old_value, new_value, created_at)"
+                " VALUES (?, 'created', NULL, ?, '2026-11-08T00:00:00Z')",
+                (f"is{number}", f"ENG-{number}"),
+            )
+        conn.execute(
+            "INSERT INTO issue_history (issue_id, field, old_value, new_value, created_at)"
+            " VALUES ('is1', 'title', 'Old', 'New', '2026-11-08T00:01:00Z')"
+        )
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+
+    result = migrate(db_path)
+
+    assert result.applied == [4]
+    assert result.from_version == 3
+    assert result.to_version == 4
+
+    conn = open_db(db_path, readonly=True)
+    try:
+        assert schema_version(conn) == 4
+        created = conn.execute(
+            "SELECT new_value FROM issue_history WHERE field = 'created' ORDER BY id"
+        ).fetchall()
+        assert [row["new_value"] for row in created] == [None, None, None]
+        unchanged = conn.execute(
+            "SELECT old_value, new_value FROM issue_history WHERE field = 'title'"
+        ).fetchall()
+        assert [(row["old_value"], row["new_value"]) for row in unchanged] == [("Old", "New")]
+    finally:
+        conn.close()
+
+    again = migrate(db_path)
+
+    assert again == MigrationResult([], 4, 4, None)
+    conn = open_db(db_path, readonly=True)
+    try:
+        still = conn.execute(
+            "SELECT new_value FROM issue_history WHERE field = 'created'"
+        ).fetchall()
+        assert [row["new_value"] for row in still] == [None, None, None]
     finally:
         conn.close()
