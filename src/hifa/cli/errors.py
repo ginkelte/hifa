@@ -160,9 +160,9 @@ def error_details_for(exc: BaseException) -> dict[str, object] | None:
     if isinstance(exc, NotFound):
         return None
     details = getattr(exc, "details", None)
-    if isinstance(details, dict):
+    if isinstance(details, dict) and details:
         return dict(details)
-    return {}
+    return None
 
 
 def error_payload(exc: BaseException) -> dict[str, object]:

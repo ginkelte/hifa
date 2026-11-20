@@ -717,3 +717,14 @@ def test_label_json_is_a_single_document_on_stdout(cli: Cli) -> None:
     result = cli.run("label", "list", "--json")
 
     assert json.loads(result.stdout)["items"][0]["name"] == "Bug"
+
+
+def test_an_unknown_assignee_publishes_member_not_the_flag(cli: Cli) -> None:
+    """A 404 names the resource it could not find, never the flag that carried the value."""
+    identifier = cli.create("nobody assigned")
+
+    result = cli.run("issue", "edit", identifier, "-a", "nobody@example.com", "--json")
+
+    assert result.exit_code == 3
+    error = error_json(result)
+    assert (error["code"], error["field"], error["details"]) == ("not_found", "member", None)

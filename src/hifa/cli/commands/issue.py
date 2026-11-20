@@ -1197,7 +1197,8 @@ def _resolve_assignee(repos: Repos, ref: str | None) -> str | None:
     if member is None:
         member = _member_by_display_name(repos, value)
     if member is None:
-        raise _not_found("assignee", value, noun="member")
+        # The field names the resource that is missing, not the flag that carried the value.
+        raise _not_found("member", value)
     return member.id
 
 
