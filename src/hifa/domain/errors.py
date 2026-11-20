@@ -299,11 +299,112 @@ class MigrationFailed(HifaError):
     default_message = "migration failed"
 
 
+class DatabaseNotFound(HifaError):
+    """The database file the edge was given is not there, and nothing created it.
+
+    `key` is the path and the only data the verdict carries. Exit 3: the remedy is `hifa init`,
+    not a corrected reference, which is why it is not a `NotFound` and not a 404.
+    """
+
+    code = "database_not_found"
+    default_message = "database not found"
+    exit_code = EXIT_NOT_FOUND
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        key: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._key = key
+        merged: dict[str, Any] = dict(details or {})
+        merged["key"] = key
+        super().__init__(
+            f"database not found: {key}" if message is None else message,
+            details=merged,
+        )
+
+    @property
+    def key(self) -> str:
+        """The path that does not exist."""
+        return self._key
+
+
 class CorruptDatabase(HifaError):
-    """`SQLITE_NOTADB` / `SQLITE_CORRUPT` while opening or migrating."""
+    """The bytes are not a database SQLite can read.
+
+    `detail` is the message class SQLite answered and never the raw driver text; `key` is the
+    path when the raise site knows it. Exit 6.
+    """
 
     code = "corrupt_database"
-    default_message = "database is corrupt"
+    default_message = "corrupt database"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        detail: str | None = None,
+        key: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._detail = detail
+        self._key = key
+        merged: dict[str, Any] = dict(details or {})
+        if detail is not None:
+            merged["detail"] = detail
+        if key is not None:
+            merged["key"] = key
+        super().__init__(
+            ("corrupt database" if detail is None else f"corrupt database: {detail}")
+            if message is None
+            else message,
+            details=merged,
+        )
+
+    @property
+    def detail(self) -> str | None:
+        """The message class SQLite answered, or `None`."""
+        return self._detail
+
+    @property
+    def key(self) -> str | None:
+        """The path of the file, when the raise site knows it."""
+        return self._key
+
+
+class NotAHifaDatabase(HifaError):
+    """The file opens and is valid SQLite, but it carries no hifa database.
+
+    The verdict is a schema one — no `workspace` table and no `issue` table — and it is raised
+    before anything is written. Exit 3: what the command was handed is not the database it
+    operates on.
+    """
+
+    code = "not_a_hifa_database"
+    default_message = "not a hifa database"
+    exit_code = EXIT_NOT_FOUND
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        key: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        self._key = key
+        merged: dict[str, Any] = dict(details or {})
+        merged["key"] = key
+        super().__init__(
+            f"not a hifa database: {key}" if message is None else message,
+            details=merged,
+        )
+
+    @property
+    def key(self) -> str:
+        """The path of the file that is not a hifa database."""
+        return self._key
 
 
 class Fts5Unavailable(HifaError):
@@ -322,11 +423,13 @@ __all__ = [
     "BackupFailed",
     "Conflict",
     "CorruptDatabase",
+    "DatabaseNotFound",
     "Fts5Unavailable",
     "HifaError",
     "InvalidTransition",
     "MigrationChecksumMismatch",
     "MigrationFailed",
+    "NotAHifaDatabase",
     "NotFound",
     "SchemaTooNew",
     "Validation",
