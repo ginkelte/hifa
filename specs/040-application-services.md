@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 7
-spec_revision: 34
+version: 8
+spec_revision: 35
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -1007,7 +1007,8 @@ def label_detail(
 #    because these references have no team scope to narrow with. The set they read spans **two levels**
 #    — every team's rows and the workspace's — so it is the one reference that can meet both shapes of
 #    the refusal: several spellings of the name (`Bug`, `bug`) and several levels holding it (two team
-#    keys, or a team and the workspace). §4.1 R22 says which key the message and `details` carry;
+#    keys, or a team and the workspace). §4.1 R22 says which key the **message** carries and which keys
+#    the exception's `details` accessor merges; the wire `details` of this refusal is `null` (§6);
 #  - issue-scoped (`add_label`, `remove_label`): the same ULID rule, and a name resolves in the issue's
 #    team and then in the workspace (§5.6 step 4). The team's rows are read **first and on their own**,
 #    so a name that fits two spellings inside that one step is `Validation(rule='LABEL_AMBIGUOUS',
@@ -2190,7 +2191,7 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `LIMIT_RANGE` | `Validation` | `limit` outside 1-200 | `list_issues`, `list_board` | 2 | 422 |
 | `ORDER_INVALID` | `Validation` | `order` outside the D-011 vocabulary | `list_issues`, `list_board` | 2 | 422 |
 | `INCLUDE_INVALID` | `Validation` | `include` with a key outside `{comments,relations,attachments,history,children}` | `issue_detail` | 2 | 422 |
-| `LABEL_NOT_FOUND` | `Validation` | `add_label` with a **name** that resolves at neither level and `create_if_missing=False` (exit 2); `remove_label` answers the same input with `NotFound(resource='label')` (exit 3, §5.6) | `add_label` only | 2 | 422 |
+| `LABEL_NOT_FOUND` | `Validation` | a **name** that resolves at neither level with `create_if_missing=False`, on either producer (exit 2). `unlabel` — `remove_label` — answers the same input with `NotFound(resource='label')` (exit 3, §5.6) and is **not** a producer of this code | `add_label`, `create_issue` (its `-l` path) | 2 | 422 |
 | `LABEL_TEAM_MISMATCH` | `Validation` | label from another team | `add_label`, `create_issue` | 2 | 422 |
 | `LABEL_RETIRED` | `Conflict` | attaching a label with `retired_at` not null, or retiring one (a state conflict, not a bad input: SPEC-020 §2.5) | `add_label`, `create_issue`, `retire_label` | 4 | 409 |
 | `LABEL_IN_USE` | `Conflict` | retiring a label with at least one `issue_label` row, whatever layer the issue is in (`LabelRepo.count_uses > 0`) | `retire_label` | 4 | 409 |
@@ -2309,6 +2310,16 @@ out: both edges render `"details": null` and carry the names in `message` (D-062
 is complete on its own and the mapping is for the domain consumer; a refusal whose `message` would be
 ambiguous without the mapping is a message to fix, not an envelope to widen. The errors of this layer
 carry no SQL, table names nor paths: that is REQ-S060-03 and it is verified with a forced-500 test.
+
+**The accessor-to-wire conversion is one function per edge, and it changes.** `Validation` and
+`Conflict` always merge `rule`, `field` and `value` into the mapping (SPEC-020 §2.6), so a naive
+forwarding publishes a dict for every refusal the two classes raise; `cli/errors.py::error_details_for`
+is where that stops: it publishes `null` for a refusal whose mapping is the single-detail triple and the
+list of `{field, message}` only when several are reported (SPEC-050 §2.4.5). The three `--json` tests
+that pin the dict shape today (`tests/e2e/cli/test_issue_create.py`,
+`tests/e2e/cli/test_issue_relations.py`) move with it, in the same commit as the change. The API half of
+this rule is **vacuous at this revision**: `src/hifa/api/` holds `__init__.py` and no handler, so there
+is no second conversion to change and no test to move — the contract binds the day the edge exists.
 
 ## 7. Acceptance Criteria
 
@@ -2895,6 +2906,37 @@ contract it must meet.
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 35 (2026-11-20): **round three: the `replaced` rule covers a trailing no-op, the
+  `LABEL_NOT_FOUND` row names its two producers, the edge conversion is stated, and the bump the
+  refusals earned is taken (HIFA-14, D-070's third amendment).** `version` 7 → 8: §2.2's `restore_label`
+  `raises:` line gains a refusal (rev 34), §6's `UNIQUE_LABEL_NAME` row and the `restore_label` matrix
+  cell gain it and §7 a scenario, which is exactly the ground on which rev 33 went 6 → 7 — a refusal a
+  use case can now produce is a member of the contract this layer publishes, not a detail of an existing
+  one. Rev 34's "`version` stays 7" was wrong on that ground and is corrected here.
+  (1) **`replaced` had two rules in one paragraph.** §2.2's `add_label` line, §5.6 and the code
+  (`replaced[0] if replaced else None` per call) answer one `replaced` per `AddLabel`, and SPEC-050's
+  envelope keeps the **last non-null** one across the call; the headline rev 34 wrote ("the sibling the
+  last write took off") yields `null` for `issue label ENG-1 high other` on `Medium` while the code and
+  the rest of the paragraph yield `Medium`. One rule now, in SPEC-050 §2.4.3: the last non-null
+  `replaced` **of the call**, `null` only when no write of the call displaced anything, with the
+  trailing no-op stated as its own case and a §7 scenario pinning it.
+  (2) **§6's `LABEL_NOT_FOUND` row said "`add_label` only".** §2.2's line and §5.1 step 10 had given the
+  code two producers since rev 33 and the matrix already listed it in `create_issue`'s cell, so rev 34's
+  claim that all three agreed was wrong about the row: its producer column now names `add_label` and
+  `create_issue`'s `-l` path and the row says `unlabel` (`remove_label`) answers `NotFound` instead.
+  (3) **The accessor-to-wire conversion is named, with its scope.** §6's payload paragraph now says
+  where the mapping stops being a mapping (`cli/errors.py::error_details_for` publishes `null` for a
+  single-detail refusal and the list of `{field, message}` only when several are reported), which test
+  files pin the old dict shape and move with the change, and that the API half is vacuous at this
+  revision (`src/hifa/api/` holds `__init__.py` alone) — the promise of "the API's equivalent" is
+  withdrawn.
+  (4) **`ref`'s resolution paragraph pointed at the envelope.** §2.2's comment said "§4.1 R22 says which
+  key the message and `details` carry"; it now says which key the **message** carries and which keys the
+  exception's accessor merges, and that the wire `details` is `null`.
+  §7 stays at 59 scenarios (rev 34's `restore_label` scenario already covers the refusal the bump is
+  about); REQ-F040-38 still counts ten; the `.feature` corpus does not move — 17 files and 240
+  scenarios.
 
 - spec_revision 34 (2026-11-20): **round two of the label review: one wire shape for `details`, the
   `replaced` sibling, and the two writers round one missed (HIFA-14, D-070's amendment).** `version`

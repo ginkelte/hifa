@@ -3937,3 +3937,73 @@ answers `NotFound`. SPEC-040 rev 34.
 C4 and §6.3 (the label-name clause and the wire `details`) and SPEC-080 §4.2 R10, §6.2 and §7 (the
 import verdict), plus the `INDEX.md` rows those revisions change. `specs/INDEX.md` still counts 70
 decisions: this block resolves nothing new, it corrects a decision already numbered.
+
+## Amendments to D-070 (third review round, 2026-11-20)
+
+Appended, not rewritten, for the reason the blocks above give. These bullets are normative; where one
+contradicts a block above it, this one wins, and where a block above declines a version bump this one
+takes it. Nothing here reopens the delta's decisions and no behaviour moves: every bullet either
+corrects a sentence so that it matches the code the earlier rounds measured, adds the row or the message
+a code was missing, or records a bump those rounds declined.
+
+**`replaced` is the last non-null replacement of the call, and a trailing no-op does not clear it.** The
+second block's first headline — "`replaced` names the sibling the last write took off" — is right for
+`issue label ENG-1 high low` and wrong for every call whose last name displaces nothing: for
+`issue label ENG-1 high other` on `Medium`, the last write's own `replaced` is `null` while the call
+performed a replacement. The rule is the sibling taken off by the last write **of the call that displaced
+anything** — the last non-null `AddLabelResult.replaced` across the N calls of the invocation, each of
+which is its own transaction (R18/GAP-05) — so the three instances are `high low` → `High`,
+`high other` → `Medium`, and `null` only when no write of the call displaced anything. The body's §5
+sentence ("the last non-null `AddLabelResult.replaced` of the call") and the code
+(`_run_label_add`) already said this; the headline was the one thing that did not, and SPEC-050 §2.4.3,
+§2.5 and §7 now say it in the one form, with a scenario pinning the trailing no-op.
+
+**The `details` change is one function and two test files, and the API half of it is vacuous at this
+revision.** The block above scoped the change to "stop forwarding `labels`/`teams`" and promised it for
+"the API's equivalent". `Validation` and `Conflict` always merge `rule`, `field` and `value` into the
+mapping (SPEC-020 §2.6), and `error_details_for` forwards the whole mapping, so the envelope stays a dict
+after that commit for every refusal those two classes raise. The rule the delta publishes is a shape, not
+a key list: `cli/errors.py::error_details_for` publishes `null` for a refusal whose accessor carries a
+single detail and the list of `{field, message}` only when several are reported (SPEC-050 §2.4.5,
+SPEC-040 §6). The two files that pin the old dict shape — `tests/e2e/cli/test_issue_create.py:149` and
+`tests/e2e/cli/test_issue_relations.py:84,94,110` — are rewritten in the same commit. The API half is
+**withdrawn as a promise**: `src/hifa/api/` holds `__init__.py` and no handler at this revision, so there
+is no second conversion to change and no test to move; the contract binds the day the edge exists.
+
+**`LabelRepo.get_by_name` has no caller, and the note that justified it named two that cannot exist.**
+SPEC-030 §2.4 was rewritten to keep the method "for internal keys — an import's own values, a seed's own
+string". `hifa import` has no implementation at all (`src/hifa/app/transfer.py` is absent, and
+SPEC-080 §2.1.1 no longer consumes the method for the name it resolves), and the seed resolves its four
+names case-insensitively through `case_variant_at_level` — measured on `feat/labels-impl` — so the method
+has **no caller** in that tree. It is an exact one-row read (`name = ?`), it stays on the port for a caller
+holding a **stored** key, and a user-supplied name must never reach it. SPEC-030 rev 17.
+
+**`LABEL_NOT_FOUND`'s row was the one place the second block's claim was false.** It said §2.2, §6's note
+and the matrix "all three now say the same thing"; the matrix and the note did, the row still read
+"`add_label` only". The row now names both producers — `add_label` and `create_issue`'s `-l/--label` path
+— and says that `unlabel` (`remove_label`) answers `NotFound` instead. SPEC-040 rev 35.
+
+**The three bumps the earlier blocks declined are taken, and one more is taken for the same reason.**
+SPEC-040 `version` 7 → **8**: §2.2's `restore_label` gains a refusal, §6's `UNIQUE_LABEL_NAME` row and
+the `restore_label` matrix cell gain it and §7 a scenario, which is the ground rev 33 stood on for 6 → 7.
+SPEC-050 `version` 9 → **10**:
+`label archive --undo` can answer exit 4, an exit the command now produces, and the corpus holds no
+precedent for a refusal inside an existing exit set being revision-only (rev 32 bumped for an exit-set
+change; rev 33 bumped for prose with no exit added). SPEC-080 `version` 1 → **2**: `RowError.code` gains
+`ambiguous_label`, a value a client branches on, which is SPEC-060's own ground for `version` 3 → 4.
+SPEC-060 `spec_revision` 16 and SPEC-030 `spec_revision` 17 carry the two note corrections above.
+
+**§4.1 of SPEC-080 gains the case the code table already had, and C4's state clause loses the premise its
+label clause lost.** `ambiguous_label` had a §6.2 row, an R10 rule and a §7 scenario but no §4.1 row,
+where its precedents `ambiguous_assignee` (B4) and `ambiguous_cycle` (B5) each carry theirs with the
+message — B21 is that row, with the message contract `label BUG is ambiguous: 'Bug', 'bug'`. And C4's
+**state** half justified accepting a name with "the name is unique per team" on a binary
+`UNIQUE(team_id, name)`, the identical premise the label half was corrected for in the same row;
+SPEC-060 rev 16 states the true reason (one level, read within the issue's team) instead.
+
+**`Wins:` and `Touches:` grow by the clauses these bullets correct.** `Wins:` adds SPEC-030 §2.4's
+caller claim (the seed's and the import's "own strings"), SPEC-060 §2.2 C4's **state** clause, and
+SPEC-080 §2.1.1's `tx.labels` row (which consumed `get_by_name`) with R10's missing message.
+`Touches:` adds SPEC-080 §2.1.1 and §4.1 and the `INDEX.md` rows of the five revisions above; the specs
+themselves were already named by the second block. `specs/INDEX.md` still counts **70 decisions**: this
+block resolves nothing new, it corrects a decision already numbered.

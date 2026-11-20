@@ -4,7 +4,7 @@ title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
 version: 8
-spec_revision: 15
+spec_revision: 16
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -79,7 +79,7 @@ of this spec use and returns an app with exactly the routes of §2.5 (R2).
 | C1 | Resource prefix: `/api/v1`. Changing the shape of a payload ⇒ `/api/v2`, not a flag. |
 | C2 | All handlers are declared `def`, **never** `async def` (the core is synchronous and uses SQLite). FastAPI runs them in the AnyIO threadpool. |
 | C3 | Path `REF` = `identifier` (`ENG-123`, case-insensitive) **or** a 26-char ULID. It is resolved in that order. |
-| C4 | The API is **id-first**: it accepts ULIDs in `label_ids`, `project`, `cycle`, `assignee`. Accepting names is the CLI's prerogative (SPEC-050), not the API's. `state` accepts an id or a name because the name is unique per team. **Single exception:** the `/issues/{ref}/labels` subresource (§2.5.1) accepts an id **or** a name, because `add_label`/`remove_label` (SPEC-040) resolve both. A label name is **not** unique per team in the sense this sentence used to claim: the indexes compare binary, so identical spellings at one level are possible and are **refused** by SPEC-040 R22 (`LABEL_AMBIGUOUS`, 422) instead of being picked; the name resolves case-insensitively in the issue's team and then in the workspace. |
+| C4 | The API is **id-first**: it accepts ULIDs in `label_ids`, `project`, `cycle`, `assignee`. Accepting names is the CLI's prerogative (SPEC-050), not the API's. `state` accepts an id or a name because a state belongs to exactly one team and the name is read **within that team** — one level, with no workspace rung to fall through and no cross-level tie to break — and **not** because the name is unique per team in the sense this row used to claim: `UNIQUE(team_id, name)` compares binary, so `Todo` beside `todo` is two states — the same premise error the label clause corrects one clause to the right. **Single exception:** the `/issues/{ref}/labels` subresource (§2.5.1) accepts an id **or** a name, because `add_label`/`remove_label` (SPEC-040) resolve both. A label name is **not** unique per team in the sense this sentence used to claim: the indexes compare binary, so identical spellings at one level are possible and are **refused** by SPEC-040 R22 (`LABEL_AMBIGUOUS`, 422) instead of being picked; the name resolves case-insensitively in the issue's team and then in the workspace. |
 | C5 | Request `Content-Type: application/json` (or no body). Any other type ⇒ 415. Body > 1 MiB ⇒ 413. |
 | C6 | Input models are `extra="forbid"`: an unknown field ⇒ 422 with `field` = the field name. |
 | C7 | Response: UTF-8 JSON, no `{"data": ...}` wrapper. Lists use the envelope of §2.6. |
@@ -1450,6 +1450,20 @@ Feature: hifa REST API
 - File upload: `attachments` are links (SPEC-000 §1).
 
 ## 11. Notes
+
+- spec_revision 16 (2026-11-20): **the state half of C4 carried the same false premise as the label
+  half, and it is corrected the same way (HIFA-14, round three, D-070's third amendment).** `version`
+  stays 8: no route, status code, schema or error code moves; what changes is the reason one convention
+  gives for accepting a name.
+  C4 said "`state` accepts an id or a name because the name is unique per team", while
+  `UNIQUE(team_id, name)` (SPEC-010 §3) compares **binary**: `Todo` beside `todo` is two states, so the
+  sentence justified a name with a uniqueness the schema does not impose — the identical premise rev 15
+  removed for labels, one clause to the left. The clause now says what is true and stays true of the
+  resolution: a state belongs to exactly one team and the name is read within that team, which is one
+  level with no workspace rung and no cross-level tie to break; the uniqueness claim is gone, and the
+  index it leaned on is named for what it is — binary, therefore two spellings, therefore two states.
+  No test, scenario, route or payload moves; §7 stays at 26 scenarios, and D-070's `Wins:` names the
+  clause in its third amendment.
 
 - spec_revision 15 (2026-11-20): **C4's "unique per team" is false for a label name, and `details` keeps
   two shapes (HIFA-14, round two of the label review, D-070's amendment).** `version` 7 → 8: §2.2's C4 is
