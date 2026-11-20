@@ -362,7 +362,7 @@ resulting conflicts are recorded instead of silently resolved.
 |---|---|
 | **18** documents | [`specs/`](specs/) — one contract per component plus the vertical spec |
 | **240** Gherkin scenarios | executable acceptance criteria, [`specs/acceptance/`](specs/acceptance/) — 228 `Scenario` + 12 `Scenario Outline` |
-| **70** decisions | [`specs/DECISIONS.md`](specs/DECISIONS.md) — who wins on a conflict, and why |
+| **72** decisions | [`specs/DECISIONS.md`](specs/DECISIONS.md) — who wins on a conflict, and why |
 | **0** silent drifts | `scripts/spec_contract_check.py --all` compares the spec's DDL with `sqlite_master` in CI |
 
 | File | Contents |
@@ -516,7 +516,7 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 |---|---|
 | Tests | **1776** collected by `pytest` (1776 passing, 0 skipped): unit, integration, e2e CLI and web, plus one perf budget over 10 000 rows |
 | Code | ~18.5k lines in `src/` (18 502), ~25.4k in `tests/` (25 449), Python only |
-| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 70 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
+| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 72 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
 | Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `search`, `db reindex`, `serve` (board, list, detail, search, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |
