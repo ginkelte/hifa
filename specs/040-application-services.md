@@ -674,8 +674,8 @@ def add_label(uow: UnitOfWork, cmd: AddLabel, actor: Actor) -> AddLabelResult: .
 
 @dataclass(frozen=True, slots=True)
 class AddLabelResult:
-    issue: Issue              # the issue as read back inside the same transaction, after the write
-    replaced: Label | None    # the sibling this write took off the issue; `None` in every other case
+    issue: Issue  # the issue as read back inside the same transaction, after the write
+    replaced: Label | None  # the sibling this write took off the issue; `None` in every other case
 
 
 # raises: NotFound(issue|label), Validation(ISSUE_TRASHED|LABEL_TEAM_MISMATCH|LABEL_NOT_FOUND|COLOR_FORMAT),
@@ -935,6 +935,8 @@ def list_states(
 def list_labels(
     db: Database, *, team: str | None = None, include_retired: bool = False
 ) -> tuple[Label, ...]: ...
+
+
 # raises: NotFound(team)
 #
 # `team=None` is every label of the workspace, both levels. `team=KEY` is the set an issue of that
@@ -950,7 +952,11 @@ def list_labels(
 # have different visibility needs, and this is the one place the difference is decided.
 
 
-def label_detail(db: Database, ref: str) -> Label: ...  # raises: NotFound(label), Validation(LABEL_AMBIGUOUS)
+def label_detail(
+    db: Database, ref: str
+) -> Label: ...  # raises: NotFound(label), Validation(LABEL_AMBIGUOUS)
+
+
 #
 # `ref` is a ULID or a name, and the resolution rule depends on the kind of reference (§4.1 R22):
 #  - catalogue-scoped (`update_label`, `retire_label`, `restore_label`, `label_detail`): a ULID resolves
