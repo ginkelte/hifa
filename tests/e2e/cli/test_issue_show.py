@@ -507,3 +507,42 @@ def test_quiet_prints_the_identifier_with_and_without_with(cli: Cli) -> None:
 
     assert plain.stdout == with_with.stdout == "ENG-1\n"
     assert with_with.stderr == ""
+
+
+# --- the reference and the history corpus ------------------------------------------------
+
+
+def test_show_accepts_the_ulid_of_the_issue(cli: Cli) -> None:
+    """A ULID is a `REF` like an identifier: one object, whichever name was typed."""
+    cli.create("Fix SSO login")
+
+    by_identifier = payload(cli.run("issue", "show", "ENG-1", "--json"))
+    by_ulid = payload(cli.run("issue", "show", str(cli.issue("ENG-1")["id"]), "--json"))
+
+    assert by_ulid["identifier"] == "ENG-1"
+    assert by_ulid == by_identifier
+
+
+def test_show_with_a_nonexistent_reference_is_not_found(cli: Cli) -> None:
+    """A reference that resolves nowhere is the verb's one `3`, with the noun in `field`."""
+    result = cli.run("issue", "show", "ENG-999", "--json")
+
+    assert result.exit_code == 3, out(result)
+    assert error_of(result)["code"] == "not_found"
+    assert error_of(result)["field"] == "issue"
+
+
+def test_the_history_entries_resolve_the_actor_and_keep_the_stored_values(cli: Cli) -> None:
+    """Each entry carries the member who wrote it and the two values as the column stored them."""
+    cli.create("Fix SSO login")
+    assert cli.run("issue", "edit", "ENG-1", "--priority", "high").exit_code == 0
+
+    document = payload(cli.run("issue", "show", "ENG-1", "--with", "history", "--json"))
+    entries = document["history"]
+    priority = next(entry for entry in entries if entry["field"] == "priority")
+    member = cli.rows("SELECT id, display_name FROM member ORDER BY created_at")[0]
+
+    assert {entry["actor_id"] for entry in entries} == {member["id"]}
+    assert json.loads(priority["old_value"]) == 0
+    assert json.loads(priority["new_value"]) == 2
+    assert member["display_name"] in cli.run("issue", "show", "ENG-1", "--with", "history").stdout
