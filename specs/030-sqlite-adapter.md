@@ -3,8 +3,8 @@ id: SPEC-030
 title: SQLite adapter
 component: persistence
 status: review
-version: 7
-spec_revision: 20
+version: 8
+spec_revision: 21
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -473,17 +473,176 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 | Method | Signature | Notes |
 |---|---|---|
 | `record` | `(issue_id: str, changes: Sequence[tuple[str, str \| None, str \| None]], *, actor_id: str \| None, now: datetime) -> int` | returns inserted rows; `executemany` (§2.5 SQL-8) |
-| `list_for_issue` | `(issue_id: str, *, limit: int = 100) -> list[IssueHistory]` | order `created_at DESC, id DESC` |
+| `list_for_issue` | `(issue_id: str, *, limit: int = 100) -> list[IssueHistory]` | order `created_at DESC, id DESC`; the window SQL-7 row 11 defines, `board_order` rows the move produced excluded (§2.4) |
 
 `record` uses `executemany` (§2.5 SQL-8). The serialization of values to TEXT is fixed:
-`Priority` → `str(int)`, `bool` → `"1"`/`"0"`, `date` → `YYYY-MM-DD`, `datetime` → ISO-8601 `Z`,
-`None` → `NULL`, `str` → as is. `field` is the writer's vocabulary in the two families
-**SPEC-050 §2.4.2** owns, and this table adds no name to them: a change to a column of `issue`
-carries that column's name (`state_id`, `assignee_id`, `priority`, `due_date`, `title`,
-`description`, `estimate`, `project_id`, `cycle_id`, `parent_id`, `archived_at`, `trashed`), and a
-record event that is not a column carries the noun of the write — `created` (the row
-`create_issue` writes when it inserts the issue, SPEC-040 §5.1 step 16), `relation`
-(`relate_issues`/`unrelate_issues`) and `label` (`add_label`/`remove_label`).
+`Priority` → `str(int)`, `float` → `str(v)` **as stored, trailing `.0` and all**, `bool` → `"1"`/`"0"`,
+`date` → `YYYY-MM-DD`, `datetime` → ISO-8601 `Z`, `None` → `NULL`, `str` → as is.
+
+**Two `float` fields reach that list, and the trim is the grammar's, not the storage's.** `board_order`
+stores a pair of floats — the table below gives its sides as `float → float`, and the measured database has
+34 such rows — so `str(v)` is the rule for **both** float fields, and the stored text of a rank pair is
+`1024.0` → `8192.0`: the decimal form SPEC-040 §4.1 **R3** publishes on the wire (`float` → its decimal
+form, `1024.0`) and what `_text` in `src/hifa/app/issues.py` writes. A trim here would rewrite `1024.0` to
+`1024` and desynchronise the stored value from the invariant R3 pins, which is why `board_order` is
+untouched. The trim belongs to the **sentence grammar**, where the two kinds of float are rendered
+differently: **an `estimate` renders with a trailing `.0` removed (`3.0` → `3`), and a
+`board_order` pair renders as stored (`1024.0` → `8192.0`)** — the estimate is a scale label, the order is
+a sort key — so no reader can carry one rule over to the other field. The trim is safe there because
+**every estimation scale is whole**: `_ESTIMATE_SCALES` in `src/hifa/domain/enums.py` is exponential,
+fibonacci, linear 0-100 and tShirt, all whole floats, and `validate_estimate` refuses a fraction with
+`ESTIMATE_NOT_IN_SCALE`, so the rule never meets one — it removes a trailing `.0` and nothing else, and
+never truncates to `int`.
+
+**The closed `field` vocabulary is the writers', and this table is its enumeration.** `field` names a
+change in the same two families SPEC-050 §2.4.2 states as the rule: **a change to a column of `issue`
+carries that column's name**, and **a record event that is not a column carries the noun of the write**.
+The rule is SPEC-050's; the *set* is this layer's, because the value is the first argument of the
+`INSERT` SQL-8 writes, and a writer that invents a name writes a row no rendering knows. Every row below
+has a producer in `src/hifa/app/` and nothing outside this table may be written; the sentence column is
+**SPEC-070 §2.5.7's wording, quoted**, and that section owns it (a change of a wording is one edit there
+and one here, in the same revision). The third column is the row's **shape**, and it is what separates the
+sentences of one field: **`completed_at`'s two directions differ from each other by which side is `NULL`**
+— `completed it` (`NULL → ISO`) against `cleared the completion` (`ISO → NULL`) — **while `started_at`
+differs from both by having a single direction**, `NULL → ISO`, and renders `started work`. Field and
+direction together pick the sentence; which side is `NULL` picks between the two of one field.
+
+| `field` | writer (use case) | the row's sides | renders as (SPEC-070 §2.5.7) |
+|---|---|---|---|
+| `created` | `create_issue` (§5.1 step 16) | `(NULL, NULL)` — the identifier before migration `004` | `created the issue` |
+| `state_id` | `update_issue`, `move_issue` (§5.4, §5.5) | `ULID → ULID` (the column is `NOT NULL`) | `moved from Backlog to Todo` |
+| `title` | `update_issue` | `text → text` | `changed the title to “…”` |
+| `description` | `update_issue` | `text → text` (two bodies) | `edited the description` (D-E: no diff, and the pair is never rendered) |
+| `priority` | `update_issue` | `"0"…"4" → …` / `→ NULL` | `set priority to High` / `cleared the priority` / `changed the priority from High to Low` |
+| `assignee_id` | `update_issue` | `ULID → ULID` / `→ NULL` | `assigned to administrator` / `unassigned` / `reassigned from administrator to Mo` |
+| `parent_id` | `update_issue` | `ULID → ULID` / `→ NULL` | `moved under HIFA-8` / `removed it from HIFA-8` |
+| `estimate` | `update_issue` | `float → float` / `→ NULL` | `set the estimate to 3` / `cleared the estimate` |
+| `due_date` | `update_issue` | `YYYY-MM-DD → …` / `→ NULL` | `set the due date to 20 Nov 2026` / `removed the due date` |
+| `branch_name` | `update_issue` (derived when the title changes) | `text → text` | `changed the branch name` |
+| `board_order` | `update_issue`, `move_issue` | `float → float` | `reordered it in the column`; **no row reaches the formatter** when the preceding row of the same issue (by `id`) is a `state_id` row — the read drops it (§2.6, SQL-7 row 11) |
+| `started_at` | `update_issue`, `move_issue` (`apply_milestones`) | `NULL → ISO` (**one** direction: the writer never clears it) | `started work` |
+| `completed_at` | `update_issue`, `move_issue` (`apply_milestones`) | `NULL → ISO` / `ISO → NULL` | `completed it` / `cleared the completion` |
+| `canceled_at` | `update_issue`, `move_issue` (`apply_milestones`) | `NULL → ISO` / `ISO → NULL` | `canceled it` / `cleared the cancellation` |
+| `archived_at` | `archive_issue`, `restore_issue` | `NULL → ISO` / `ISO → NULL` | `archived the issue` / `restored the issue` |
+| `trashed` | `trash_issue`, `restore_issue` | `"0" → "1"` / `"1" → "0"` | `deleted the issue` / `restored it from the trash` |
+| `project_id` | `update_issue` (**clearing only**: GAP-08 refuses a value) | `NULL` in every row v1 can write | `moved to project X` / `removed it from project X` |
+| `milestone_id` | `update_issue` (**clearing only**: GAP-08) | `NULL` in every row v1 can write | `set milestone Y` / `removed it from milestone Y` |
+| `cycle_id` | `update_issue` (**clearing only**: GAP-08) | `NULL` in every row v1 can write | `added to cycle Z` / `removed it from cycle Z` |
+| `label` | `add_label`, `remove_label` (§5.6) | `NULL → name` / `name → NULL` | `added the label bug` / `removed the label bug` |
+| `relation` | `relate_issues`, `unrelate_issues` (§5.7) | `NULL → "<type> <identifier>"` / the reverse | `marked it as blocking HIFA-33` / `removed the blocking relation to HIFA-33` |
+
+**What the table settles, and what it does not.**
+
+- **`relation` is a noun and not a `relation:<type>`.** The value is `f"{type.name_as_seen(direction)}
+  {other.identifier}"` (`_relation_value` in `src/hifa/app/issues.py`), so the type travels **inside the
+  value**, in the words the asking issue reads, and beside the far end's identifier. A field of the form
+  `relation:blocks` would put the same fact in the discriminator and in the value, and SPEC-050 §2.4.2's
+  rule already says a non-column event carries the noun of the write.
+- **`label` stores the name, not the label's ULID**, so a label row needs no resolution at all: the name
+  it carries is what the chip shows. Same for `relation`, which carries an identifier. **Eight** kinds of
+  stored value are not printable as they stand, and they split in two: six are ULIDs the read resolves —
+  `state_id`, `assignee_id`, `parent_id` and the three reserved links — and two are keys the grammar turns
+  into words, `priority` (`"2"` → `High`) and `due_date` (`"2026-11-20"` → `20 Nov 2026`). All eight have a
+  producer in the read (§2.6, §2.4 below); the resolution rule below is about them and about nothing else.
+- **`comment_added` is not in this table because no writer produces it.** It is the name SPEC-050 §2.4.2
+  reserves for the revision that lands `comment_on_issue`'s history row (HIFA-6, D-A binds it to write
+  one); until that writer exists, a `comment_added` row cannot be stored, and a sentence for it would be
+  a rendering of a field nobody writes. The revision that adds the writer adds the row here, in the same
+  PR, as the fourth non-column noun.
+- **`started_at` publishes one direction because `apply_milestones` has one.** Entering a `started` state
+  stamps `started_at` when it was empty, and no path clears it: the return to an open type nulls
+  `completed_at` and `canceled_at` and keeps `started_at` (`apply_milestones` in `src/hifa/app/rules.py`:
+  `started_at` is appended only as `("started_at", now)` and never as `("started_at", None)`). A row with
+  `new_value` `NULL` on this field therefore has no writer, and
+  `cleared the start time` was a sentence with no row — the same rule that keeps `comment_added` out of
+  this table. `completed_at` and `canceled_at` keep both directions because both writers exist.
+- **The three link columns cannot be written at all today, and they stay in the table.** `project_id`,
+  `milestone_id` and `cycle_id` are accepted by `update_issue` for clearing and refused with
+  `NOT_IMPLEMENTED` for a value (GAP-08); a clear of a column that is already `NULL` changes nothing, so
+  `update_issue`'s diff writes **no** row for them (the measured database has zero). They are listed
+  because the `UPDATE_FIELDS` tuple can write all three the day the repositories land, and a writer with
+  no row in this table would write a name the formatter reads as unknown.
+- **`board_order` is the move's consequence, and the read does not hand it over when it is.** `update_issue`
+  and `move_issue` write `state_id` and `board_order` in one `record` call, so the two rows are consecutive
+  `id`s of the same issue and the rank is a second row of an event the `state_id` row already names. The
+  read excludes a `board_order` row **when the immediately preceding history row of the same issue, by
+  `id`, is a `state_id` row** (SQL-7 row 11's `WHERE`): the discriminator is the record **batch**, which is
+  a fact of the write, and not `created_at`'s second precision, which is a fact of the clock. The measured
+  database (`~/.local/share/hifa/hifa.db`, 2026-11-20) says the two agree: **33 of its 34 `board_order`
+  rows** share an instant with a `state_id` row and every one of the 33 is exactly `id − 1` from it — the
+  writers' batch, measured. The 34th shares no instant with one, is a drag inside a single column, and
+  renders `reordered it in the column` like any `board_order` row the rule does not filter.
+- **No row is dropped by the formatter.** The exclusion is the read's, so the set `history_rows` receives is
+  already the timeline's. **Three surfaces publish the window the read returned and never cut it — the
+  `HISTORY` section of `issue show --with`, the REST array of SPEC-060 §2.4.2 and the page's list — while
+  two cut, in two different ways: the panel cuts without being asked (8 of the window, `Show all N`), and
+  `issue history` cuts to a `--limit` the caller controls — 50 by default and 100 at most, so no flag
+  publishes 50 of the read's 100-row window and `--limit 100` publishes the window (SPEC-050 §2.5.3.3).**
+  The panel's list holds the first 8 of those rows (D-C) and its `Show all N` names the window —
+  `HistoryPage.window_size`, the rows the read returned — so a twelve-row issue has a page of 12, a REST
+  array of 12, and a panel of 8 followed by `Show all 12` (SPEC-070 §2.5.7.2). The panel's 8 is a layout
+  decision of that edge and not a number about the read, and the verb's 50 is a request and not a default of
+  the read; a filter in a rendering would have made the payloads disagree with each other and with
+  themselves after a swap, and one `WHERE` cannot.
+
+**The `created` row carries no value from this revision's writer on, and the rows already written are
+normalised by a migration: the two halves are one change.** `create_issue` writes `("created", None, None)`
+— SPEC-040 §5.1 step 16, the row SPEC-040 §7 asserts — and that edit **lands in the same PR as
+`migrations/004_history_created_backfill.sql`**, which is the ordering `comment_added` and HIFA-6 are
+declared with for the same reason: a writer and the data it leaves behind are one fact, and a revision that
+ships one without the other publishes two. Until that PR, every writer in the tree writes the identifier —
+this table's row for `created` describes the **contract**, not the tree as it stands on this date.
+
+**The window in which an older binary still writes the identifier is real and it does not close.** `004`
+runs once, gated by `PRAGMA user_version` (§2.4, SPEC-010 R5.1), so a database already at 4 never re-runs
+it; a binary older than this PR, pointed at the same file, keeps writing the issue's identifier into
+`new_value` on every issue it creates, and no second pass will clean those rows. The consequence is bounded
+and invisible: `create_issue` and the timeline read the `field` and not the value (SPEC-070 §2.5.7's
+grammar has no place for a value on `created`), so a mixed file prints one shape. What this layer can state
+is what it owns — on a database whose writer is this revision's, `new_value` is `NULL` on every `created`
+row after `004`, and a file touched by both binaries is the one case it cannot normalise, said here rather
+than papered over.
+
+**Resolution is the read's, it is bulk, and it is not the edge's.** The values that are ULIDs are
+resolved **once per entity kind per page**, in the read that carries the history rows, never per row:
+`issue_detail` (§2.6) already loads the team's states (SQL-7 row 16) and the actors of the page (SQL-7
+row 13, one `UNION` over `comment.author_id` and `issue_history.actor_id`), so `state_id` and
+`assignee_id` cost **zero** statements; a kind the page's history names that the detail does not already
+carry — `issue` for `parent_id`, and the three reserved links when their writers land — costs **one**
+statement, `WHERE id IN (…)` over the distinct ULIDs of that kind, and one statement only. **The N+1 is
+the thing this rule forbids**: a lookup per row would make the cost of a page a function of its history,
+which is what REQ-F030-12 measures and what HIFA-18 already tracks for the relations.
+
+**Two of the eight need no statement at all, and the read still produces them.** `priority` and
+`due_date` are not ULIDs: the first is a closed 0-4 and the second is a calendar date, so a map of them is
+a **constant**, not a lookup — `priorities` is the five labels `v_priority` fixes (`0` `No priority`,
+`1` `Urgent`, `2` `High`, `3` `Medium`, `4` `Low`) and `due_dates` is the `20 Nov 2026` shape the grammar
+of SPEC-070 §2.5.7 and the day separators of §2.5.7.2 already print, applied to the distinct values the
+page's rows carry. **Neither is this layer's, and neither is declared here:** both are the application
+layer's constants, declared once in SPEC-040 §2.2 and handed to `history_rows` as data — `PRIORITY_LABELS`
+is that function's `priorities` **default**, and `DUE_DATE_FORMAT` is the format its `due_dates=None`
+branch builds the map with, `due_dates` itself defaulting to `None` so a caller's own map wins. A map of a
+closed 0-4 and a format of a date are constants, and a constant belongs to the module that reads it.
+Neither costs a statement: REQ-F030-12's 12 does not move for a row of either kind, and a page with one
+`priority` row and a page with two hundred pay the same nothing.
+Without them the grammar's `set priority to High` would have no producer and `priority "2"` would reach
+the screen as a `2`.
+
+The maps reach the formatter of SPEC-040 §2.2 (`history_rows`) **as data**, in two families, and only one
+of the two is this layer's:
+
+- **The read's three** — `members`, `parents` and the `states` labels — are built by this layer from its
+  own reads: `members` is §2.6's `members` map (SQL-7 row 13), `parents` is §2.6's `history_parents` map
+  (SQL-7 row 17, the one statement a page pays for that kind) and `states` is the `{id: name}` map this
+  layer projects from `IssueDetail.states` (row 16 prices as zero statements). These are `{value: label}`
+  and they cross the boundary as `states`, `members` and `parents`.
+- **The two word maps** — `priorities` and `due_dates` — are **not** handed over by this layer at all:
+  they are SPEC-040 §2.2's constants, taken by `history_rows` as its own defaults. The read hands nothing
+  for them because there is nothing to read: a closed 0-4 and a calendar date are not lookups.
+
+Neither family is a sentence: a label is data a read model owns, a sentence is wording an application
+function owns (P4), and `domain/` — which is where a state's name lives — learns nothing about how a
+timeline reads.
 
 ### 2.5 SQL of the critical operations
 
@@ -689,18 +848,34 @@ of row 1 instead of adding a statement; no statement of this read is a `COUNT(*)
 | 8 | statement 1's projection with `WHERE i.parent_id = :parent AND i.trashed = 0 ORDER BY i.sub_issue_sort_order, i.number` | `children` | always |
 | 9 | `SELECT * FROM issue_relation WHERE issue_id = ? OR related_issue_id = ?`, then statement 1's projection `WHERE i.id = :other AND i.trashed = 0` **once per relation row** — the first in fetch order, the read returning it **unordered** | `relations` | always; one statement when the issue has no relation |
 | 10 | `SELECT * FROM comment WHERE issue_id = ? ORDER BY created_at, id` | `comments` | `comments` ∈ `include` |
-| 11 | `SELECT * FROM issue_history WHERE issue_id = ? ORDER BY created_at DESC, id DESC LIMIT 100` | `history` | `history` ∈ `include` |
+| 11 | `SELECT h.* FROM issue_history h WHERE h.issue_id = ? AND NOT (h.field = 'board_order' AND COALESCE((SELECT p.field FROM issue_history p WHERE p.issue_id = h.issue_id AND p.id < h.id ORDER BY p.id DESC LIMIT 1), '') = 'state_id') ORDER BY h.created_at DESC, h.id DESC LIMIT 100` | `history`: the window, newest first, **with the rank of a move already removed** (§2.4) | `history` ∈ `include` |
 | 12 | `SELECT * FROM attachment WHERE issue_id = ? ORDER BY created_at` | `attachments` | `attachments` ∈ `include` |
 | 13 | `SELECT id, display_name FROM member WHERE id IN (SELECT author_id FROM comment WHERE issue_id = ? AND author_id IS NOT NULL UNION SELECT actor_id FROM issue_history WHERE issue_id = ? AND actor_id IS NOT NULL)` | `members` | `comments` ∈ `include` or `history` ∈ `include` |
 | 14 | `SELECT * FROM member WHERE id = ?` | `assignee` | the row has an `assignee_id` |
 | 15 | `SELECT * FROM member WHERE id = ?` | `creator` | the row has a `creator_id` |
 | 16 | `SELECT id, team_id, name, type, color, position, is_default, archived_at FROM workflow_state WHERE team_id = ? AND archived_at IS NULL ORDER BY position, name` | `states` | always |
+| 17 | `SELECT id, identifier FROM issue WHERE id IN (/* the distinct ULIDs of the page's `parent_id` history rows */)` | `history_parents`: the bulk map of the one history kind this read does not already carry, `{ulid: identifier}` | `history` ∈ `include` **and** at least one row of row 11 has `field = 'parent_id'` |
+
+**Row 11 is one statement, and the filter in it is §2.4's batch rule.** The two `field` names in its
+`WHERE` are literal constants of the statement — §7's no-interpolation scenario looks for an f-string, `%`
+or `+` around a **value**, and a constant is none of the three — and the correlated subquery asks one
+question of each candidate row inside the same statement: *is the row immediately before this one, by
+`id`, a `state_id` row?* A rank the move produced is therefore absent from every payload that carries the
+window, and the statement count does not move: a filter is not a second statement.
 
 **The two totals, and what they count.** For the issue §7's scenario declares — a creator, no
-assignee, no parent and no relations — with `include=DETAIL_INCLUDE`: **12 statements** (11 before this
-revision added row 16). With `include=frozenset()`: **8 statements** (7 before). Rows 5, 6, 7, 14 and 15
-add one each only when the row carries the id they look up, and row 9 adds one per relation: those are
-the only statements the data can add, and R5 counts them. Labels add none — they ride in statement 1's
+assignee, no parent and no relations, and a history with no `parent_id` row — with
+`include=DETAIL_INCLUDE`: **12 statements** (11 before this revision added row 16). With
+`include=frozenset()`: **8 statements** (7 before). Rows 5, 6, 7, 14 and 15 add one each only when the
+row carries the id they look up, row 9 adds one per relation, and **row 17 adds one — once — when the
+page's history names a parent**: those are the only statements the data can add, and R5 counts them.
+Row 17 is the one addition of this revision, and it is gated by a **kind** and not by a count of rows:
+a page with one `parent_id` row and a page with two hundred pay the same one statement, which is the
+bulk rule of §2.4 in statement form. On a database whose history carries no `parent_id` row — measured:
+the field list of `~/.local/share/hifa/hifa.db` on 2026-11-20 has ten values and `parent_id` is not one of
+them, and that is a property of **that file**, not of the writers, because `update_issue` writes a
+`parent_id` row on `issue edit --parent` (§2.4) — **the 12 does not move at all**, and a database that has
+used `--parent` pays the 13. Labels add none — they ride in statement 1's
 projection as a `json_group_array` subselect, so there is no `issue_label` statement to enumerate.
 `milestone` adds none either: it is not a row but a join, `LEFT JOIN project_milestone pm ON pm.id =
 i.milestone_id` with `pm.name` beside `i.milestone_id` in the same projection, so the key SPEC-050
@@ -1188,6 +1363,11 @@ class IssueDetail:
     #: additive since spec_revision 5, defaulted (D-026): member.id → display_name for the authors
     #: of the loaded comments and history, so the edge renders authors without an N+1 query.
     members: Mapping[str, str] = field(default_factory=dict)
+    #: additive since spec_revision 21, defaulted (D-074): issue.id → identifier for the rows of
+    #: `history` whose `field` is `parent_id`, the one history kind neither `members` nor `states`
+    #: already resolves. Empty when the page's history names no parent, which is what makes SQL-7 row
+    #: 17 conditional: the map is one statement for the kind and never one per row (§2.4's bulk rule).
+    history_parents: Mapping[str, str] = field(default_factory=dict)
     #: additive since spec_revision 11, defaulted (D-026): the layer the row sits in and the columns a
     #: render offers, so that one read of one issue serves the whole page (HIFA-55). `archived_at` and
     #: `trashed` come from the `issue` row this read already loads (SQL-7 row 2) and cost no statement.
@@ -1412,7 +1592,7 @@ columns that do not appear are never touched from the adapter.
 | `issue_relation` | INSERT / DELETE | `id, issue_id, related_issue_id, type, created_at` | `UNIQUE(issue_id, related_issue_id, type)`; `issue_id <> related_issue_id` |
 | `comment` | INSERT/UPDATE | `body, resolved_at, edited_at, updated_at` | `body` not empty (CHECK) |
 | `attachment` | INSERT | `id, issue_id, title, subtitle, url, source_type, metadata, created_at` | `url` NOT NULL |
-| `issue_history` | INSERT (batch) | `issue_id, actor_id, field, old_value, new_value, created_at` | `id` AUTOINCREMENT, INSERT only |
+| `issue_history` | INSERT (batch) | `issue_id, actor_id, field, old_value, new_value, created_at` | `id` AUTOINCREMENT, INSERT only — the **one** exception is migration `004`, which nulls the `new_value` of a `created` row (SPEC-010 §3.7) |
 | `issue_fts` | maintained by triggers | — | the adapter does **not** write FTS directly (SPEC-090) |
 | `v_issue`, `v_priority`, `v_team_progress` | SELECT | — | views are never written |
 
@@ -1484,7 +1664,7 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
 | **REQ-F030-09** | `list_view` obtains the labels with `json_group_array` in a single query; the number of statements does not depend on the number of issues |
 | **REQ-F030-10** | `ListFilters` combines its families with AND, resolves the repeated values of the `state`/`state_type`/`priority` families as **OR** and `label_ids` as **AND** (§2.6), respects `limit` (default 50, max 200, D-011) and `offset`, orders by the `SORT_KEYS` expression of `order` with `i.id` as the tie-breaker in the same direction, and returns `next_cursor`/`has_more` without a `COUNT(*)` |
 | **REQ-F030-11** | `board_view` groups by `state`, `assignee`, `priority` or `project`, orders the groups by `state.position`/`priority.rank`/name, and respects `limit_per_group` reporting `total` |
-| **REQ-F030-12** | `issue_detail` executes a fixed number of statements — **12** with `include=DETAIL_INCLUDE`, **8** with an empty `include` — regardless of how many children, labels, comments or history the issue has; a project, a cycle, a parent, an assignee and a creator add one each when the row carries the id they look up, and each relation adds one (SQL-7, §2.5) |
+| **REQ-F030-12** | `issue_detail` executes a fixed number of statements — **12** with `include=DETAIL_INCLUDE`, **13** when the page's history carries a `parent_id` row (SQL-7 row 17), **8** with an empty `include` — regardless of how many children, labels, comments or history the issue has; a project, a cycle, a parent, an assignee and a creator add one each when the row carries the id they look up, each relation adds one, and row 17 adds one for the *kind* `parent_id` and never one per row (SQL-7, §2.5) |
 | **REQ-F030-13** | `agenda` returns the issues with `due_date` in `[start, start+days-1]` sorted by date and priority, and includes overdue open ones if `include_overdue=True` |
 | **REQ-F030-14** | `migrate` applies the pending `00X_*.sql` in order, leaves `user_version` at the last version and is idempotent (a second run applies nothing) |
 | **REQ-F030-15** | `migrate` creates a verifiable `<stem>-<ts>.db.bak` before applying and aborts without touching the database if the backup fails |
@@ -1899,6 +2079,27 @@ Feature: SQLite adapter
     Then it finds no match
     And all values travel as bound parameters
 
+  Scenario: the created row carries no value
+    Given the ENG team with a default state "Backlog"
+    When create_issue is run with title "Fix login"
+    Then the issue's history has one row with field "created"
+    And that row has old_value NULL and new_value NULL
+    And the row's actor_id is the member that ran it
+
+  Scenario: the field a row carries is the writer's name
+    Given an issue "ENG-1" in "Backlog"
+    When it is moved to "Todo", labelled "bug" and related to "ENG-2" as "blocks"
+    Then the new rows carry the fields "state_id", "board_order", "label" and "relation"
+    And the relation row's new_value is "blocks ENG-2"
+    And no row carries "relation:blocks", "label_id", "archived" or "restored"
+
+  @REQ-F030-12
+  Scenario: resolution is one statement per kind and never one per row
+    Given an issue whose history names 12 distinct states and 3 distinct parents
+    When issue_detail is run with include={"history"} counting SQL statements
+    Then the count is the same as for an issue whose history names one state and one parent
+    And it is one more than the same read over an issue whose history names no parent
+
   @REQ-F030-20
   Scenario: history is written in a single batch
     Given an issue with 3 fields changed in a use case
@@ -1950,8 +2151,9 @@ Feature: SQLite adapter
    `yield`.
 6. Verify the "single query" requirements with `sqlite3.Connection.set_trace_callback`:
    count statements in `list_view` (1), `board_view` (1), `agenda` (1) and `issue_detail` — **12** with
-   `include=DETAIL_INCLUDE` and **8** with an empty `include`, on an issue with a creator and no
-   assignee, no parent and no relations (SQL-7). It is the only cheap way to test
+   `include=DETAIL_INCLUDE` (**13** when the page's history carries a `parent_id` row, SQL-7 row 17) and
+   **8** with an empty `include`, on an issue with a creator and no assignee, no parent and no relations
+   (SQL-7). It is the only cheap way to test
    R5/REQ-F030-09/REQ-F030-12, and a count without its `include` proves nothing.
 7. Verify concurrency with real processes (`multiprocessing` with `spawn`), not with threads: the
    SQLite lock is between connections and threads of the same process share the GIL but not
@@ -2011,10 +2213,65 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 21 (2026-11-20): **the `field` vocabulary is enumerated with its writers, the `created`
+  row stops echoing the identifier, and the resolution is the read's, bulk and free where it can be
+  (HIFA-46, D-074).** `version` 7 → 8: §2.6's `IssueDetail` gains one field, SQL-7 gains one statement,
+  and §2.4's repository note becomes a closed table a writer must satisfy — a database and a read model
+  that this spec produces, so the version moves.
+  (1) **The vocabulary was described in prose and the prose was wrong twice.** It listed column names and
+  then named `label`/`relation`/`created` as if they were other columns; the writers' set is **21**
+  values, four of which are not columns of `issue` but exist only as rows, and it includes ten values the
+  live database actually carried on 2026-11-20 (`archived_at`, `board_order`, `canceled_at`,
+  `completed_at`, `created`, `description`, `relation`, `started_at`, `state_id`, `trashed`) and eleven
+  it does not yet, because a writer can produce them. The table names the writer behind each, the shape
+  of the pair (which side is `NULL`) and the sentence SPEC-070 §2.5.7 renders; the *rule* stays
+  SPEC-050 §2.4.2's and the *wording* stays §2.5.7's.
+  (2) **Eight kinds of stored value are not printable as they stand, and all eight now have a producer.**
+  `label` rows carry the label's name and `relation` rows carry `"<type as issue reads it> <identifier>"`,
+  so those two need no resolution at all. Six are ULIDs the read resolves — `state_id`, `assignee_id`,
+  `parent_id` and the three reserved links — and **two are keys the grammar turns into words**, `priority`
+  (`"2"` → `High`) and `due_date` (`"2026-11-20"` → `20 Nov 2026`), which had no producer at all before
+  this revision: the grammar's `set priority to High` would have printed a `2`. The maps arrive in **two
+  families**, and §2.6 declares only what the read builds: `members`, `history_parents` and the `states`
+  tuple the third map is labelled from. The two **word** maps — `priorities` and `due_dates` — are the
+  application layer's constants, declared once in SPEC-040 §2.2 as `history_rows`'s defaults
+  (`PRIORITY_LABELS`, `DUE_DATE_FORMAT`), because a map of a closed 0-4 and a format of a date are
+  constants and not lookups, and a constant belongs to the module that reads it and not to the database.
+  (3) **Resolution is the read's and it is bulk.** `members` (row 13) and `states` (row 16) already carry
+  the actors and the state labels, so `state_id` and `assignee_id` cost zero statements; **row 17** is
+  the one statement a page pays for `parent_id` rows, once for the kind and never once per row; and
+  `priority`/`due_date` cost none, because their maps are constants. The N+1 is named as the thing not to
+  do, and REQ-F030-12's totals say 12 or 13 by whether the page's history names a parent. `domain/` learns
+  nothing: the maps are strings and the sentences are `app/`'s.
+  (4) **The `created` row is written with `new_value NULL` from this revision's writer on**, and the rows
+  already written are normalised by `migrations/004_history_created_backfill.sql` (SPEC-010 §3.7). §3's row
+  for `issue_history` says the table is INSERT-only *except* that one migration, because it is. The writer
+  edit and the migration land in **one PR** — the ordering `comment_added`/HIFA-6 is declared with — and
+  §2.4 names the window in which an older binary still writes the identifier into a file `004` has already
+  passed; the migration is **hygiene**, because the grammar has no place for a value on `created` and the
+  row printed the same sentence before it (D-074).
+  (5) **The rank of a move is dropped by the read and not by a rendering.** §2.4's `board_order` rule was
+  written as a property of the rendering ("when the pair shares the instant"), which left the three payloads
+  free to publish different counts and made "no row is dropped" false of the surface that dropped one; the
+  filter is now SQL-7 row 11's `WHERE` — a `board_order` row is excluded when the row immediately before it
+  of the same issue, by `id`, is a `state_id` row — so every edge publishes the rows the read returned (the
+  panel shows the first 8 of them and its `Show all N` names the window, §2.4), and
+  the discriminator is the record batch rather than `created_at`'s second precision (33 of the 34 rows of
+  the measured database are exactly `id − 1` from a `state_id` row). **`started_at` publishes one
+  direction** (`NULL → ISO`), because `apply_milestones` has one: it stamps the column on entering
+  `started` when it was empty and never clears it, so `cleared the start time` had no row and is gone.
+  `completed_at` and `canceled_at` keep both directions (`NULL → ISO` / `ISO → NULL`), which are the two
+  writers `apply_milestones` has for each.
+  (6) **Counts.** §7 goes 27 → 30 (three scenarios: the value-less `created` row, the writer's names,
+  and the bulk statement); §8's count follows. No signature of §2.4 changes, no index is added, and the
+  `.feature` corpus is untouched by this revision.
+
 - spec_revision 20 (2026-11-20): **the `field` a history row carries is stated in the two families, and
-  `created` is one of them (HIFA-49, round four).** `version` stays 7: no signature, column list,
-  statement, count or §7 scenario moves — the note beside `HistoryRepo.record` now repeats the vocabulary
-  SPEC-050 §2.4.2 owns instead of publishing a third list of its own.
+  `created` is one of them (HIFA-49, round four).** `version` stayed 7 at that revision: no signature,
+  column list, statement, count or §7 scenario moved — the note beside `HistoryRepo.record` repeated the
+  vocabulary SPEC-050 §2.4.2 owns instead of publishing a third list of its own. **That note is superseded
+  here**: the closed table of this revision enumerates the writers' set, so "no name is added to either
+  family" is true of revision 20's edit and false of the table that replaced it (D-074).
   (1) **The note said "the exact column name" and then listed two names that are not columns of
   `issue`.** `field` is a column's name for a column change and the noun of the write for the record
   events that are not columns; `label` and `relation` sat in a list introduced as column names, and

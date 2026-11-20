@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 9
-spec_revision: 29
+version: 10
+spec_revision: 30
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -175,6 +175,7 @@ Failed validation in a form without JS ⇒ `422` + template with the errors next
 | POST | `/_/issues/{identifier}/labels` | `<span class="chip">` chip | `#labels-{identifier}` | `beforeend` | picking a label |
 | DELETE | `/_/issues/{identifier}/labels/{label_id}` | `200` empty body (htmx removes the node) | the chip | `outerHTML swap:120ms` | click on the chip's `×` |
 | GET | `/_/comments/{identifier}` | the whole `<ol id="comment-list">` of §2.6.10 | `#comment-list` (the `<ol>`) | `outerHTML` | refresh |
+| GET | `/_/issues/{identifier}/history?limit={n}` | the whole `<ol id="history-list">` of §2.5.7, without the `Show all` control | `#history-list` (the `<ol>`) | `outerHTML` | `Show all N` click (§2.5.7, D-C) |
 | POST | `/_/comments/{identifier}` | one `<li>` with `HX-Trigger: comment-created` — `200`, not `204`, because the element is the answer | `#comment-list` (the `<ol>`) | `beforeend` | composer submit |
 | GET | `/_/palette?q=` | `<ul role="listbox">` of results | `#palette-results` | `innerHTML` | `input` with `delay:120ms` |
 | GET | `/_/counts?team={team}` | `<span>` of counters | `#counts` | `outerHTML` | `every 30s` |
@@ -269,6 +270,7 @@ from SPEC-040 §2.2, with that spec's signature and without its own adapters. Th
 | `GET /{team}/issue/{identifier}` | `app.boards.issue_detail(db, ref, include=frozenset({"comments", "history"}), include_trashed=True)` | `NotFound(issue)` ⇒ `404`, **except** for an issue the trash holds, which the keyword returns so the page can render it with `Restore` alone (§2.1.1, D-059). The two names are the ones of SPEC-040 §2.2's `DETAIL_INCLUDE` whose collection `IssueDetail` carries (SPEC-060 §2.5.1, SPEC-050 §2.5.3.2): the constant's third name is `attachments`, no v1 envelope has a key for it (GAP-07), and passing the whole constant would run SQL-7 row 12 for a collection this layer does not render (D-027) |
 | `…/panel` | `app.boards.issue_detail(db, ref, include=frozenset({"comments", "history"}), include_trashed=True)` | the panel renders the comments, so it pays for them: one extra read in an explicit user action, never in a board render (D-029); the same set and the same keyword, so the panel of a trashed issue is `200` too (`Restore` alone, §2.1.1, D-059) |
 | `/_/issues/{id}/row` | `app.boards.issue_detail(db, ref)` | empty `include`: only the base `IssueDetail` — the constant is deliberately **not** the default (D-027) — and **no** `include_trashed`, so a trashed identifier is `404` here while its page answers `200` (§2.1.1, D-059) |
+| `/_/issues/{identifier}/history` | `app.boards.issue_detail(db, ref, include=frozenset({"comments", "history"}), include_trashed=True)` | `#history-list` re-rendered whole (§2.1.3, §2.5.7): **the panel's own two names and its own keyword**, so `Show all` on the panel of a **trashed** issue answers `200` exactly as the panel does (§2.1.1, D-059) and opens no third trash-reading surface — R29's two surfaces stay two, and this route is a re-render of the second. `limit` in the query string names the window the control asks for and **is not an argument**: the window is SQL-7 row 11's constant (**100**), which is why the control sends `?limit=100` and why a fragment cannot be asked for more; the refusal SPEC-050 §2.5.3.3 declares belongs to the CLI's flag, not to this route |
 | `GET /search`, `GET /_/palette` | the `SearchQuery` composed from `app.search.parse_query(q)` + the route's parameters, then `app.search.search_issues(db, query, now=…)` (SPEC-090 §2.3) | the web layer does **not** declare its own search flags or envelope (D-016, D-064); `/search` passes `count=False` and the `now` its read model already uses (§2.3.5), and renders the four states of §2.1.8 |
 | `GET /` and the sidebar of **every** page | `app.teams.list_teams(db)` | called per request, never once in `create_app` nor memoized on `app.state` (R23, D-030): the CLI is a second writer to the same file. The team counts come from `v_team_progress`, not from a query written here |
 | `POST …/move`, `POST /_/issues/{id}/move` | `app.issues.move_issue(uow, MoveIssue(issue=ref, target_state=..., position=..., before_id=..., after_id=...), Actor(..., source="web"))` | §2.6.4 |
@@ -284,6 +286,18 @@ from SPEC-040 §2.2, with that spec's signature and without its own adapters. Th
 
 A signature change in SPEC-040 propagates here with a `spec_revision` bump; a new function is never
 added in `web/` just to make the route "fit".
+
+**The history fragment is one capability with two edges, so it needs no exemption.** The timeline's
+transport is `issue history` on the CLI (SPEC-050 §2.5.3.3) and `GET /_/issues/{identifier}/history` here,
+which is the shape `scripts/check_edge_parity.py` calls **parity**: the row is
+`Capability(name="issue.history", cli="issue history", web=("GET", "/_/issues/{identifier}/history"))`,
+with both edges present and **no** `debt=`/`reason=` — a single-edge row would be a violation, and this one
+is not single: the verb is the reference surface and the fragment is the dashboard's second transport of
+the same rows. The route also takes its `FRAGMENT_ALLOWLIST` entry, with the reason
+"htmx partial: the whole `<ol>` of an issue's history", because every `/_/*` route must say why it exists
+whether or not a capability row names it. Both declarations land in the implementation PR of HIFA-46, in
+the same commit as the route; until then the checker fails on a fragment it can reach and cannot find, which
+is the behaviour that makes it worth running.
 
 #### 2.1.5 Client / server boundary
 
@@ -520,6 +534,8 @@ src/hifa/web/templates/
     ├── field_control.html # edit control for one field
     ├── comments.html      # <ol> of comments
     ├── comment_item.html  # one comment <li>
+    ├── history.html       # <ol id="history-list"> of the activity timeline (§2.5.7)
+    ├── history_item.html  # one event <li>: rail dot + sentence + <time>
     ├── palette.html       # <ul> of palette results
     ├── toasts.html        # toast container
     ├── fragment_error.html # message for a refused fragment (never a whole document)
@@ -762,15 +778,49 @@ issue_vm = {
             "state_name": "Todo",
         }
     ],
+    # The timeline (§2.5.7). `history` is every row of the read model's window, oldest-first, and
+    # `history_panel` is the same list cut to 8: the panel iterates one and the page the other, and no
+    # template slices or counts (§2.3.7, D-C). `history_window` is how many rows the read returned — the
+    # N of `Show all N`, a window and never a total (≤100, SQL-7 row 11) — `history_hidden` is 0 when the
+    # cut hides nothing (the condition `Show all N` renders on), `history_truncated` is the read's word
+    # for a full window (the page prints `the last 100 events` when it is true), and `last_activity` is
+    # the one-line summary under the title, `None` on an issue with no rows.
     "history": [
         {
+            "id": 412,
             "field": "state_id",
-            "actor_name": "Ginkelte",
+            "actor_id": "01M71T2XA1DS4WJ2Z7ZXBTNW37",
+            "actor_label": "Ginkelte",
+            "sentence": "moved from Todo to In Progress",
+            "old_value": "01M75KV68MF9TYWEK2GHWPNB80",
+            "new_value": "01M75KV68MF9TYWEK2GHWPNB81",
             "old_label": "Todo",
             "new_label": "In Progress",
+            "dot_color": "#F2C94C",
+            "created_at": "2026-11-11T18:35:35Z",  # SPEC-040 §2.2's wire_instant(row.created_at)
             "created_label": "2 h ago",
         }
     ],
+    "history_panel": [  # history[:8]: the same dicts, cut to eight — here the one row, so all of them
+        {
+            "id": 412,
+            "field": "state_id",
+            "actor_id": "01M71T2XA1DS4WJ2Z7ZXBTNW37",
+            "actor_label": "Ginkelte",
+            "sentence": "moved from Todo to In Progress",
+            "old_value": "01M75KV68MF9TYWEK2GHWPNB80",
+            "new_value": "01M75KV68MF9TYWEK2GHWPNB81",
+            "old_label": "Todo",
+            "new_label": "In Progress",
+            "dot_color": "#F2C94C",
+            "created_at": "2026-11-11T18:35:35Z",  # SPEC-040 §2.2's wire_instant(row.created_at)
+            "created_label": "2 h ago",
+        }
+    ],
+    "history_window": 1,  # HistoryPage.window_size: the rows the read returned, ≤ 100
+    "history_hidden": 0,  # max(0, history_window - 8): 0 renders no `Show all`
+    "history_truncated": False,  # HistoryPage.truncated: a full window prints `the last 100 events`
+    "last_activity": {"text": "Ginkelte moved from Todo to In Progress · 2 h ago", "row_id": 412},
     "created_label": "Nov 8 14:03",
     "updated_label": "2 h ago",
 }
@@ -779,6 +829,33 @@ issue_vm = {
 `direction` in `relations` is `"out"` (`blocks`, `duplicate`, `related`, `similar`) or `"in"`
 (the issue is the target; shown as `blocked_by` when `type == "blocks"`). The read model resolves
 the inverse; the view does not compute it.
+
+**Every key of a `history` element is produced above this layer, and none of them is computed by the
+template.** The element **is** SPEC-040 §2.2's `HistoryRow` (`history_rows`), the one formatter the CLI
+reads too (P2) — the same eleven keys under the same names, `dot_color` being the one colour key this
+layer takes (the rail dot of §2.5.7.2, `None` for every field but `state_id`) — plus one key the formatter
+cannot produce: `created_label`, the relative stamp, because "now" is the edge's clock and a row carries an
+instant, not a distance from today. Within the element, `sentence` is the formatter's wording (§2.5.7 owns
+it), `old_label`/`new_label` are its resolved strings and `old_value`/`new_value` are the stored TEXT it
+keeps for the `data-*` attributes (P7 — a reader of the DOM can still see the key the row held);
+`created_at` is the ISO string SPEC-040 §2.2's `wire_instant` renders from `HistoryRow.created_at` —
+`2026-11-11T18:35:35Z`, seconds, UTC — and it goes into `<time datetime>` verbatim (§2.5.7). **The
+conversion is not the template's, and this layer performs it by calling the formatter's function:** the row
+carries a `datetime`, this read model calls `wire_instant` once for the element it builds, the CLI's
+element serializer and the REST serializer call the same function for theirs, and the template is handed a
+string. No route, no read model and no template or filter formats an instant of its own — §2.5.7.2's
+`time` row puts the ISO instant in `<time datetime>` and the relative stamp beside it — so `created_label`
+is the one thing this edge adds, the relative stamp, because "now" is its clock.
+
+**Four keys of the section are not the element's, and three of them are not this layer's either.**
+`history_panel` is the 8-row cut and is **layout**, which §2.5.7 gives to this layer (D-C).
+`history_window`, `history_hidden` and `last_activity` come from SPEC-040 §2.2's `HistoryPage`:
+`window_size` (how many rows the read returned — the N of `Show all N`, **a window and never a total**),
+its `truncated` flag (a full window, which the page prints as `the last 100 events`) and the one-line
+summary under the title (`{text, row_id}`, or `None`). `history_hidden` is the one subtraction this layer
+does — `max(0, history_window - 8)` — and it is the condition the control renders on, not a count of the
+issue's events: a template that did any of the four itself would be assembling a sentence and counting
+rows, which §2.3.7 forbids for the same reason.
 
 **The dict of a trashed issue is the same dict, and that is what lets the page render `Restore` alone.**
 `is_trashed` is `True` only on a detail read with `include_trashed=True` — the page and the panel of
@@ -1149,6 +1226,177 @@ identifier, state and priority on the first, the title on the second, the snippe
 `overflow-wrap: anywhere` and `min-width: 0` on the text, so a 200-character title wraps instead of
 widening the page. The six-column table of the CLI is the shape this view deliberately does not take:
 at 320 px it would pan, and a hit is a link rather than a record to scan by column.
+
+
+#### 2.5.7 The activity timeline — sentences, states and density (HIFA-46, D-074)
+
+The timeline is the story of one issue, rendered from `issue_vm.history` in the panel
+(`partials/issue_panel.html`) and on the page (`issue_detail.html`) through the same two partials of
+§2.2 — `partials/history.html` and `partials/history_item.html`. **One component, two hosts**: there is
+no second implementation and no template that renders a history row of its own (P4).
+
+**What it answers, in this order.** (1) where the issue is now — the state chip of the header and the
+last-activity line under the title; (2) who touched it last and when — the last row; (3) what the whole
+story is — the list. The three questions are why the order is oldest-first (D-D) and why the newest
+event is repeated above the list instead of replacing it.
+
+**Row anatomy, always the same three parts.**
+
+```
+[AV]  Ginkelte moved from Todo to In Progress            2 h ago
+```
+
+1. **the avatar** — the actor's initials disc (`member.initials`), and the word `someone` in its place
+   when the row's actor is unknown (§2.5.7.1);
+2. **the sentence** — `<actor_label> <HistoryRow.sentence>`, two strings juxtaposed and never assembled
+   by the template: `Ginkelte` is `actor_label`, `moved from Todo to In Progress` is `sentence`;
+3. **the time** — the relative stamp inside `<time datetime="…">`, absolute in the attribute.
+
+**The sentence grammar, per `field`.** This table is the **one owner of the wording**: SPEC-030 §2.4
+enumerates the fields with their writers and quotes these sentences, and SPEC-050 §2.5.3.3 prints
+`sentence` in a terminal. `old`/`new` are the row's two sides **after resolution** — the label, never the
+stored key.
+
+| `field` | old | new | sentence |
+|---|---|---|---|
+| `created` | – | – | `created the issue` |
+| `state_id` | Backlog | Todo | `moved from Backlog to Todo` (both labels carry the state's dot colour) |
+| `title` | old | new | `changed the title to “new”` (the old title is in the `title` attribute of the row, and reachable by keyboard: §2.5.7.4) |
+| `description` | – | – | `edited the description` (D-E: no diff, and the two bodies are never rendered) |
+| `priority` | – | High | `set priority to High` |
+| `priority` | High | – | `cleared the priority` |
+| `priority` | High | Low | `changed the priority from High to Low` |
+| `assignee_id` | – | administrator | `assigned to administrator` |
+| `assignee_id` | administrator | – | `unassigned` |
+| `assignee_id` | administrator | Mo | `reassigned from administrator to Mo` |
+| `parent_id` | – | HIFA-8 | `moved under HIFA-8` |
+| `parent_id` | HIFA-8 | – | `removed it from HIFA-8` |
+| `parent_id` | HIFA-8 | HIFA-9 | `moved it from HIFA-8 to HIFA-9` |
+| `label` | – | bug | `added the label bug` (the name renders as the chip of §2.5.5) |
+| `label` | bug | – | `removed the label bug` |
+| `relation` | – | blocks HIFA-33 | `marked it as blocking HIFA-33` |
+| `relation` | blocks HIFA-33 | – | `removed the blocking relation to HIFA-33` |
+| `estimate` | – | 3 | `set the estimate to 3` (the trim is the grammar's, not the storage's: SPEC-030 §2.4 stores `3.0` and this row renders it `3`, and every estimation scale is whole, so the rule removes a trailing `.0` and nothing else) |
+| `estimate` | 3 | – | `cleared the estimate` |
+| `due_date` | – | 20 Nov 2026 | `set the due date to 20 Nov 2026` |
+| `due_date` | 20 Nov 2026 | – | `removed the due date` |
+| `due_date` | 20 Nov 2026 | 21 Nov 2026 | `moved the due date from 20 Nov 2026 to 21 Nov 2026` |
+| `branch_name` | old | new | `changed the branch name` (a slug of the title the row above already shows) |
+| `board_order` | a | b | `reordered it in the column` — the row the read did **not** drop, i.e. every `board_order` row whose predecessor by `id` is not a `state_id` row (SPEC-030 §2.6's `WHERE`, SQL-7 row 11). A rank a move produced never reaches this table, so there is no conditional rendering here: the event the move names is the `state_id` row above it |
+| `started_at` | – | ts | `started work` |
+| `completed_at` | – | ts | `completed it` |
+| `completed_at` | ts | – | `cleared the completion` |
+| `canceled_at` | – | ts | `canceled it` |
+| `canceled_at` | ts | – | `cleared the cancellation` |
+| `archived_at` | – | ts | `archived the issue` |
+| `archived_at` | ts | – | `restored the issue` |
+| `trashed` | 0 | 1 | `deleted the issue` |
+| `trashed` | 1 | 0 | `restored it from the trash` |
+| `project_id` | – | name | `moved to project X` / `removed it from project X` |
+| `milestone_id` | – | name | `set milestone Y` / `removed it from milestone Y` |
+| `cycle_id` | – | name | `added to cycle Z` / `removed it from cycle Z` |
+| anything else | | | `changed <field>` (§2.5.7.1) |
+
+`comment_added` has **no row here** because no writer produces one: the table has a sentence for every
+`field` a writer can store (SPEC-030 §2.4, 21 values) and none for a field nobody writes. The revision
+that lands HIFA-6's history row adds its sentence **in this table**, in the same PR that adds the writer
+(D-A binds it).
+
+**`started_at` has one row for the same reason.** It has a direction and no second one: `apply_milestones`
+stamps it on entering a `started` state when it was empty and never clears it (the return to an open type
+nulls `completed_at` and `canceled_at` only), so `cleared the start time` was the rendering of a row no
+writer could store and it is gone. `completed_at` and `canceled_at` keep both rows because both of their
+writers exist (SPEC-030 §2.4).
+
+#### 2.5.7.1 The fallbacks, as rules
+
+Four rules, and every one of them is a rule about the formatter and not about a template:
+
+1. **A ULID never reaches the screen.** Not in the sentence, not in a `data-*` attribute that a CSS
+   `content:` could print, not in a `title`. The raw pair is on the row as `data-old`/`data-new` (P7) and
+   a `data-*` attribute is not text; the sentence always carries a **label**.
+2. **A target that is gone or unknown renders `<kind> (deleted)`** — `state (deleted)`, `member
+   (deleted)`, `HIFA-8 (deleted)`. It is not `—`, not the key, and not an exception: the row is a fact
+   about the past and the entity it names may no longer be there. The kind is the field's: `state_id` →
+   `state`, `assignee_id` → `member`, `parent_id` → the issue's identifier.
+3. **A missing side renders the direction's own sentence.** `priority` with no new value is
+   `cleared the priority`, `assignee_id` with no new value is `unassigned`, `archived_at` with no new
+   value is `restored the issue`. There is **no dangling arrow** anywhere: a row whose old side is empty
+   never renders `→ x`, and the sentence for the direction exists or the row falls to rule 4.
+4. **An unknown actor renders `someone`**, and an unknown field renders `changed <field>` — the field's
+   own name, in the reader's words only when the table above has a sentence for it. Neither is a refusal:
+   the formatter answers, it never raises (SPEC-040 §2.2's `raises: nothing`).
+
+#### 2.5.7.2 Layout and placement
+
+| Rule | Value |
+|---|---|
+| placement | after the description, **before** the comments section, in the panel and on the page |
+| scroll | header and footer stay pinned; only the panel body scrolls, and the timeline is the end of that body (HIFA-45) |
+| order | **oldest-first**, `(created_at, id)`: `created` is the first row, the newest event the last (D-D) |
+| last-activity line | under the title, one line, dim: `Ginkelte moved from Todo to In Progress · 2 h ago` — `last_activity.text`, and `last_activity.row_id` is the anchor a click scrolls to. `None` renders no line |
+| day separators | `11 Nov 2026`, `position: sticky`, rendered **only when the day changes** — the read model marks the row (`history_item.html` prints the separator of the day it opens) |
+| rail | a 1 px vertical line with a dot per row; the dot takes `dot_color` for a state event and `--border` otherwise. The rail is decoration: it is `aria-hidden` and carries no information of its own |
+| time | relative in the row (`2 h ago`, `3 d ago`), the ISO instant in `<time datetime>`, the absolute stamp in its `title`. Never only relative (§2.5.7.4) |
+| both hosts | the panel's body and the page use the same partial; the page does not re-sort, re-slice or re-format |
+
+**The panel truncates at 8 and the page prints the window (D-C).** `history_panel` holds the first 8 rows
+and `history` all of them; `history_hidden > 0` renders `Show all N` under the list, where **N is
+`history_window`** — the rows the read returned, `HistoryPage.window_size`, which is **the window and not a
+total** (≤100, SQL-7 row 11). The control is a `button` with
+`hx-get="/_/issues/{identifier}/history?limit=100"` and `hx-target="#history-list"`,
+`hx-swap="outerHTML"` (§2.1.3): it expands **in place** and it does not navigate, and the label says
+`Show all N` because N is what the swap will put on screen.
+
+**A full window is a floor, and the page says so once.** An issue with 120 rows returns a window of 100, so
+the panel's button reads `Show all 100` and after the swap the list holds those 100 rows — the 20 oldest of
+the issue are not on the page and never will be through this control, because the read asks for `LIMIT 100`
+and this edge adds no `COUNT(*)` (§2.5.7.3, and §7's 120-row scenario asserts the two lines together). What the reader must not be left to
+infer is that 100 is everything: when `history_truncated` is true the section prints **one dim line**
+`the last 100 events` under the list, on the page and after the expansion, and the fragment carries no
+button of its own because the swap has already replaced the panel's cut with the whole window. Two
+sentences — `Show all 100` and `the last 100 events` — and neither claims to be a total: the first names
+what the swap shows, the second names what the read could reach.
+
+#### 2.5.7.3 The states of the section
+
+| state | rendering |
+|---|---|
+| loading (htmx) | 3 skeleton rows at a real row's height (`44px`), so the list does not jump when it arrives |
+| empty | **nothing**: no header, no `No activity`, no empty state. A `created` row always exists, so an empty list is a bug of the read; a section that says "no activity" about an issue that exists is worse than a gap |
+| single row | one row, no counter, no `1 event` chrome |
+| long | panel: `history_panel` (8) + `Show all N` (D-C); page: the whole window — the same rows, and **the same element count as the payloads of the other two edges** (the read's) |
+| window full | `history_truncated`: one dim line under the list, `the last 100 events`, on the page and after the expansion. It never replaces the `Show all N` control and never claims the total |
+| error | inline `history unavailable`, dim, in the section's place: never a blank gap and never a stack trace. The rest of the page renders — a history that cannot be read does not take the issue with it |
+
+`history unavailable` is the section's own sentence and it is not a `form_error`: no request failed, the
+collection could not be assembled. It is the one string of this section a template may print as a
+literal, because it is not a §6 refusal.
+
+#### 2.5.7.4 Density and accessibility
+
+| Rule | Value |
+|---|---|
+| one event per line | at 320 px a row may wrap to **two** lines and never to three: the sentence wraps, the time does not (`white-space: nowrap`) |
+| never a table | no column headers, no `field`/`old`/`new` columns, no `→`: the table this section replaces is the defect the issue reports |
+| no keys | no `state_id`, no ULID, no `field` name on screen (rule 1 of §2.5.7.1) |
+| numbers | only where they mean something: the `N` of `Show all N` and the relative time |
+| markup | the list is an `<ol id="history-list">`, each event is one `<li>`, the timestamp is a `<time datetime="2026-11-11T18:35:35Z">` |
+| accessible name | *"Ginkelte moved from Todo to In Progress, 2 hours ago"* — the actor, the sentence and the time, in that order, set once as `aria-label` on the `<li>`. The avatar's initials are `aria-hidden` (the name is already in the sentence) and **the absolute stamp in `<time title>` is not part of the name**: the `<li>`'s explicit name replaces the name its subtree would compute, so an AT announces the instant once, as the row's tooltip and not a second time as text |
+| target size | every row is at least **44 px** tall (the `.card` rule of §2.5.6 has the same floor) |
+| nothing hover-only | the old title and the absolute timestamp are in `title` attributes **and** the row is focusable (`tabindex="0"`), so a keyboard user reaches both; the `Show all N` button is a real `button`, not a click handler on a `div` |
+| no horizontal scroll | the section never widens the page at 320 px: `overflow-wrap: anywhere` and `min-width: 0` on the sentence, as the search hits of §2.5.6 do |
+
+**The formatter is `app/`'s, and this layer owns no prettifying step (P2/P4).** The sentence, the three
+labels, the dot colour, the size of the window and the one-line summary come from SPEC-040 §2.2's
+`history_rows` and its `HistoryPage`, which the CLI verb of SPEC-050 §2.5.3.3 calls with the same arguments
+and prints in the same words. This layer decides
+**layout** — order, separators, the 8-row cut, the rail, the `Show all` control, the dim line of a full
+window — and nothing else: a
+Jinja template that built `moved from {{ a }} to {{ b }}` would be a second grammar, and the CLI would
+have to match a string that exists only in a `.html` file. `domain/` is out of it entirely: the labels
+arrive as strings from SPEC-030 §2.6's maps (and, for `priority`/`due_date`, from the two constants of
+SPEC-040 §2.2), and a state's display name is not a concept the domain layer is asked to know.
 
 
 ### 2.6 Interaction
@@ -1843,7 +2091,7 @@ reads a counter of the connection and touches no table: there is nothing of it t
 | `base.html` | `team` | SELECT (team list, active team) |
 | `board.html`, `/_/issues?view=board` | `workflow_state`, `v_issue`, `issue_label`, `label`, `member` | SELECT |
 | `list.html`, `/_/issues?view=list` | `v_issue`, `issue_label`, `label`, `member`, `workflow_state` | SELECT (one query with `GROUP_CONCAT` of labels, no N+1: REQ-N008) |
-| `issue_detail.html`, `/_/issues/{id}/panel` | `v_issue`, `comment`, `issue_relation`, `issue_history`, `issue_label`, `workflow_state`, `member` | SELECT |
+| `issue_detail.html`, `/_/issues/{id}/panel`, `/_/issues/{id}/history` | `v_issue`, `comment`, `issue_relation`, `issue_history`, `issue_label`, `workflow_state`, `member` | SELECT |
 | `search.html`, `/_/palette` | `issue_fts`, `issue`, `workflow_state`, `member`, `team`, `label`, `issue_label` | SELECT — the tables of SPEC-090 §3.2, read by `reads.search` and not by a query issued here |
 | `POST /{team}/issue`, `/_/issues` | `issue`, `issue_history` | INSERT (use case) |
 | `PATCH /_/issues/{id}` | `issue`, `issue_history` | UPDATE |
@@ -1901,7 +2149,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R26** | **The page notices a foreign write by a change signal, never by a timer.** `GET /_/revision` answers `{"revision": <n>}` read from `PRAGMA data_version` on the process's single long-lived read connection (§2.1.3.1, §3, D-049); the number changes iff another connection committed since the previous read — which is what the CLI is, and what the process's own per-request connections are. The page carries the number it was rendered with (`<body data-revision>`, `page["revision"]`) and adopts the `HX-Revision` of an answer that replaced the collection; a panel, a row, the palette or the counters do not adopt (D-050); the poller (`hx-trigger="every {{ page.revision_poll }}"`, `hx-swap="none"`, visibility enforced in the client by cancelling `htmx:beforeRequest` while the tab is hidden — never as a `[condition]` filter, which the CSP's `script-src 'self'` makes unrunnable) reloads `page["refresh_url"]` into `#board`/`#issues-tbody` **only when the numbers differ**, so no request and no swap happens while nothing changed. The reload is **deferred, never forced**, while a detail panel is open, the quick add holds unsaved text or a drag is in flight; the last revision seen is applied as soon as the interaction ends (§2.6.8). The number is opaque — compared for equality, never ordered, never arithmetic, never displayed. Without JS nothing of this runs and a reload shows the new data (P5). The probe is a read: `--read-only` neither blocks it nor changes it. → **REQ-F070-15** |
 | **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The **seven** page forms of §2.1.2 — the quick add, the edit, `move`, the comment and the three layer writes — each have the `/_/` fragment of §2.1.3 that answers them, and each form on a fragment-bearing surface carries the `hx-*` that points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card or the panel after an edit (`?view=panel` answers the panel, for the description editor of §2.6.3), `204` with no body after a move, an archive, a delete or a restore, `200` with the one `<li>` a comment writes (§2.6.10), `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
 | **R28** | **A state-changing request from another origin is refused before the route runs, and a request with no origin information is allowed.** Every request whose method is outside `GET`/`HEAD`/`OPTIONS` is answered `403`, `text/plain` `cross-site write refused`, `Cache-Control: no-store` — returned by one middleware installed by `create_app` inside `_headers`, never raised as an exception — when `Sec-Fetch-Site` is `cross-site` or `same-site`, or when that header is absent and `Origin` names another authority or is `null`; `same-origin`, `none`, an `Origin` whose authority is `Host`'s, and a request with neither header are served. The comparison is the authority (host and port, compared case-insensitively, the scheme dropped), so a browser whose `Origin` says `https` behind a plain `http` tunnel still writes, and `Origin: null` — which names no authority — is refused. The guard reads no path, no route table, no table and no body, so it precedes the `HX-Request` `400` (R5), the read-only `403` (R18) and the use case, and a cross-site write to an unknown identifier is `403` rather than `404`. It does not authenticate, does not close the tunnel and does not make a header a credential — a client that sets its own headers can set any, and a same-origin page can write by definition; and it covers no read, because a cross-site read is served and its bytes are unreadable to the other origin (REQ-S005). → **REQ-F070-16** |
-| **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block, no comment composer (§2.6.10) — and every write but `restore` refuses it, the comment included — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind the two surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **they are its only consumers**; the row and the card never pass the keyword, and the asymmetry — page and panel pass it, collection members do not — is the rule and not an implementation detail. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write, `archive` and a comment refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the four controls (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
+| **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block, no comment composer (§2.6.10) — and every write but `restore` refuses it, the comment included — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind those surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **the three surfaces of §2.1.4 that pass the keyword are its only consumers**: the page, the panel fragment and the history fragment — the first two are the two surfaces, and the third re-renders the second's own list. No other route passes it: the row and the card never do, and the asymmetry — page, panel and history fragment pass it, collection members do not — is the rule and not an implementation detail. **The one route that shares the panel's call is not a third surface**: `GET /_/issues/{identifier}/history` (§2.1.4) re-renders the panel's own timeline with the panel's two `include` names and its keyword, so it answers what the panel already answers and adds no surface over the trash — a `Show all` on a trashed issue's panel is the panel talking, and its `200` is that `200`. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write, `archive` and a comment refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the four controls (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
 
 Component-specific requirements:
 
@@ -2169,6 +2417,7 @@ differ in exactly the step above, not in the route, the status or the header.
 | Write with `read_only` | 403 | `error.html` from a page route; `partials/fragment_error.html` from a `/_/` route | read-mode banner (a fragment never swaps a document) |
 | `POST /_/states/{state_id}/position` with `read_only` | 403 | `text/plain` `server is read-only` — **the exception the implementation owes a fix**: every other `/_/` write answers `partials/fragment_error.html` and is contracted to the catalogue's `server in read-only mode` (the row above), so this route drifts on both the media type and the sentence (`PATCH /_/issues/{identifier}` already carries the same wrong sentence, so the second drift is older than this route) | read-mode banner; the sentence reaches the toast area as text, not as the fragment's markup |
 | `/_/revision` when the probe connection cannot answer | 503 | `application/json` `{"revision": null}` + `Cache-Control: no-store` | the body is not a number ⇒ the client does nothing; no swap, and the next tick retries on its own |
+| The activity timeline cannot be assembled (`history` requested, the collection missing) | 200 | the page or the panel, with the timeline's place carrying `history unavailable` — dim, one line, no `form_error` (§2.5.7.3) | the rest of the issue renders: a history that cannot be read does not take the issue with it |
 | Unmapped exception | 500 | generic `error.html` (no traceback) | same |
 
 **One answer for one `state_id`, on both drops.** The two `404` rows above are one row with two routes:
@@ -2802,6 +3051,71 @@ Feature: hifa web dashboard
     Then the status is 422
     And the HTML contains "a comment needs a body"
     And the HTML contains "name=\"body\""
+  Scenario: the timeline reads as sentences, oldest first, and shows no key
+    Given issue ENG-13 with a created row and two state moves, Backlog to Todo and Todo to Done
+    When GET /ENG/issue/ENG-13 is requested
+    Then the status is 200
+    And the first history row is "ginkelte created the issue"
+    And the second history row is "ginkelte moved from Backlog to Todo"
+    And the third history row is "ginkelte moved from Todo to Done"
+    And no history row contains a 26-character ULID
+    And no history row contains "state_id"
+
+  Scenario: the panel shows eight rows and offers Show all
+    Given issue ENG-13 with 12 history rows
+    When GET /_/issues/ENG-13/panel is requested
+    Then the status is 200
+    And the history list has 8 items
+    And the page contains "Show all 12"
+
+  Scenario: Show all expands the timeline in place
+    Given issue ENG-13 with 12 history rows
+    When GET /_/issues/ENG-13/history?limit=100 is requested
+    Then the status is 200
+    And the history list has 12 items
+    And the response contains no "Show all"
+
+  Scenario: a full window is a floor and the page says so
+    Given issue ENG-13 with 120 history rows
+    When GET /ENG/issue/ENG-13 is requested
+    Then the status is 200
+    And the page contains "Show all 100"
+    And the page shows 100 history rows
+    And the page contains "the last 100 events"
+    When GET /_/issues/ENG-13/history?limit=100 is requested
+    Then the status is 200
+    And the history list has 100 items
+    And the response contains "the last 100 events"
+    And the response contains no "Show all"
+
+  Scenario: an issue whose history is empty renders no timeline
+    Given issue ENG-13 whose history collection is empty
+    When GET /ENG/issue/ENG-13 is requested
+    Then the status is 200
+    And the page contains no "history-list"
+    And the page contains no "No activity"
+
+  Scenario: a row whose state is gone falls back to the kind and the word
+    Given issue ENG-13 with a state history row whose old value is not a state of the team
+    When GET /ENG/issue/ENG-13 is requested
+    Then the history row contains "state (deleted)"
+    And the history row contains no 26-character ULID
+    And the response contains no "→"
+
+  Scenario: unknown fields and unknown actors are named, not raised
+    Given issue ENG-13 with a history row of field "mood" and a row whose actor was deleted
+    When GET /ENG/issue/ENG-13 is requested
+    Then the history contains "someone"
+    And the history contains "changed mood"
+    And the status is 200
+
+  Scenario: the timeline is a list of times, not a table
+    Given issue ENG-13 with two history rows
+    When GET /ENG/issue/ENG-13 is requested
+    Then the timeline is an "ol" element with two "li" children
+    And each history row contains a "time" element with a "datetime" attribute
+    And the page contains no "FROM" and no "TO" column header
+
 ```
 
 ## 8. Regeneration checklist
@@ -2828,7 +3142,7 @@ Feature: hifa web dashboard
 7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (72 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (80 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).
@@ -2872,6 +3186,45 @@ Feature: hifa web dashboard
   §2.6.9; the whole-page floor is T-19.
 
 ## 11. Notes
+
+- spec_revision 30 (2026-11-20): **the activity section is declared — its grammar, its layout, its
+  states, its density and its accessibility — and the panel gets the one fragment D-C needed
+  (HIFA-46, D-074).** `version` 9 → 10: §2.1.3 gains a fragment, §2.3.4 changes what a view-model key
+  holds, and §2.5.7 is a new normative UI section; every one of them is a surface this layer publishes.
+  (1) **The detail page rendered `history` from `issue_history` rows and printed a ULID pair.** §2.5.7
+  states the sentence grammar per `field` (38 rows covering the **21** values SPEC-030 §2.4 enumerates
+  with their writers), the three-part row, the four fallback rules, the layout, the states of the
+  section and the density/a11y rules that keep a row one sentence on a 320 px screen. The wording lives
+  **here** and nowhere else: SPEC-030 §2.4 quotes it beside each writer, SPEC-050 §2.5.3.3 prints it in a
+  terminal.
+  (2) **The formatter is `app/`'s and this layer owns layout only (P2/P4).** `history_rows`
+  (SPEC-040 §2.2) answers the sentence, the three labels, the dot colour and the one-line summary; the
+  templates iterate. §2.3.4's `history` element is therefore **that formatter's `HistoryRow`** — eleven
+  keys, the raw pair among them because P7 keeps it for `data-*` — plus `created_label`, the one relative
+  stamp the edge's clock produces. `history_panel` is the panel's slice and is layout; `history_window`,
+  `history_hidden` and `last_activity` are `HistoryPage`'s (`window_size`, the flag this layer derives from
+  it, and `last_activity`), because a template may not count, slice or compose them (§2.3.7).
+  (3) **`Show all N` had no fragment to call, and no row in §2.1.4.** §2.1.3 gains
+  `GET /_/issues/{identifier}/history?limit={n}` returning the whole `<ol>`, §2.1.4 the port call it makes
+  — the panel's two `include` names and its `include_trashed`, so a trashed issue's expansion is `200` and
+  R29 keeps its two trash-reading surfaces — and §2.2 the two partials that render it; the control expands
+  in place, which is what D-C binds. The implementation PR adds the `issue.history` capability row
+  (`cli="issue history"`, `web` this fragment: both edges, so no `debt=`/`reason=`) and the route's
+  `FRAGMENT_ALLOWLIST` entry in the same commit — the checker fails until both exist.
+  (4) **Order is oldest-first (D-D) and nothing collapses (D-B).** The panel's 8-row cut is a cut, not a
+  summary: `history_panel` is `history[:8]` and the button shows the rest of **the window**. A
+  `board_order` row that a move produced is not in the window at all — the read drops it (SPEC-030 §2.6) and
+  the move's own sentence is the event — so this layer renders every row it is given and filters none.
+  (5) **`Show all N` and the page claimed more than the read can reach.** With `history_total` = 12 the
+  button read `Show all 12` and the page said it showed every row; at 120 rows the window is 100, so the
+  button reads `Show all 100`, 20 rows are unreachable, and "nothing is hidden" was false. `N` is now
+  `history_window` — the read's window, never a total — and a full window prints one dim line,
+  `the last 100 events`, which is the only sentence on the section that admits a floor. §7 carries the
+  120-row scenario that asserts it.
+  (6) **Counts.** §7 goes **72 → 79** (seven scenarios: the sentences with no key, the panel's eight and
+  `Show all 12`, the fragment, the empty section, the deleted-state fallback, the unknown field and actor,
+  and the `<ol>`/`<li>`/`<time>` contract), and **79 → 80** for the 120-row window scenario; §8 says 80.
+  The `.feature` corpus is untouched, no route of §2.1.1 changes, and `issue_vm` loses no key.
 
 - spec_revision 29 (2026-11-20): **the detail page stops publishing a collection nothing can fill, and its
   `include` stops naming it (HIFA-49, round three).** `version` 8 → 9: `issue_vm` loses a key, §2.1.4's
