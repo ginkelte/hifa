@@ -15,6 +15,7 @@ import pytest
 
 from helpers import FrozenClock, SeqIdGen
 from hifa.adapters.sqlite.connection import Database, open_db
+from hifa.adapters.sqlite.label_repo import LabelRepo
 from hifa.adapters.sqlite.migrate import apply_migrations
 from hifa.adapters.sqlite.uow import UnitOfWork
 from hifa.app.commands import (
@@ -38,7 +39,7 @@ from hifa.app.labels import (
     retire_label,
     update_label,
 )
-from hifa.domain.entities import Member, Team, WorkflowState
+from hifa.domain.entities import Label, Member, Team, WorkflowState
 from hifa.domain.enums import WorkflowStateType
 from hifa.domain.errors import Conflict, InvalidTransition, NotFound, Validation
 
@@ -179,6 +180,23 @@ def _label_named(seed: Seed, name: str, team_id: str | None = None) -> sqlite3.R
     rows = _rows(seed, "SELECT * FROM label WHERE name = ? AND team_id IS ?", (name, team_id))
     assert len(rows) == 1, f"expected one label {name!r}, found {len(rows)}"
     return rows[0]
+
+
+def _insert_second_spelling(seed: Seed, name: str, *, team_id: str | None = None) -> str:
+    """A second spelling of a name of one level, which the catalogue itself refuses to write.
+
+    The unique indexes of `label` are case-sensitive, so the database accepts `Bug` and `bug` side
+    by side; only the catalogue keeps the pair from being written. Returns the row's id.
+    """
+    label_id = seed.idgen.new()
+    _write(
+        seed,
+        "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
+        " is_group, group_type, retired_at)"
+        " VALUES (?, ?, ?, NULL, ?, '#6B6F76', NULL, 0, NULL, NULL)",
+        (label_id, seed.workspace.id, team_id, name),
+    )
+    return label_id
 
 
 def _links(seed: Seed, identifier: str) -> list[str]:
@@ -340,6 +358,53 @@ def test_the_same_name_at_two_levels_is_two_labels(seed: Seed) -> None:
     assert _count(seed, "label") == 2
 
 
+def test_a_case_variant_at_the_same_level_is_a_conflict_in_either_direction(seed: Seed) -> None:
+    """`bug` and `Bug` are two rows to the index and one name to a reader: the second is refused."""
+    _make(seed, "Bug")
+    _make(seed, "defect")
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Conflict) as lower:
+            create_label(uow, CreateLabel(name="bug"), seed.actor)
+        with pytest.raises(Conflict) as upper:
+            create_label(uow, CreateLabel(name="Defect"), seed.actor)
+    finally:
+        uow.close()
+
+    assert (lower.value.rule, lower.value.field, lower.value.exit_code) == (
+        "UNIQUE_LABEL_NAME",
+        "name",
+        4,
+    )
+    assert (upper.value.rule, upper.value.field) == ("UNIQUE_LABEL_NAME", "name")
+    assert _count(seed, "label") == 2
+
+
+def test_a_case_variant_of_a_retired_name_of_the_same_level_is_a_conflict(seed: Seed) -> None:
+    """Retired rows count, exactly as the partial unique indexes count them."""
+    _make(seed, "Bug")
+    _retire(seed, "Bug")
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Conflict) as caught:
+            create_label(uow, CreateLabel(name="bug"), seed.actor)
+    finally:
+        uow.close()
+
+    assert caught.value.rule == "UNIQUE_LABEL_NAME"
+    assert _count(seed, "label") == 1
+
+
+def test_a_case_variant_at_another_level_is_a_second_label(seed: Seed) -> None:
+    """The refusal is per level: a team may carry what the workspace carries, whatever the case."""
+    _make(seed, "Bug")
+    _make(seed, "bug", team_id=seed.team.id)
+
+    assert _count(seed, "label") == 2
+
+
 def test_a_blank_name_and_a_bad_color_are_refused_before_the_insert(seed: Seed) -> None:
     uow = _uow(seed)
     try:
@@ -469,6 +534,42 @@ def test_a_rename_onto_a_name_of_the_same_level_is_a_conflict(seed: Seed) -> Non
     assert _count(seed, "label") == 2
 
 
+def test_a_rename_onto_a_case_variant_is_a_conflict(seed: Seed) -> None:
+    """The level keeps one name however it is spelled, so the second row is not written."""
+    _make(seed, "Bug")
+    _make(seed, "Defect")
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Conflict) as caught:
+            update_label(uow, UpdateLabel(label="Defect", name="bug"), seed.actor)
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field, caught.value.exit_code) == (
+        "UNIQUE_LABEL_NAME",
+        "name",
+        4,
+    )
+    assert _label_named(seed, "Defect")["name"] == "Defect"
+    assert _count(seed, "label") == 2
+
+
+def test_a_rename_that_changes_only_its_own_case_is_allowed(seed: Seed) -> None:
+    """The row a name resolves to is not its own collision."""
+    _make(seed, "Bug")
+
+    uow = _uow(seed)
+    try:
+        renamed = update_label(uow, UpdateLabel(label="Bug", name="BUG"), seed.actor)
+    finally:
+        uow.close()
+
+    assert renamed.name == "BUG"
+    assert _label_named(seed, "BUG")["id"] == renamed.id
+    assert _count(seed, "label") == 1
+
+
 def test_a_blank_new_name_and_a_bad_color_are_refused(seed: Seed) -> None:
     _make(seed, "Bug")
 
@@ -546,6 +647,27 @@ def test_a_label_worn_only_by_a_trashed_issue_is_still_in_use(seed: Seed) -> Non
         uow.close()
 
     assert caught.value.rule == "LABEL_IN_USE"
+
+
+def test_a_label_worn_only_by_an_archived_issue_is_still_in_use(seed: Seed) -> None:
+    """The archive counts too: a restored issue comes back wearing the chip."""
+    label_id = _make(seed, "Bug")
+    _attach(seed, label_id)
+    _write(
+        seed,
+        "UPDATE issue SET archived_at = ? WHERE identifier = ?",
+        (RETIRED_AT, seed.issue.identifier),
+    )
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Conflict) as caught:
+            retire_label(uow, RetireLabel(label="Bug"), seed.actor)
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.exit_code) == ("LABEL_IN_USE", 4)
+    assert _label_named(seed, "Bug")["retired_at"] is None
 
 
 def test_retiring_twice_is_a_conflict(seed: Seed) -> None:
@@ -643,6 +765,40 @@ def test_ambiguity_is_judged_over_retired_rows_too(seed: Seed) -> None:
         uow.close()
 
     assert caught.value.rule == "LABEL_AMBIGUOUS"
+
+
+def test_a_name_one_level_carries_in_two_spellings_is_ambiguous_on_every_catalogue_verb(
+    seed: Seed,
+) -> None:
+    """The index is case-sensitive, so the pair is reachable by hand and must not be guessed at."""
+    _make(seed, "Bug")
+    _insert_second_spelling(seed, "bug")
+
+    uow = _uow(seed)
+    try:
+        calls = (
+            lambda: update_label(uow, UpdateLabel(label="bug", name="x"), seed.actor),
+            lambda: retire_label(uow, RetireLabel(label="bug"), seed.actor),
+            lambda: restore_label(uow, RestoreLabel(label="bug"), seed.actor),
+        )
+        for call in calls:
+            with pytest.raises(Validation) as caught:
+                call()
+            assert (caught.value.rule, caught.value.field) == ("LABEL_AMBIGUOUS", "ref")
+            assert "'Bug'" in caught.value.message and "'bug'" in caught.value.message
+        with pytest.raises(Validation) as read:
+            label_detail(Database(seed.path), "bug")
+    finally:
+        uow.close()
+
+    assert (read.value.rule, read.value.field, read.value.exit_code) == (
+        "LABEL_AMBIGUOUS",
+        "ref",
+        2,
+    )
+    assert read.value.details["labels"] == ["Bug", "bug"]
+    assert _count(seed, "label") == 2
+    assert _label_named(seed, "bug")["retired_at"] is None
 
 
 def test_an_unknown_reference_is_not_found_by_name_and_by_ulid(seed: Seed) -> None:
@@ -931,6 +1087,57 @@ def test_the_team_name_wins_over_the_workspace_one(seed: Seed) -> None:
     assert _link_ids(seed) == [team_bug]
 
 
+def test_a_workspace_name_in_two_spellings_is_ambiguous_on_the_link(seed: Seed) -> None:
+    """The workspace step leaves two candidates: the verb refuses instead of attaching one."""
+    _make(seed, "Bug")
+    _insert_second_spelling(seed, "bug")
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Validation) as caught:
+            add_label(uow, AddLabel(issue=seed.issue.identifier, label="bug"), seed.actor)
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field, caught.value.exit_code) == (
+        "LABEL_AMBIGUOUS",
+        "ref",
+        2,
+    )
+    assert "'Bug'" in caught.value.message and "'bug'" in caught.value.message
+    assert _link_ids(seed) == []
+    assert _history(seed, seed.issue.identifier) == []
+
+
+def test_a_name_of_the_issues_own_team_in_two_spellings_is_ambiguous_too(seed: Seed) -> None:
+    _make(seed, "Bug", team_id=seed.team.id)
+    _insert_second_spelling(seed, "bug", team_id=seed.team.id)
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Validation) as caught:
+            add_label(uow, AddLabel(issue=seed.issue.identifier, label="BUG"), seed.actor)
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field) == ("LABEL_AMBIGUOUS", "ref")
+    assert _link_ids(seed) == []
+
+
+def test_a_unique_team_match_still_wins_over_a_workspace_spelling(seed: Seed) -> None:
+    """Only a step that leaves two candidates is ambiguous; a decided step is still decided."""
+    team_bug = _make(seed, "Bug", team_id=seed.team.id)
+    _insert_second_spelling(seed, "bug")
+
+    uow = _uow(seed)
+    try:
+        add_label(uow, AddLabel(issue=seed.issue.identifier, label="BUG"), seed.actor)
+    finally:
+        uow.close()
+
+    assert _link_ids(seed) == [team_bug]
+
+
 def test_a_name_that_resolves_nowhere_is_a_validation_error(seed: Seed) -> None:
     uow = _uow(seed)
     try:
@@ -1003,6 +1210,45 @@ def test_create_if_missing_uses_a_name_that_already_resolves(seed: Seed) -> None
 
     assert _count(seed, "label") == 1
     assert _link_ids(seed) == [workspace_label]
+
+
+def test_a_duplicate_taken_by_another_writer_on_create_if_missing_is_translated(
+    seed: Seed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolve and the insert share one transaction, so the unique index is the only racer.
+
+    The adapter reports that race as `DUPLICATE_LABEL`; the verb has to answer the code both edges
+    publish, which is `UNIQUE_LABEL_NAME` and exit 4.
+    """
+
+    def racing(_self: LabelRepo, _label: Label) -> Label:
+        raise Conflict("label already exists", rule="DUPLICATE_LABEL", field="name")
+
+    monkeypatch.setattr(LabelRepo, "insert", racing)
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Conflict) as caught:
+            add_label(
+                uow,
+                AddLabel(
+                    issue=seed.issue.identifier,
+                    label="infra",
+                    create_if_missing=True,
+                    color="#5E6AD2",
+                ),
+                seed.actor,
+            )
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field, caught.value.exit_code) == (
+        "UNIQUE_LABEL_NAME",
+        "name",
+        4,
+    )
+    assert _count(seed, "label") == 0
+    assert _link_ids(seed) == []
 
 
 def test_create_if_missing_refuses_a_bad_color(seed: Seed) -> None:
@@ -1146,3 +1392,50 @@ def test_a_trashed_issue_takes_no_detach(seed: Seed) -> None:
 
     assert caught.value.rule == "ISSUE_TRASHED"
     assert _links(seed, seed.issue.identifier) == ["Bug"]
+
+
+def test_an_archived_issue_takes_no_detach(seed: Seed) -> None:
+    """The refusal is the issue's, not the verb's: `add_label` answers it too."""
+    label_id = _make(seed, "Bug")
+    _attach(seed, label_id)
+    _write(
+        seed,
+        "UPDATE issue SET archived_at = ? WHERE identifier = ?",
+        (RETIRED_AT, seed.issue.identifier),
+    )
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(InvalidTransition) as caught:
+            remove_label(uow, RemoveLabel(issue=seed.issue.identifier, label="Bug"), seed.actor)
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field, caught.value.exit_code) == (
+        "ISSUE_ARCHIVED",
+        "ref",
+        5,
+    )
+    assert _links(seed, seed.issue.identifier) == ["Bug"]
+
+
+def test_an_unknown_issue_is_not_found_on_both_link_verbs(seed: Seed) -> None:
+    """The issue is read before the label, so an unknown one is a 404 on the way in and out."""
+    _make(seed, "Bug")
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(NotFound) as attached:
+            add_label(uow, AddLabel(issue="ENG-999", label="Bug"), seed.actor)
+        with pytest.raises(NotFound) as detached:
+            remove_label(uow, RemoveLabel(issue="ENG-999", label="Bug"), seed.actor)
+    finally:
+        uow.close()
+
+    for caught in (attached, detached):
+        assert (caught.value.resource, caught.value.field, caught.value.exit_code) == (
+            "issue",
+            "issue",
+            3,
+        )
+    assert _link_ids(seed) == []
