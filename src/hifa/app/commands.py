@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Final, Literal, TypeVar
 
-from hifa.domain.enums import EstimationType, Priority, RelationType, TeamVisibility
+from hifa.domain.enums import (
+    EstimationType,
+    LabelGroupType,
+    Priority,
+    RelationType,
+    TeamVisibility,
+)
 from hifa.domain.errors import Validation
 from hifa.domain.identifier import normalize_key
 
@@ -437,6 +443,166 @@ class UpdateState:
             object.__setattr__(self, "position", float(position))
 
 
+@dataclass(frozen=True, slots=True)
+class AddLabel:
+    """Link one label to one issue, creating nothing unless `create_if_missing`.
+
+    `label` is a ULID or a name; a name resolves in the issue's team and then in the workspace.
+    `color` is required when `create_if_missing` is set, because that is the one path where this
+    command creates a label.
+    """
+
+    issue: str
+    label: str
+    create_if_missing: bool = False
+    color: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+        _require_ref(self, "label")
+        if self.color is not None:
+            if not isinstance(self.color, str):
+                raise _command_field("color", self.color)
+            object.__setattr__(self, "color", self.color.strip())
+        if not isinstance(self.create_if_missing, bool):
+            raise _command_field("create_if_missing", self.create_if_missing)
+        if self.create_if_missing and self.color is None:
+            raise _command_field("color", self.color)
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveLabel:
+    """Detach one label from one issue; `label` is a ULID or a name."""
+
+    issue: str
+    label: str
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "issue")
+        _require_ref(self, "label")
+
+
+@dataclass(frozen=True, slots=True)
+class CreateLabel:
+    """Catalogue entry creation: a workspace label, a team label, a group or a child.
+
+    `team=None` is a workspace label. `is_group` needs `group_type` and refuses `parent`; a child
+    carries `parent`, which is resolved at the label's own level. `group_type` keeps the raw token
+    and the use case parses it, so the vocabulary and its refusal live in one place.
+    """
+
+    name: str
+    team: str | None = None
+    color: str | None = None
+    description: str | None = None
+    parent: str | None = None
+    is_group: bool = False
+    group_type: LabelGroupType | str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise _command_field("name", self.name)
+        object.__setattr__(self, "name", self.name.strip())
+        for field_name in ("team", "parent"):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise _command_field(field_name, value)
+            object.__setattr__(self, field_name, value.strip())
+        if self.color is not None:
+            if not isinstance(self.color, str):
+                raise _command_field("color", self.color)
+            object.__setattr__(self, "color", self.color.strip())
+        if self.description is not None:
+            if not isinstance(self.description, str):
+                raise _command_field("description", self.description)
+            object.__setattr__(self, "description", self.description.strip() or None)
+        if not isinstance(self.is_group, bool):
+            raise _command_field("is_group", self.is_group)
+        group_type = self.group_type
+        if group_type is not None:
+            if isinstance(group_type, str):
+                object.__setattr__(self, "group_type", group_type.strip())
+            elif not isinstance(group_type, LabelGroupType):
+                raise _command_field("group_type", group_type)
+        if self.is_group and self.parent is not None:
+            raise Validation(
+                "a group cannot carry a parent",
+                rule="LABEL_GROUP_INVALID",
+                field="parent",
+                value=self.parent,
+                code="LABEL_GROUP_INVALID",
+            )
+        if self.is_group and self.group_type is None:
+            raise Validation(
+                "a group needs a group_type",
+                rule="LABEL_GROUP_INVALID",
+                field="group_type",
+                value=None,
+                code="LABEL_GROUP_INVALID",
+            )
+        if not self.is_group and self.group_type is not None:
+            raise Validation(
+                "only a group carries a group_type",
+                rule="LABEL_GROUP_INVALID",
+                field="group_type",
+                value=self.group_type,
+                code="LABEL_GROUP_INVALID",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateLabel:
+    """Rename, recolor or re-describe one label.
+
+    `UNSET` leaves a column as it is, `None` clears `description` and an empty description is the
+    same as `None`. A label always has a color, so there is no "clear the color".
+    """
+
+    label: str
+    name: str | Unset = UNSET
+    color: str | Unset = UNSET
+    description: str | None | Unset = UNSET
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "label")
+        if self.name is not UNSET:
+            if not isinstance(self.name, str):
+                raise _command_field("name", self.name)
+            object.__setattr__(self, "name", self.name.strip())
+        if self.color is not UNSET:
+            if not isinstance(self.color, str):
+                raise _command_field("color", self.color)
+            object.__setattr__(self, "color", self.color.strip())
+        if self.description is not UNSET:
+            if self.description is None:
+                return
+            if not isinstance(self.description, str):
+                raise _command_field("description", self.description)
+            object.__setattr__(self, "description", self.description.strip() or None)
+
+
+@dataclass(frozen=True, slots=True)
+class RetireLabel:
+    """Set `retired_at` on one label; the row is never deleted."""
+
+    label: str
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "label")
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreLabel:
+    """Clear `retired_at` of one label: the undo of `RetireLabel`."""
+
+    label: str
+
+    def __post_init__(self) -> None:
+        _require_ref(self, "label")
+
+
 def _validate_state_fields(cmd: CreateState) -> None:
     """Shape validation of `CreateState` (membership in the enum is a use case rule)."""
     if not isinstance(cmd.team, str) or not cmd.team.strip():
@@ -460,18 +626,24 @@ def _validate_state_fields(cmd: CreateState) -> None:
 __all__ = [
     "UNSET",
     "Actor",
+    "AddLabel",
     "ArchiveIssue",
     "CommentOnIssue",
     "CreateIssue",
+    "CreateLabel",
     "CreateState",
     "CreateTeam",
     "Maybe",
     "MoveIssue",
     "RelateIssues",
+    "RemoveLabel",
     "RestoreIssue",
+    "RestoreLabel",
+    "RetireLabel",
     "TrashIssue",
     "Unset",
     "UnrelateIssues",
     "UpdateIssue",
+    "UpdateLabel",
     "UpdateState",
 ]
