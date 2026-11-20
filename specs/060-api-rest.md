@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 8
-spec_revision: 16
+version: 10
+spec_revision: 18
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -116,14 +116,16 @@ writes and a shared connection turns contention into `database is locked`.
 **`model_config = ConfigDict(from_attributes=True)` is for the models that validate a use case's
 dataclass**, i.e. the ones a handler builds with `Model.model_validate(<frozen dataclass>)` out of
 `app/` or `adapters/`: `IssueOut`, `TeamOut`, `StateOut`, `LabelOut`, `ProjectOut`, `CycleOut`,
-`MemberOut`, `CommentOut`, `RelationOut`, `AttachmentOut`, `SearchHit` and `SearchPage`. **Every input
+`MemberOut`, `CommentOut`, `RelationOut`, `SearchHit` and `SearchPage`. **Every input
 model** (the `*Create`/`*Patch`/`*Move`/`*Add` set) uses `ConfigDict(extra="forbid")`. No loose `dict`s:
-the shape of the JSON is the schema.
+the shape of the JSON is the schema. `AttachmentOut` is the one exception and it is GAP-07: it keeps
+`from_attributes` because a handler will validate `add_attachment`'s dataclass into it, and no handler
+exists to do that today — the class is declared in §2.4.4 with a docstring that says so.
 
 A model that is **composed here and not validated from a dataclass** carries neither config, and that is
 deliberate rather than an omission: the nested references of §2.4.1 (`TeamRef`, `StateRef`, `MemberRef`,
 `ProjectRef`, `MilestoneRef`, `CycleRef`, `ParentRef`, `LabelRef`), the envelopes of §2.6 (`IssuePage`,
-`TeamList`, the eight bounded lists and their `items`), the aggregates computed in the handler
+`TeamList`, the seven bounded lists and their `items`), the aggregates computed in the handler
 (`HistoryEntry`, `TeamProgress`), and `HealthOut` are built field by field, so `from_attributes` would
 declare a coercion path nothing uses. **The error bodies carry no config either** — `ErrorBody`,
 `ErrorEnvelope` — and on purpose: they are built from a `DomainError`, whose `code`/`message`/`field`
@@ -257,12 +259,24 @@ class HistoryEntry(BaseModel):
 class IssueDetail(IssueOut):
     comments: list["CommentOut"] = []
     relations: list["RelationOut"] = []
-    attachments: list["AttachmentOut"] = []
     history: list[HistoryEntry] = []
     children: list[ParentRef] = []
 ```
 
-`IssueDetail` adds keys **at the end**; it never reorders the 33 of `IssueOut`.
+`IssueDetail` adds keys **at the end**; it never reorders the 33 of `IssueOut`. It carries **four**
+collections, so the object is **33 + 4 = 37 keys**, and all four are always present — a collection that
+was not asked for and one with no rows are both `[]`, and no key tells them apart (SPEC-050
+§2.5.3.2 says the same for the CLI, which emits this class field for field).
+
+`AttachmentOut` is **declared once, in §2.4.4, and produced nowhere in v1**: `add_attachment` is declared
+in SPEC-040 §2.2 and implemented nowhere, it is the only writer of `attachment` (SPEC-040 §3.1), and it is
+GAP-07 (SPEC-050 §2.3.1). The class is kept — one declaration, not five — because it is the shape the
+revision that lands `AddAttachment` publishes, and it is published beside the three places that shape has
+to agree with: the `attachment` row of SPEC-010 §3, `add_attachment`'s `# raises:` line in SPEC-040 §2.2,
+and SPEC-050 §2.3.1's GAP-07 row, which lists what returns with it — the `attachments` key of
+`IssueDetail`, the `include` name that gates SQL-7 row 12, the subresource, and the `issue attach` table
+and `--list` cells. Nothing of this edge reaches the object today: no route of §2.5 returns it, no key of
+`IssueDetail` carries it, and `IssueDetail` is **33 + 4 = 37 keys** (§2.4.2).
 
 #### 2.4.3 Issue inputs
 
@@ -588,6 +602,15 @@ class RelationCreate(BaseModel):
 
 
 class AttachmentOut(BaseModel):
+    """GAP-07: the shape of the attachment element, with **no producer** until `AddAttachment`.
+
+    Declared once, here, and returned by nothing in v1: `add_attachment` (SPEC-040 §2.2) is the only
+    writer of the `attachment` table and is implemented nowhere, so no route, no key and no `include`
+    name of this edge can reach this class. The revision that implements the use case publishes the
+    subresource, the `attachments` key of `IssueDetail` and the `include` name with it
+    (SPEC-050 §2.3.1's GAP-07 row lists the same set).
+    """
+
     model_config = ConfigDict(from_attributes=True)
     id: str
     issue_id: str
@@ -597,15 +620,6 @@ class AttachmentOut(BaseModel):
     source_type: str | None
     metadata: dict | None
     created_at: str
-
-
-class AttachmentCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1)
-    url: str = Field(min_length=1)
-    subtitle: str | None = None
-    source_type: str | None = None
-    metadata: dict | None = None
 
 
 class SearchHit(BaseModel):
@@ -648,7 +662,7 @@ Columns: `Request` = schema/params; `Response` = schema; `Errors` = error status
 | Method | Route | Request | Response | Errors |
 |---|---|---|---|---|
 | GET | `/api/v1/issues` | query: `team`, `state`\*, `state_type`\*, `priority`\*, `assignee`, `unassigned`, `label`\*, `project`, `cycle`, `no_cycle`, `parent`, `ids`\*, `q`, `open` (default `true`), `archived` (`exclude\|include\|only`, default `exclude`), `trashed` (default `false`), `order`, `limit`, `cursor` | `IssuePage` | 422 |
-| GET | `/api/v1/issues/{ref}` | query: `include`\* ∈ `{comments,relations,attachments,history,children}` | `IssueOut` \| `IssueDetail` | 404, 422 |
+| GET | `/api/v1/issues/{ref}` | query: `include`\* ∈ `{comments, history}` (see below) | `IssueOut` \| `IssueDetail` | 404, 422 |
 | POST | `/api/v1/issues` | `IssueCreate` | 201 `IssueOut` + `Location` | 409, 422 |
 | PATCH | `/api/v1/issues/{ref}` | `IssuePatch` | 200 `IssueOut` | 404, 409, 422 |
 | DELETE | `/api/v1/issues/{ref}` | — (no query params; `?hard` **does not exist**, D-015) | 200 `IssueOut` (`trashed: true`) | 404, 409, 422 |
@@ -661,10 +675,16 @@ Columns: `Request` = schema/params; `Response` = schema; `Errors` = error status
 | GET | `/api/v1/issues/{ref}/relations` | — | `RelationList` | 404 |
 | POST | `/api/v1/issues/{ref}/relations` | `RelationCreate` | 201 `RelationOut` | 404, 409, 422 |
 | DELETE | `/api/v1/issues/{ref}/relations/{relation_id}` | — | 204 | 404 |
-| GET | `/api/v1/issues/{ref}/attachments` | — | `AttachmentList` | 404 |
-| POST | `/api/v1/issues/{ref}/attachments` | `AttachmentCreate` | 201 `AttachmentOut` | 404, 422 |
 
 \* repeatable parameter (`?priority=1&priority=2`).
+
+**Two routes of this resource are not published, and this table does not declare them.** `GET` and `POST
+/issues/{ref}/attachments` are GAP-07: `add_attachment` is declared in SPEC-040 §2.2 and implemented
+nowhere, it is the only writer of `attachment`, so a `POST` would have no use case to call and a `GET`
+would answer `[]` on every issue — a payload whose only possible value is the empty one, which is what
+D-071 §2 refuses. They return with `AddAttachment`, beside the `attachments` key of `IssueDetail` and the
+`include` name that gates SQL-7 row 12; SPEC-050 §2.3.1's GAP-07 row lists that set in one place, and
+`AttachmentOut` is declared in §2.4.4 with no producer until then.
 
 **Labels subresource: one label per call.** `POST` and `DELETE` map 1:1 to the use cases
 `add_label` / `remove_label` of SPEC-040 §2 (D-012), which operate on **one** label. There is no
@@ -701,6 +721,35 @@ Filter semantics (identical to SPEC-050 §2.5.3, translated to HTTP):
 
 `assignee=none` and `unassigned=true` at the same time: not an error, it is applied once.
 `project` with a simultaneous `no_cycle=true`: 422 `validation_error`, `field: "no_cycle"`.
+
+**`GET /issues/{ref}`: one read, and the `include` set that reaches its keys.** Without `include` the route
+answers the `IssueOut` of §2.4.2 (33 keys); with one or more names it answers `IssueDetail`, the same 33
+with the four collections of §2.4.2 appended and never reordered (37 keys). The names it accepts are **the
+names of `DETAIL_INCLUDE` (SPEC-040 §2.2) whose collection the v1 envelope carries**: the read accepts
+three, the envelope carries two, and the third is refused because the key does not exist yet, not because
+the read would reject the name. A name the read never gated — `relations`, `children` — is no one's
+`include` name at all and is refused for that reason, not for this one:
+
+| `include` name | Accepted here | Why |
+|---|---|---|
+| `comments` | yes | a name of `DETAIL_INCLUDE` and a key of `IssueDetail`: gates SQL-7 row 10 |
+| `history` | yes | a name of `DETAIL_INCLUDE` and a key of `IssueDetail`: gates SQL-7 row 11 (`LIMIT 100`) |
+| `attachments` | no — 422 | a name of `DETAIL_INCLUDE` (SQL-7 row 12) with **no key** in v1's envelope: `add_attachment` is implemented nowhere and nothing can write an `attachment` row (GAP-07). The name is not refused by the read — the read accepts it — it is refused because the collection it gates has nowhere to go |
+| `relations` | no — 422 | not a name of `DETAIL_INCLUDE` at all: SQL-7 row 9 runs on every call, so the read would answer `INCLUDE_INVALID` (SPEC-030 §2.6, SPEC-040 §2.2). This edge does not accept it |
+| `children` | no — 422 | the same, one row up: SQL-7 row 8 runs on every call and the name is outside the constant |
+
+An unknown name — the three refused above and any other — is **422** `validation_error` with
+`field: "include"`, from the query model's own vocabulary, before `issue_detail` is called. Nothing is
+silently dropped and no name is accepted to be ignored: the same refusal `--with attachments` gets on the
+CLI, in this edge's envelope. `attachments` comes back with the key in the revision that lands
+`AddAttachment`; `relations` and `children` do not come back at all, because they were never names.
+
+**Which layer owns which set, stated once.** SPEC-040 §2.2's constant is the **read's** vocabulary — the
+three collections SQL-7 gates (rows 10–12) — and `relations`/`children` are that read's unconditional rows
+rather than names of anyone. `IssueDetail` is the **envelope**, and the two names it carries are the set
+every edge passes: this route, `hifa issue show` (SPEC-050 §2.5.3.2) and the dashboard's detail page
+(SPEC-070 §2.1.4). The refusal is the third layer's decision, and it is not the read's: the read accepts
+`attachments` and this edge does not pass it.
 
 #### 2.5.2 Teams and workflow states
 
@@ -812,7 +861,9 @@ class TeamList(BaseModel):
 
 
 # Idem: LabelList, ProjectList, CycleList, MemberList, StateList,
-#       CommentList, RelationList, AttachmentList
+#       CommentList, RelationList
+# No AttachmentList in v1: the subresource it would envelope is GAP-07 and no route declares it
+# (§2.5.1), so there is no envelope to declare for a list nothing can produce.
 
 
 # Search: envelope of SPEC-090 §2 (D-016), NOT the list envelope of R3.
@@ -936,11 +987,18 @@ $ curl -s 'localhost:7777/api/v1/issues?team=ENG&cursor=eyJ2IjoxLCJvIjoicHJpb3Jp
 ```
 
 ```console
-$ curl -s localhost:7777/api/v1/issues/ENG-13?include=comments\&include=children
-{"id":"01JCV3X9...","identifier":"ENG-13",…,"comments":[],"relations":[],"attachments":[],
+$ curl -s localhost:7777/api/v1/issues/ENG-13?include=comments
+{"id":"01JCV3X9...","identifier":"ENG-13",…,"comments":[],"relations":[],
  "history":[{"id":1,"issue_id":"01JCV3X9...","actor_id":null,"field":"state_id",
              "old_value":null,"new_value":"01JCV3...","created_at":"2026-11-08T14:03:11Z"}],
  "children":[]}
+```
+
+```console
+$ curl -si 'localhost:7777/api/v1/issues/ENG-13?include=attachments'
+HTTP/1.1 422 Unprocessable Entity
+{"error":{"code":"validation_error",
+          "message":"include must be one of: comments, history","field":"include","details":null}}
 ```
 
 ```console
@@ -1038,7 +1096,6 @@ declares the observable effect per endpoint; the invariants are those of the SPE
 | `/issues` | `issue`, `issue_label`, `issue_history` | SELECT / INSERT / UPDATE | `UNIQUE(team_id, number)`, `UNIQUE(identifier)`, composite FK `(team_id, state_id)` |
 | `/issues/{ref}/comments` | `comment` | SELECT / INSERT | `CHECK(length(trim(body)) > 0)` |
 | `/issues/{ref}/relations` | `issue_relation` | SELECT / INSERT / DELETE | `UNIQUE(issue_id, related_issue_id, type)`, `CHECK(issue_id <> related_issue_id)` |
-| `/issues/{ref}/attachments` | `attachment` | SELECT / INSERT | `url NOT NULL`; `metadata` TEXT with JSON |
 | `/teams`, `/teams/{ref}/states` | `team`, `workflow_state`, `team_membership` | SELECT / INSERT / UPDATE | `UNIQUE(workspace_id, key)`, `UNIQUE(team_id, name)` |
 | `/labels` | `label`, `issue_label` | SELECT / INSERT / UPDATE `retired_at` | `UNIQUE(workspace_id, team_id, name)`, `CHECK(is_group = 0 OR parent_id IS NULL)` |
 | `/projects` | `project`, `project_milestone` | SELECT / INSERT / UPDATE `archived_at` | `priority BETWEEN 0 AND 4` |
@@ -1297,6 +1354,21 @@ Feature: hifa REST API
     Then both statuses are 200
     And both bodies are identical
 
+  Scenario: the detail carries four collections and refuses a fifth name
+    Given an issue ENG-13 with one comment and no relation
+    When GET /api/v1/issues/ENG-13?include=comments is performed
+    Then the status is 200
+    And the body has 37 keys
+    And the last four keys are "comments", "relations", "history", "children" in that order
+    And the body has no key "attachments"
+    When GET /api/v1/issues/ENG-13?include=attachments is performed
+    Then the status is 422
+    And error.code is "validation_error"
+    And error.field is "include"
+    When GET /api/v1/issues/ENG-13?include=children is performed
+    Then the status is 422
+    And error.field is "include"
+
   Scenario: PATCH does not touch absent fields
     Given an issue ENG-13 with priority 2 and due_date "2026-11-20"
     When PATCH /api/v1/issues/ENG-13 is performed with body {"priority":1}
@@ -1413,7 +1485,7 @@ Feature: hifa REST API
    resource, `def` handlers, explicit `operation_id` `f"{resource}_{action}"`.
 7. Implement keyset in `api/pagination.py`: `encode_cursor`, `decode_cursor`, `apply_cursor`;
    property test with 1 000 rows and 4 `order` combinations.
-8. `pytest tests/e2e/api -q` green (the 24 scenarios of §7), then
+8. `pytest tests/e2e/api -q` green (the 27 scenarios of §7), then
    `python scripts/spec_contract_check.py --spec specs/060-api-rest.md` (compares routes and
    operationIds of `/openapi.json` against §2.5).
 9. `curl` of §2.7 against `hifa serve` on a database with 10 000 issues; verify REQ-N060-01.
@@ -1450,6 +1522,68 @@ Feature: hifa REST API
 - File upload: `attachments` are links (SPEC-000 §1).
 
 ## 11. Notes
+
+- spec_revision 17 (2026-11-20): **the third edge of one read publishes the set its payload carries, and
+  that payload has four collections (HIFA-49, D-071's second amendment, D-072).** `version` 8 → 9: §2.4.2
+  loses a field of a published schema and §2.5.1's route narrows its query vocabulary — a payload and an
+  input of this edge, which is the ground rev 16 declined to stand on ("no payload moved").
+  (1) **The `include` set was five names and the producer accepts three.** §2.5.1 said
+  `{comments,relations,attachments,history,children}` and the sample requested `include=comments` plus
+  `include=children` expecting a `200` with `"children":[]`, while SPEC-040 §2.2's `DETAIL_INCLUDE` and
+  SPEC-030 §2.6 accept **three** names and raise `INCLUDE_INVALID` for the other two. The route now
+  publishes `{comments, history}` — the names that reach a key of the v1 envelope — and the two that are
+  never gated (`relations`, `children`) and the one the envelope cannot carry (`attachments`, GAP-07) are
+  422 with `field: "include"`, from the query model's own vocabulary. §2.5.1 carries the value-by-value
+  table and the reason, and the sample requests only names the read accepts. *(Corrected at
+  `spec_revision` 18: "the names that reach a key" is not the rule and it would have accepted `children`,
+  a key of the envelope. The rule is **the names of `DETAIL_INCLUDE` whose collection the envelope
+  carries**, which is why `relations` and `children` are refused — they are nobody's `include` name — for
+  a reason different from the one `attachments` has.)*
+  (2) **`attachments` left `IssueDetail`.** The class declared
+  `attachments: list[AttachmentOut] = []` and nothing can write an `attachment` row: `add_attachment` is
+  declared in SPEC-040 §2.2, implemented nowhere, and is the only writer (§3.1). The field would have been
+  `[]` on every object this edge can produce, which cannot be told from "none" and is what D-071 §2
+  refuses a payload for. `IssueDetail` is **33 + 4 = 37 keys** now, all four collections always present
+  and defaulted. *(Corrected at `spec_revision` 18: "`AttachmentOut` stays where a row can exist (the
+  subresource and its `AttachmentList`)" was circular — no row can exist, and `AttachmentList` was never
+  declared as a schema. The class is one declaration in §2.4.4 with a docstring that says it has no
+  producer, the two subresource rows left §2.5.1, and `AttachmentOut`'s list envelope is not declared at
+  all.)*
+  (3) **The code this demands:** `src/hifa/api/schemas.py` (drop `attachments` from `IssueDetail`) and
+  `src/hifa/api/routers/issues.py` (the detail route's `include` query validated against
+  `{comments, history}`). *(Corrected at `spec_revision` 18: this note said
+  `src/hifa/api/routes/issues.py`, one directory away from §8's `api/routers/`; there is one path —
+  `routers`. And neither file exists to edit: `src/hifa/api/` holds only `__init__.py`, so this is the
+  **contract** of the edge, and it lands when the API edge exists — it is not an edit list.)*
+  (4) **§7 goes 26 → 27** — one scenario for the 37 keys, the four trailing keys and the two 422s — and
+  §8's count is corrected: it said **24** while §7 carried 26, a drift this revision had to touch because
+  it moves the number anyway.
+
+- spec_revision 18 (2026-11-20): **round three: the rule that selects `include` names, the one home of a
+  shape with no producer, and one API path (HIFA-49).** `version` 9 → 10: §2.5.1's route table loses two
+  rows and §2.4.4 loses an input schema — the route set a client discovers in `/openapi.json`, which is
+  this edge's payload in the strict sense.
+  (1) **The include rule is the constant's, not the envelope's keys.** "The names that reach a key of
+  that object" is false in the table's own terms: `relations` and `children` **are** keys of
+  `IssueDetail`, and an implementer following the sentence would accept both and fail §7's scenario. The
+  rule now reads as three sets and their owners — `DETAIL_INCLUDE` (the read's, three names), the envelope
+  (two keys), the refused value (one name whose key GAP-07 has not landed) — and §2.5.1 says which layer
+  owns which. SPEC-050 §2.5.3.2 states the same rule for the CLI and SPEC-070 §2.1.4 passes the same two
+  names; no edge invents a fourth formulation.
+  (2) **`Attachment` has one home and no producer.** It had five (two §2.5.1 route rows, an
+  `AttachmentList` that §2.4.4 never declared, `IssueDetail.attachments`, `issue attach`'s table and its
+  `--list`) and the only producer any of them named was GAP-07. One declaration survives — `AttachmentOut`
+  in §2.4.4, with a docstring that says it is returned by nothing in v1 — and the delivered-surface claims
+  are gone: no route row, no list envelope, no input model (`AttachmentCreate` went with the `POST` it
+  would have parsed). SPEC-050 §2.3.1's GAP-07 row is the one place that enumerates what returns with
+  `AddAttachment`. Two counts followed: §3's table loses the `/issues/{ref}/attachments` row, and §2.4's
+  prose now says **seven** bounded lists, which is what the `# Idem:` line declares — it said eight while
+  naming `AttachmentList` among them.
+  (3) **One path for the API file.** §8's checklist says `api/routers/{…}.py` and this note said
+  `src/hifa/api/routes/issues.py`. It is `routers`, and the note says the sentence is a contract rather
+  than an edit list: `src/hifa/api/` holds only `__init__.py` today.
+  (4) **Counts.** §7 stays at **27** scenarios (§8's `pytest tests/e2e/api` line with it) and
+  `IssueDetail` stays at **37** keys; the route count of §2.5.1 goes 16 → 14 for this resource.
 
 - spec_revision 16 (2026-11-20): **the state half of C4 carried the same false premise as the label
   half, and it is corrected the same way (HIFA-14, round three, D-070's third amendment).** `version`

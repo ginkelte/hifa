@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 8
-spec_revision: 35
+version: 10
+spec_revision: 38
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -863,7 +863,29 @@ def issue_detail(
 ) -> IssueDetail: ...
 
 
-# raises: NotFound(issue); include ⊆ {comments, relations, attachments, history, children} -> Validation(INCLUDE_INVALID)
+# raises: NotFound(issue); include ⊆ DETAIL_INCLUDE (frozenset({"comments","attachments","history"})) -> Validation(INCLUDE_INVALID)
+# `relations` and `children` are NOT include names: SQL-7 rows 8 and 9 run on every read, so they are
+# never gated and asking for them is INCLUDE_INVALID like any other name outside the constant (SPEC-030
+# §2.6, corrected at spec_revision 36: this line listed all five and the constant never did).
+#
+# The order of the answer is part of the contract, and one of the four collections gets it here rather
+# than from SQL: `children` arrives ordered by SQL-7 row 8 (`sub_issue_sort_order, number`), `comments`
+# by row 10 and `history` by row 11, while `relations` arrives from SQL-7 row 9 as an **unordered set**
+# -- that statement selects from `issue_relation` on both ends and carries no `ORDER BY` -- and is
+# sorted by this function, in Python, on `(rank(name_as_seen(direction)), far_end.identifier)`: the
+# vocabulary order of SPEC-020 §2.1 first (`blocks`, `blocked_by`, `duplicate`, `related`, `similar`),
+# then the far end's `identifier` ASC as text. Every caller inherits the order because this is the one
+# read (SPEC-050 §2.4.2, §2.5.3, D-072 §1), and no statement of SPEC-030 grows an `ORDER BY` for it.
+#
+# Visibility is SPEC-030 §2.6's one sentence, applied to the three pointers this object carries: a child
+# the trash layer holds is absent from `children`, a far end from `relations`, and a parent from `parent`
+# (SQL-7 rows 7-9) -- the predicate `issue list --parent` applies to the same children (SQL-4's
+# `i.trashed = 0`). That predicate is **all** the two readers share: `issue list --parent` also binds
+# `is_open = 1` in its default view and this read has no open axis, so a closed child is listed by one and
+# not the other, and no sentence here claims the two list the same set. The filter is unconditional: a
+# neighbour the trash layer holds is absent even on the one read that may see a trashed `ref`
+# (`include_trashed=True`, below). `comments` and `history` carry no such rule and need none: neither
+# table has a `trashed` column (SPEC-030 §2.6, D-072 §2 as amended).
 #
 # `include_trashed=False` is the read every caller gets: statement 1 filters `i.trashed = 0`, so a
 # trashed reference -- an identifier or a ULID -- answers `NotFound` and no detail exists to carry the
@@ -2190,7 +2212,7 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `INVALID_CURSOR` | `Validation` | unreadable or truncated cursor, one from another `order` or the other direction, or one whose anchor does not exist in the team | `list_issues`, `list_board` | 2 | 422 |
 | `LIMIT_RANGE` | `Validation` | `limit` outside 1-200 | `list_issues`, `list_board` | 2 | 422 |
 | `ORDER_INVALID` | `Validation` | `order` outside the D-011 vocabulary | `list_issues`, `list_board` | 2 | 422 |
-| `INCLUDE_INVALID` | `Validation` | `include` with a key outside `{comments,relations,attachments,history,children}` | `issue_detail` | 2 | 422 |
+| `INCLUDE_INVALID` | `Validation` | `include` with a key outside `DETAIL_INCLUDE` — `{comments,attachments,history}`; `relations` and `children` are read on every call and are not `include` names | `issue_detail` | 2 | 422 |
 | `LABEL_NOT_FOUND` | `Validation` | a **name** that resolves at neither level with `create_if_missing=False`, on either producer (exit 2). `unlabel` — `remove_label` — answers the same input with `NotFound(resource='label')` (exit 3, §5.6) and is **not** a producer of this code | `add_label`, `create_issue` (its `-l` path) | 2 | 422 |
 | `LABEL_TEAM_MISMATCH` | `Validation` | label from another team | `add_label`, `create_issue` | 2 | 422 |
 | `LABEL_RETIRED` | `Conflict` | attaching a label with `retired_at` not null, or retiring one (a state conflict, not a bad input: SPEC-020 §2.5) | `add_label`, `create_issue`, `retire_label` | 4 | 409 |
@@ -2907,6 +2929,83 @@ contract it must meet.
 
 ## Notes
 
+- spec_revision 37 (2026-11-20): **round two of review: the order and the visibility of `issue_detail`'s
+  two unfetched collections are declared here, where they are produced (HIFA-49, D-072).** `version`
+  8 → 9: §2.2's `issue_detail` gains a guarantee a caller may rely on — the order of `relations` and the
+  rows `children` and `relations` may carry — which is part of the payload of the same return type; no
+  signature, command, flag, error code or key moves.
+  (1) **The order of `relations` had no producer and now has this layer as its producer.** SPEC-050
+  §2.4.2 and §2.5.3 declared `relations` in `READS AS` order and then the far end's `identifier`, and
+  cited SQL-7 row 9 — a statement that carries **no `ORDER BY`**, so the claim was unbacked and the two
+  verbs printed whatever the table handed over. The order cannot come from SQL-7 row 9 as it stands:
+  the statement returns rows from both ends (`issue_id = ? OR related_issue_id = ?`) and the reading —
+  `name_as_seen` — is a function of the asking issue, so the sort belongs where the pair `(row, far
+  end)` exists. §2.2 now says it: `issue_detail` sorts the tuple in Python on
+  `(rank(name_as_seen(direction)), far_end.identifier)`. `issue relations` inherits it because it reads
+  through this call, and SPEC-030's statements do not change (D-072 §1).
+  (2) **`children` and `relations` had no visibility rule.** SQL-7 rows 8 and 9 bound no `trashed`
+  predicate, so a trashed child was listed by `issue show --with children` and hidden by `issue list
+  --parent`, and a trashed far end appeared in `relations` while a trashed `ref` was `NotFound`. §2.2
+  now declares the rule: a row the trash layer holds is absent from `children`, from `relations` and
+  from `parent`, the visibility `issue list --parent` already applies through SQL-4 — one sentence,
+  stated in SPEC-030 §2.6 and pointed at here rather than restated. *(Corrected at `spec_revision` 38:
+  the predicate is the **whole** of what the two readers share. `issue list --parent` also binds
+  `is_open = 1` by default and this read has no open axis, so a **closed** child is listed by one and
+  not the other; the earlier "so one level of the hierarchy reads the same set through both verbs" was
+  false and is gone, and row 7 carries the same `AND i.trashed = 0` as rows 8 and 9.)* The filter is
+  unconditional — it does not follow `include_trashed`, which is about the `ref` and not about its
+  neighbours. `comments` and `history` need no rule: neither table has a `trashed` column (D-072 §2,
+  amended in this file's D-072 block).
+  (3) **The code this demands** is one rule in this layer and one in SPEC-030's adapter, and nothing is
+  written by this revision: `src/hifa/app/boards.py` sorts `relations` on the key above before it
+  returns, and `src/hifa/adapters/sqlite/reads.py` adds `AND i.trashed = 0` to the parent, the children
+  and the far-end `WHERE` — never to the header's, which keeps `include_trashed` working. The sort is
+  here because the pair `(row, far end)` is here; the predicate is there because the row is there.
+
+- spec_revision 38 (2026-11-20): **the visibility this function inherits is one predicate, not a set
+  equality (HIFA-49, round three).** `version` 9 → 10: §2.2's `issue_detail` guarantee changes for the
+  third pointer of the same object — `parent` is now absent when the trash layer holds it — and a
+  guarantee of a return payload is what this spec's `version` tracks (rev 37 went 8 → 9 for the first
+  two). No signature, command, flag, error code or key moves.
+  (1) **`parent` was the third pointer.** SQL-7 row 7 resolved `parent_id` with no predicate while rows
+  8 and 9 hid the same row as a child and as a far end, so one object showed a parent and hid the same
+  issue one key below. SPEC-030 §2.6's sentence now covers rows 7–9 and this comment points at it.
+  (2) **The claim of set equality is withdrawn.** It read "one level of the hierarchy reads the same set
+  through both verbs", and the two verbs differ by an axis this read does not have: `issue list --parent`
+  binds `is_open = 1` in its default view (SPEC-050 §2.5.3), so a closed child is listed there and absent
+  here. What is shared is the trash predicate alone.
+  (3) **What this demands of the code:** the `AND i.trashed = 0` of row 7 in
+  `src/hifa/adapters/sqlite/reads.py` — the same edit as rows 8 and 9 of rev 37, one `WHERE` further up.
+  Nothing of this layer's own code changes: the sort of `relations` is unchanged and no dataclass gains or
+  loses a field.
+
+- spec_revision 36 (2026-11-20): **`include` is the constant this spec declared, and the gap this spec
+  claimed to have closed had not (HIFA-49, D-071).** `version` stays 8: no signature, command, flag,
+  payload, return type or exit code moves, and no refusal gains a producer — the two declarations below
+  are corrected to the set `DETAIL_INCLUDE` has carried since §2.2 was written, which is also the set
+  SPEC-030 §2.6 and the adapter enforce, so no caller that worked can break.
+  (1) **`issue_detail`'s `raises:` line published five `include` names and the constant in the same §2.2
+  block published three.** `relations` and `children` are not gated by `include` at all: SQL-7 rows 8 and 9
+  run on **every** call, which is why the constant is `{comments, attachments, history}` and why the
+  adapter answers any other name with `Validation(field="include", rule="INCLUDE_INVALID")`. The line and
+  §6's `INCLUDE_INVALID` row now say the constant's three names and why the other two are not names. This
+  mattered outside the two sentences: SPEC-050 §2.5.3.2 maps `issue show --with` onto that argument, and a
+  mapping written against the inflated set would pass `relations` and raise on a read the CLI must support
+  (rev 6's own note already said "`issue_detail` rejects any other `include` name").
+  (2) **The `spec_revision` 2 block claimed GAP-01…GAP-06 were closed and GAP-06 was still open.** It
+  asserted that all six gaps of 050 §2.3.1 were closed while that table still carried the GAP-06 row for
+  `issue show --with`. Corrected in place with a pointer, not deleted: GAP-06 was the detail read
+  (closed by the payloads 050 §2.5.3.2 declares), and the attachments half never was
+  a read — `add_attachment` is declared here, implemented nowhere, and is the only writer of `attachment`
+  (§3.1) — so 050 re-gaps it as GAP-07. Nothing of this spec's contract for `add_attachment` changes: it
+  keeps its signature, its `# raises:` line, its §3.1 row and its §6 cells for the revision that
+  implements it (the same ground rev 7 stood on for `archive_team`).
+  §7 does not move, and the `.feature` corpus moves by **one prose comment** and nothing else:
+  `specs/acceptance/001-mvp-v1/07-hierarchy-relations.feature` said `issue show --with children` was
+  "staying GAP-06" and now points at SPEC-050 §2.5.3.2 (admitted in SPEC-050's note for this same
+  revision). No scenario, step or expected value of this layer changes — the sentence here used to claim
+  the corpus did not move at all, which was false the moment that comment was edited.
+
 - spec_revision 35 (2026-11-20): **round three: the `replaced` rule covers a trailing no-op, the
   `LABEL_NOT_FOUND` row names its two producers, the edge conversion is stated, and the bump the
   refusals earned is taken (HIFA-14, D-070's third amendment).** `version` 7 → 8: §2.2's `restore_label`
@@ -3388,8 +3487,14 @@ contract it must meet.
     REQ-F040-25…30.
 - **Edge gaps that remain recorded (not touched here):**
   - 050/060/070 must rename `get_issue`/`get_board`/`get_agenda` to `issue_detail`/`list_board`/
-    `agenda`, and `assign_issue`/`add_attachment`/`search_issues`/`rebalance` already have a use case
-    (GAP-01…GAP-06 of 050 §2.3.1 are closed by this review).
+    `agenda`, and `assign_issue`/`add_attachment`/`search_issues`/`rebalance` already have a use case.
+    **Corrected at spec_revision 36 (HIFA-49, D-071):** this sentence said "GAP-01…GAP-06 of 050 §2.3.1
+    are closed by this review", and GAP-06 was not — its row in 050 §2.3.1 still stood. What is true is
+    narrower and it is now what the row says: GAP-06 was a **detail read** this spec had already
+    declared (`issue_detail`'s `include`), so 050 §2.5.3.2 contracts the four `--with` payloads it answers
+    (`comments`, `relations`, `history`, `children`); the attachment half is not a read at all —
+    `AddAttachment` is declared here and implemented nowhere, and it is the only writer of `attachment`
+    (§3.1) — so it is re-gapped in 050 as **GAP-07** and no payload is declared for it.
   - **060 R8 still offers `DELETE ?hard=true` ⇒ 204**, contradicting D-015; it is fixed in
     SPEC-060 (here there is no `delete_issue` nor physical deletion).
   - **060 `IssueMove.sort_order`** is kept as a shortcut, but the command validates it against the
