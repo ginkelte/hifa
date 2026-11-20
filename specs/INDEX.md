@@ -34,7 +34,9 @@ over the label use cases of SPEC-040 §2 (`create_label`, `update_label`, `retir
 `singleSelect` replacement REQ-F024 has required since its first revision and the `{issue, replaced}`
 envelope it asks for. The dashboard half — `POST`/`DELETE /_/issues/{identifier}/labels` — is
 **HIFA-61**, and the seven capability rows of `scripts/check_edge_parity.py` land with the code, in the
-same PR (SPEC-050 §11).
+same PR (SPEC-050 §11) — three as `debt="HIFA-61"` (`issue.label`, `issue.unlabel`, `label.list`) and
+four as `debt="HIFA-62"` (`label.create`, `label.show`, `label.update`, `label.archive`, the dashboard's
+label administration page; D-061(g)).
 
 **Design principles P1-P9 (AGENTS.md §5) are normative since D-032; the web edge contract
 joined `.importlinter` in the same change.**
@@ -93,8 +95,8 @@ enforced for every other actor (D-036).
 
 ## Acceptance criteria
 
-`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 236 scenarios**
-(224 `Scenario` + 12 `Scenario Outline`, each outline counted once),
+`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 238 scenarios**
+(226 `Scenario` + 12 `Scenario Outline`, each outline counted once),
 all with exactly one `When` (verified by parsing every file with `gherkin-official`).
 The per-component Gherkin lives **inline** in each spec (§7); the individual `.feature` files are
 debt P-01 in `DECISIONS.md`.

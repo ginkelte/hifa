@@ -3,8 +3,8 @@ id: SPEC-020
 title: Domain core
 component: domain
 status: review
-version: 3
-spec_revision: 9
+version: 4
+spec_revision: 10
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/020-domain-core.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-17
+updated: 2026-11-20
 ---
 
 # SPEC-020 — Domain core
@@ -688,8 +688,12 @@ def validate_relation_scope(source: Issue, target: Issue) -> None:
 
 
 def validate_label_scope(issue_team_id: str, label: Label) -> None:
-    """label.retired_at not None -> Validation(rule='LABEL_RETIRED').
-    label.team_id not in (None, issue_team_id) -> Validation(rule='LABEL_TEAM_MISMATCH')."""
+    """label.retired_at not None -> Conflict(rule='LABEL_RETIRED').
+    label.team_id not in (None, issue_team_id) -> Validation(rule='LABEL_TEAM_MISMATCH').
+
+    The two refusals are different kinds, and the class is what tells them apart: a cross-team
+    label is a bad argument (exit 2 / 422), while a retired one exists and is well referenced —
+    the state of the row contradicts the write (exit 4 / 409, D-061)."""
 
 
 def validate_archive_team(team: Team, open_issues: int) -> None:
@@ -924,7 +928,7 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-09** | `validate_close`/`validate_transition` reject closing with `open_children > 0` with `rule='CLOSE_WITH_OPEN_CHILDREN'`; they allow closing with `open_children == 0` | 2 tests |
 | **REQ-F020-10** | `validate_parent` rejects self-parent, parent from another team, a cycle in the ancestor chain (including a 3+ level cycle) and a tree deeper than `MAX_SUBISSUE_DEPTH` — counted with the height of the moved subtree, so reparenting a chain is bounded like creating one | 5 tests |
 | **REQ-F020-11** | `validate_relation` rejects self-relation (`Validation`), exact duplicate and symmetric duplicate (`Conflict`); `validate_relation_scope` rejects an edge between two workspaces (`RELATION_WORKSPACE_MISMATCH`) and accepts two teams of one workspace | 5 tests |
-| **REQ-F020-12** | `validate_label_scope` accepts workspace labels and own-team labels; rejects a label from another team and a retired label | 4 tests |
+| **REQ-F020-12** | `validate_label_scope` accepts workspace labels and own-team labels; rejects a label from another team with `Validation(rule='LABEL_TEAM_MISMATCH')` (exit 2) and a retired label with `Conflict(rule='LABEL_RETIRED')` (exit 4) | 4 tests |
 | **REQ-F020-13** | `validate_archive_team` rejects archiving a team with `open_issues > 0` and one already archived | 2 tests |
 | **REQ-F020-14** | The 5 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}` | structure test + `isinstance` test |
 | **REQ-F020-15** | No `domain/` module imports what R11 forbids nor calls `now`, `today`, `time`, `uuid4`, `random` | AST test that walks the 6 files |
@@ -1004,7 +1008,7 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `Validation` | `STATE_ARCHIVED` | move/create against a `workflow_state` with `archived_at` | exit 2 | 422 |
 | `NotFound` | `NOT_FOUND` | nonexistent id/identifier | exit 3 | 404 |
 | `Conflict` | `CONFLICT` | uniqueness (`identifier`, `(team_id, number)`, duplicate label) | exit 4 | 409 |
-| `Conflict` | `RELATION_DUPLICATE` / `TEAM_ALREADY_ARCHIVED` | logical duplicate | exit 4 | 409 |
+| `Conflict` | `RELATION_DUPLICATE` / `TEAM_ALREADY_ARCHIVED` / `LABEL_RETIRED` | logical duplicate, or the same change asked twice: a repeated relation, an archived team archived again, a retired label attached or retired again | exit 4 | 409 |
 | `InvalidTransition` | `INVALID_TRANSITION` | not raised by any function of this layer: the single producer is the use-case layer, which raises it for a write on an issue with `archived_at` not null (SPEC-040 §6, R20; D-042); the class exists so that condition maps to exit 5 of D-014 | exit 5 | 409 |
 | `HifaError` (base) | `HIFA_ERROR` | bug: it should never escape; the edge treats it as 500 | exit 6 | 500 |
 
@@ -1363,6 +1367,16 @@ Executable from top to bottom; every step has a verification command.
   `checksum`), infrastructure and not domain. It has no entity, repo or use case, by design.
 
 ## Notes
+
+- spec_revision 10 (2026-11-20): **a retired label is a state conflict, not a bad argument (HIFA-14,
+  D-061).** `validate_label_scope` refuses `label.retired_at not None` with `Conflict(rule=
+  'LABEL_RETIRED')` instead of `Validation`: the reference is well formed and the row exists, and what
+  contradicts the write is the state of that row — the same shape `TEAM_ALREADY_ARCHIVED` already has in
+  this layer. SPEC-040 §2.2, §6 and SPEC-050 §2.5.3 published exit 4 / 409 for that case and this spec
+  published exit 2, so one of the two had to move; D-012 makes this the loser, and §6 gains the rule in
+  its `Conflict` row. The cross-team refusal stays a `Validation` (exit 2), and `create_issue`'s
+  `# raises:` line and its matrix row in SPEC-040 §6 now carry the conflict. `version` 4: §2.5 declares
+  an exception class, which is public contract. Nothing else of §2 moves.
 
 - spec_revision 8 (2026-11-13): **the column has one order, and the threshold is this spec's
   (D-052).** §4.1 gains R15: a column is read by `board_order` and then by `id`, the order SPEC-030

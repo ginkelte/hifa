@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 2
-spec_revision: 8
+version: 3
+spec_revision: 9
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/060-api-rest.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-13
+updated: 2026-11-20
 ---
 
 # SPEC-060 — REST API
@@ -712,7 +712,10 @@ trashed = 0`) ⇒ 409 `conflict` (D7: no silent cascade).
 | PATCH | `/api/v1/members/{id}` | `MemberPatch` | 200 `MemberOut` | 404, 409, 422 |
 
 `DELETE /labels/{id}` retires the label (`retired_at`); it does not delete rows: `issue_label` would still
-point at it. If the label is in use (`issue_label` with ≥1 row and the issue not archived) ⇒ 409.
+point at it. If the label is in use ⇒ 409 `conflict` (`rule='LABEL_IN_USE'`), and in use means **any**
+`issue_label` row, whatever layer the issue is in — an archived or trashed issue counts, because a
+restored issue comes back wearing the chip and a retired label cannot be re-attached (SPEC-040 §4.1 R22,
+D-061). The `409` is the status it always was; what this revision settles is the set that triggers it.
 `DELETE /projects/{id}` archives (`archived_at`); it does not delete.
 
 #### 2.5.4 Search and meta
@@ -1360,6 +1363,14 @@ Feature: hifa REST API
 - File upload: `attachments` are links (SPEC-000 §1).
 
 ## 11. Notes
+
+- spec_revision 9 (2026-11-20): **"label in use" is the rule the use case applies, not a narrower one
+  (HIFA-14, D-061).** §2.5.3 said `issue_label` ≥ 1 row *and the issue not archived*, while
+  `retire_label` refuses when `LabelRepo.count_uses > 0` — every layer, archived and trashed issues
+  included (SPEC-040 R22). The parenthetical described a set the port cannot see and no use case
+  computes; it is gone, the `409` stays, and what the revision settles is the set that triggers it.
+  `version` 3: the condition of a published `409` is §2 contract, and a client that archived its issues
+  to free a label now learns it cannot.
 
 - spec_revision 8 (2026-11-13): **the cursor carries its direction, and the token is the one SPEC-030
   §2.6.2 defines.** §2.3 said the cursor "does not encode the direction" and that a `.asc`/`.desc` switch

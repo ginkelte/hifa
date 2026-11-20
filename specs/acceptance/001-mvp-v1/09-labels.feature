@@ -10,7 +10,7 @@ Feature: Workspace and team labels
     When I run "hifa label add --team ENG --name Bug --color '#EB5757'"
     Then the exit code is 0
     And there are 2 rows in "label" with name "Bug"
-    And one has a null team_id and the other has team_id "ENG"
+    And one has a null team_id and the other's team_id is the ULID of "ENG"
 
   @REQ-F024 @smoke
   Scenario: duplicating a label at the same level is rejected
@@ -115,14 +115,15 @@ Feature: Workspace and team labels
     When I run "hifa label list --team ENG --json"
     Then the exit code is 0
     And "items" has 2 elements
-    And one of them has a null team_id and the other has team_id "ENG"
+    And one of them has a null team_id and the other's team_id is the ULID of "ENG"
 
   @REQ-F024 @smoke
   Scenario: issue label --create creates the label in the issue's team
     Given the issue "ENG-40" and no label named "infra" anywhere
     When I run "hifa issue label ENG-40 infra --create --color '#5E6AD2'"
     Then the exit code is 0
-    And there is 1 row in "label" with name "infra", team_id "ENG" and color "#5E6AD2"
+    And there is 1 row in "label" with name "infra" and color "#5E6AD2"
+    And the label "infra" has team_id the ULID of "ENG"
     And "ENG-40" carries that label
 
   @REQ-F024 @smoke
@@ -134,11 +135,29 @@ Feature: Workspace and team labels
 
   @REQ-F024 @smoke
   Scenario: detaching a label the issue does not wear is a missing link
-    Given the issue "ENG-40" and the workspace labels "Bug" and "infra"
+    Given the issue "ENG-40" with the label "Bug" and the workspace label "infra"
     When I run "hifa issue unlabel ENG-40 infra"
     Then the exit code is 3
     And the error.code is "not_found"
-    And the error.resource is "label_link"
+    And the "error.field" field is "label"
+    And "ENG-40" still carries only "Bug"
+
+  @REQ-F024 @smoke
+  Scenario: unlinking a label name that exists nowhere is also exit 3, not exit 2
+    Given the issue "ENG-40" with the label "Bug" and no label named "infra" anywhere
+    When I run "hifa issue unlabel ENG-40 infra"
+    Then the exit code is 3
+    And the error.code is "not_found"
+    And the "error.field" field is "label"
+    And "ENG-40" still carries "Bug"
+
+  @REQ-F024 @smoke
+  Scenario: retiring a label that is already retired is a conflict
+    Given the retired workspace label "infra"
+    When I run "hifa label archive infra"
+    Then the exit code is 4
+    And the error.code is "conflict"
+    And the label "infra" has a non-null retired_at
 
   @REQ-F024 @smoke
   Scenario: N labels are N transactions and the first failure decides the exit code
