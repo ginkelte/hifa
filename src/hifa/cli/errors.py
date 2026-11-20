@@ -153,10 +153,10 @@ def error_field_for(exc: BaseException) -> str | None:
 def error_details_for(exc: BaseException) -> list[dict[str, object]] | None:
     """`details` of the envelope: the multi-error list, or `null`.
 
-    SPEC-060 §6.3 gives `details` exactly two shapes and no third — `null`, or the list
+    The envelope gives `details` exactly two shapes and no third — `null`, or the list
     `[{"field": ..., "message": ...}]` that a refusal publishes when it reports **several**
     validation errors, with `field` repeating the first one. The mapping an exception *carries*
-    is its accessor (`exc.details`, SPEC-020 §6): `rule`/`field`/`value` for a `Validation` or a
+    is its accessor (`exc.details`): `rule`/`field`/`value` for a `Validation` or a
     `Conflict`, `resource`/`key` for a `NotFound`, `labels`/`teams` for an ambiguous name. No
     edge publishes that mapping — the rule travels in `message`, the 404's noun in `field`, the
     ambiguous spellings in `message` — so this renderer forwards a list and answers `null` for

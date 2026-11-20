@@ -473,11 +473,10 @@ def _resolve_parent(
     verdicts that stay apart. A **ULID** resolves directly; a **name** is matched
     case-insensitively against the rows of that level, and a name the level spells twice
     (`Severity` and `severity`) is `LABEL_AMBIGUOUS` with `field='ref'` — the rule every
-    resolution of a label name shares, and never a silent pick of one of the two rows (SPEC-040
-    R22, D-070). A parent that is absent at that level, or that is not a group, is
-    `LABEL_GROUP_INVALID` with `field='parent'`: the two refusals are different questions, one
-    about which row the name fits and one about the row being at the wrong level or the wrong
-    kind.
+    resolution of a label name shares, and never a silent pick of one of the two rows. A parent
+    that is absent at that level, or that is not a group, is `LABEL_GROUP_INVALID` with
+    `field='parent'`: the two refusals are different questions, one about which row the name
+    fits and one about the row being at the wrong level or the wrong kind.
     """
     if ref is None:
         return None
@@ -651,7 +650,7 @@ def case_variant_at_level(
     predicate instead of restating it. Retired rows count by default, exactly as the partial
     unique indexes count them, because a spelling freed by a retire is not free; `restore_label`
     passes `include_retired=False`, because the pair it must not create is the one a name is
-    resolved against and that set is the **live** rows (SPEC-040 R22).
+    resolved against and that set is the **live** rows.
     """
     wanted = name.casefold()
     for row in labels.list(workspace_id, team_id=team_id, include_retired=include_retired):
@@ -679,7 +678,7 @@ def _refuse_live_case_variant(labels: LabelRepo, workspace_id: str, label: Label
 
     The restored row does not collide with itself (`exclude_id`), and a retired sibling does not
     count: clearing `retired_at` recreates the pair only when the level's other spelling is live,
-    because the live rows are the ones a name resolves against (SPEC-040 R22).
+    because the live rows are the ones a name resolves against.
     """
     existing = case_variant_at_level(
         labels,
