@@ -148,6 +148,25 @@ def seed(db_path: Path) -> Seed:
     return Seed(db_path)
 
 
+@pytest.fixture
+def label_updates(monkeypatch: pytest.MonkeyPatch) -> list[Label]:
+    """Every `LabelRepo.update` a test makes, which is the only evidence a no-op left none.
+
+    `label` carries no `updated_at` and a no-op hands the repository the values the row already
+    holds, so reading the row back cannot tell a write from its absence. Counting the repository
+    call can: an empty list is the record that the write path was never reached.
+    """
+    calls: list[Label] = []
+
+    def _record(self: LabelRepo, label: Label) -> Label:
+        """Stand in for the write: it records the call and writes no row."""
+        calls.append(label)
+        return label
+
+    monkeypatch.setattr(LabelRepo, "update", _record)
+    return calls
+
+
 def _uow(seed: Seed) -> UnitOfWork:
     """A fresh connection on the same file, sharing the seed's clock and id generator.
 
@@ -489,7 +508,7 @@ def test_a_parent_name_the_level_spells_twice_is_ambiguous(seed: Seed) -> None:
 
 
 def test_a_parent_ulid_resolves_one_row_of_a_level_that_spells_it_twice(seed: Seed) -> None:
-    """A ULID names exactly one row, so it never meets the ambiguity rule (SPEC-040 R22)."""
+    """A ULID names exactly one row, so it never meets the ambiguity rule."""
     chosen = _make(seed, "Severity", is_group=True, group_type="multiSelect")
     _insert_second_spelling(seed, "severity", is_group=True, group_type="multiSelect")
 
@@ -548,14 +567,46 @@ def test_a_clear_description_writes_null(seed: Seed) -> None:
     assert _label_named(seed, "Bug")["description"] is None
 
 
-def test_an_update_whose_values_already_match_writes_nothing(seed: Seed) -> None:
+def test_clearing_a_description_already_absent_is_a_success_that_writes_nothing(
+    seed: Seed, label_updates: list[Label]
+) -> None:
+    """Clearing a column that already holds NULL asks for the state the row is in: no write.
+
+    The success is the absence of an exception and of a history row; the no-write is the counted
+    repository call, because the row it would have written is the row it already is.
+    """
+    _make(seed, "Bug")
+    history = _count(seed, "issue_history")
+
+    uow = _uow(seed)
+    try:
+        unchanged = update_label(uow, UpdateLabel(label="Bug", description=None), seed.actor)
+    finally:
+        uow.close()
+
+    assert label_updates == [], f"the empty clear wrote {label_updates}"
+    assert unchanged.description is None
+    assert _label_named(seed, "Bug")["description"] is None
+    assert _count(seed, "issue_history") == history
+
+
+def test_an_update_whose_values_already_match_writes_nothing(
+    seed: Seed, label_updates: list[Label]
+) -> None:
+    """Every column already holds the submitted value, so the repository is never asked to write.
+
+    The row alone cannot show this: `label` has no `updated_at` and the values written would be
+    the ones already there. The repository call is the observation, so the update is counted.
+    """
     _make(seed, "Bug", color="#EB5757")
+
     uow = _uow(seed)
     try:
         unchanged = update_label(uow, UpdateLabel(label="Bug", color="#EB5757"), seed.actor)
     finally:
         uow.close()
 
+    assert label_updates == [], f"the no-op update wrote {label_updates}"
     assert (unchanged.name, unchanged.color) == ("Bug", "#EB5757")
     assert _label_named(seed, "Bug")["color"] == "#EB5757"
 
@@ -757,7 +808,7 @@ def test_the_undo_of_a_retire_that_never_happened_is_a_conflict(seed: Seed) -> N
 
 
 def test_the_undo_beside_a_live_spelling_is_a_conflict(seed: Seed) -> None:
-    """R22 from the other side: clearing `retired_at` must not create the pair creation refuses."""
+    """The other side of the pairing rule: clearing `retired_at` creates no refused pair."""
     bug_id = _make(seed, "Bug")
     _retire(seed, bug_id)
     live_id = _insert_second_spelling(seed, "bug")
