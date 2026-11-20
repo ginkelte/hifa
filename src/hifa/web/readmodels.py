@@ -535,7 +535,9 @@ def build_issue_vm(
             "history_panel": history[:PANEL_HISTORY_ROWS],
             "history_window": page.window_size,
             "history_hidden": max(0, page.window_size - PANEL_HISTORY_ROWS),
-            "history_truncated": page.truncated,
+            # One key, one fact: the sentence the dim line prints when the window came back full.
+            # `page.truncated` is a floor and never a total, so the string says "the last N events"
+            # and no second boolean publishes the same thing for nobody to read.
             "history_floor": f"the last {WINDOW_SIZE} events" if page.truncated else None,
             "last_activity": (
                 None
