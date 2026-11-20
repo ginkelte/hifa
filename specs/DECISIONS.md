@@ -4265,3 +4265,182 @@ the key becomes real the day the projects write path lands, and until then SPEC-
 in Python on `(rank(name_as_seen(direction)), far_end.identifier)`, every caller inherits it, and no
 statement of SPEC-030 grows an `ORDER BY`. Neither correction adds or removes a statement, so the 12/8
 totals, R5 and the §7 counts of SPEC-030 hold. Nothing else of D-072 moves.
+
+---
+
+## D-073 — A normative query's cost is measured, not asserted, and the plan it needs is part of the contract
+
+**Date:** 2026-11-20 · **Wins:** SPEC-090 §5.2 (the two `AS MATERIALIZED` keywords on the two CTE names,
+and the note that replaces the false cost claim), R17/REQ-N090-02 (the plan names the materialization, not
+only the absence of a scan), §7 (one scenario that pins both `MATERIALIZE` rows) · **Touches:** SPEC-090
+§4.1, §4.2, §5.2, §7, §8, §12; `specs/INDEX.md`; this file
+
+**The situation.** SPEC-090 §5.2 prints the **normative** reference query of the `fts` path, and implemented
+verbatim it misses R16's own budget by an order of magnitude: on the 10 000-issue fixture that R16 names,
+three terms, `limit=50`, `count=False`, the printed block measures **88.7 ms p50 / 94.5 ms p95** against a
+budget of **< 50 ms p50 / < 120 ms p95**. The same query with `AS MATERIALIZED` on both CTEs measures
+**8.8 / 9.1**, and the same form with a `team=ENG` filter added **9.5 / 10.0**. The materialized form is
+the one that was measured to fit, and the document was left untouched: what §5.2 published is a query
+nobody had run against the fixture it publishes next to. §5.2's second note made it worse rather than
+better: it said the `title_hit` CTE "doubles the cost of the `MATCH`" and that "the measured cost is ~1.6×
+that of a single `MATCH`, within the R16 budget" — a true statement about the materialized form and a false
+one about the query in the block above it.
+
+**The measurement, and what it eliminated.** Flat into the join, SQLite makes `issue_fts` the inner loop and
+probes the virtual table **once per row of `issue`**, 10 000 times, twice — once per CTE:
+
+```
+revision 9 (flat):  SCAN i
+                    SCAN issue_fts VIRTUAL TABLE INDEX 0:=M3 LEFT-JOIN   ← correlated
+                    SCAN issue_fts VIRTUAL TABLE INDEX 0:=M3 LEFT-JOIN   ← the second CTE
+materialized:       MATERIALIZE fts
+                    SCAN issue_fts VIRTUAL TABLE INDEX 0:M3               ← once, uncorrelated
+                    MATERIALIZE title_hit
+                    SCAN issue_fts VIRTUAL TABLE INDEX 0:M3
+```
+
+Measured by elimination on the same fixture: `MATCH` alone **0.03 ms**, `+ bm25` **0.06 ms**, `+ snippet`
+over the 25 matches **0.28 ms**, the matches joined to `issue` **0.35 ms**, the printed query **68-89 ms**
+across runs (88.7 ms p50 in the run above). So the cost is the **plan** — not the row count, not the
+snippet, not a second `MATCH` and not a second `count` query. A second `MATCH` run once over a
+materialized CTE costs 0.03-0.06 ms; repeating it once per row of `issue` costs the budget.
+
+**1. A normative query's cost is measured, not asserted, and the fixture that measures it is the one the
+budget names.** R16 publishes "10 000 issues … < 50 ms p50". A sentence that publishes a cost next to that
+budget is a claim about the output of running *that* query against *that* fixture, and the only way it is
+true is that somebody ran it. The defect §5.2 carried for three revisions was not "the query is slow" — a
+slow query that says it is slow is a budget problem, and R16 was there to catch it — it was that the
+document *asserted a number* derived from a different form of the query and published it as the cost of the
+one in the block. An implementer reading §5.2 has no way to tell which form the 1.6× belongs to, and the
+honest reading of "within the R16 budget" printed under a query that is 88.7 ms is that the budget is not
+real. The revision, therefore, prints both numbers, the fixture, the terms and the plan lines, and it
+states that the keywords are what separate the two rows.
+
+**2. The plan a normative query needs is part of its contract, and "no `SCAN issue`" is not a plan
+assertion.** R17 forbade `SCAN issue` and R17 was satisfied by a query that misses R16 by 10×: **with a
+team filter** the flat plan is `SEARCH i USING INDEX idx_issue_open` — `issue` resolved by an index, the
+`SCAN issue` half green — while the virtual table is still probed once per surviving row and the query
+still costs 68-89 ms. A plan check that only names the table it does not want the engine to scan cannot
+distinguish "the search is bounded by the `MATCH`" from "the search is bounded by `issue` and the `MATCH`
+is re-run for every row": the correlated half of the flat plan is the `=M3 LEFT-JOIN` probes, not the scan.
+R17 now requires **`MATERIALIZE fts` and `MATERIALIZE title_hit`** in the plan in addition to the absence of
+`SCAN issue` where the published query holds it — `team` and `team`+`state`, not `state` alone (round
+three; item 4 below, HIFA-82) — and §7's scenario asserts exactly those two strings, captured from a real
+plan on SQLite 3.53.1 over a 10 000-issue fixture. Neither string appears in the flat plan, so the scenario fails on the
+form revision 9 published.
+
+**3. The keyword is a contract, not an optimisation.** §5.2 is the query an implementation copies, so a
+keyword the block omits is a keyword the implementation does not write; that is exactly what happened for
+three revisions, and the note that was supposed to justify the second CTE's cost is what made the omission
+look safe. `AS MATERIALIZED` on both CTEs is normative text with a requirement (R17), a scenario (§7) and a
+checklist step (§8 step 10) behind it; an implementation that drops it ships a search an order of magnitude
+over R16 with every other scenario of §7 green. It adds **no new floor** either: `AS MATERIALIZED` is SQLite
+3.35.0, the same release as the `RETURNING` the adapter already refuses to run below (SPEC-030 §2.5's
+SQL-2 note, whose `sqlite3.sqlite_version_info >= (3, 35, 0)` check lives in `connect()`), so a build that
+can apply this schema can run this query.
+
+**What it supersedes in the record.** One sentence, and only in its narrow sense: D-067's "what it does not
+change" lists "the `fts` path's SQL (§5.2)" among the things its own delta left alone. D-067's decision —
+the text half crosses the port as one `TextPredicate` carrying both tuples — stands untouched, and so does
+the SQL's shape; what D-067 recorded as unchanged is now changed here, in the two CTE names only.
+D-063 (a page with no query is a state), D-064 (`search_issues` is the entry point, the hit is flat),
+D-065 (`fts5_unavailable` has one producer), D-066 (the `4` of the probe's exit set), D-068 (the probe is a
+symbol of the connection layer) and D-069 (one condition, one class, one code) are not in question and are
+not contradicted: none of them says anything about the plan of §5.2 or about its cost, and R16's budget,
+R17's `SCAN issue` half, the envelope, the flags and the four `like` forms are unchanged.
+
+**What this does not change.** §2 does not move — no signature, no dataclass, no field, no flag, no
+envelope — so `version` stays **4** and only `spec_revision` moves (9 → 10); §5.2's query is otherwise
+**byte for byte** what revision 9 published (no column, alias, predicate, binding or order). R16's numbers
+are not re-baselined: the budget was right and the query was wrong, which is why the fix is in the query and
+the budget keeps its 50/120 ms. §5.3, §6, §11 and the `.feature` corpus do not move: 17 files, **240**
+scenarios (228 `Scenario` + 12 `Scenario Outline`), and `10-search.feature` carries no plan and no
+performance scenario for this one to mirror. No code, no test and no task box is touched by this decision:
+§5.2 is the text an implementation copies, so correcting the text is the whole of the fix. **The tree this
+decision lands on already ships that form**: `src/hifa/adapters/sqlite/reads.py` builds §5.2 as `_FTS_CTE`
+with `WITH fts AS MATERIALIZED (…)` and `title_hit AS MATERIALIZED (…)` and the rest of the query byte for
+byte, and `src/hifa/app/search.py` is the service on top of it — so the correction makes the text say what
+the code already does, and §7's plan scenario names two strings the tree can be checked against. Remove
+either keyword and the plan loses `MATERIALIZE`, which is the failure the scenario exists to catch.
+
+**Verification.** The two plans quoted above were captured with `EXPLAIN QUERY PLAN` over the same scratch
+10 000-issue fixture on this host's SQLite (**3.53.1**), one run per form and once more with the team
+filter — the flat form answers
+`SCAN i` + `SCAN issue_fts VIRTUAL TABLE INDEX 0:=M3 LEFT-JOIN` ×2 without a team filter and
+`SEARCH i USING INDEX idx_issue_open` + the same two probes with one, and the materialized form answers
+`MATERIALIZE fts` / `SCAN issue_fts VIRTUAL TABLE INDEX 0:M3` / `MATERIALIZE title_hit` /
+`SCAN issue_fts VIRTUAL TABLE INDEX 0:M3` in both cases. §7's new scenario asserts
+`MATERIALIZE fts` and `MATERIALIZE title_hit`: absent from both flat plans, present in both materialized
+ones. The millisecond figures above are the ones the defect was reported with, measured on R16's own
+fixture; the plan text is what this host's run printed (the two agree on the shape, which is the claim
+R17 and §7 pin), and the scratch run reproduced the direction without reproducing the absolute
+milliseconds — its flat form ran 83-86× slower than its materialized one, on a fixture whose terms select
+more rows than R16's 25 matches.
+
+**What the review of this decision corrected.** Five sentences above do not survive this decision's own
+numbers, and this paragraph replaces them; where any of them conflicts with this one, this one is the
+record. (1) **"By an order of magnitude" overstated the miss by 5.6×.** The claim was ~10× against R16's
+p50 half and the ratio is **1.774** (88.7 / 50), so it multiplied the miss by **5.6** — **10 / 1.774 =
+5.6** — where the record has 1.77: **94.5 ms is inside the 120 ms p95 half** (0.79 of it), so that half
+was never missed at all, and the ~10× is real only as flat against materialized, 88.7 / 8.8 = 10.1. The
+consequence, stated exactly: **a query can miss R16's p50 half while passing its p95 half**, so the first
+half is the one that catches this defect — and R17 asserts the `SCAN issue` half only where the published
+query holds it, `team` and `team`+`state`, never for `state` alone (round three; item 4 below, HIFA-82).
+"Misses R16's own budget by an order of magnitude" (the situation, above), "misses R16 by
+10×" (point 2) and "ships a search an order of magnitude over R16" (point 3) are replaced by that
+sentence. (2) **The coverage "What this does not change" claimed does not exist.** "Remove either keyword
+and the plan loses `MATERIALIZE`, which is the failure the scenario exists to catch" is true of the plan
+and was false about the suite: `grep -rn MATERIALIZE tests/ scripts/` answers nothing, the only plan test
+(`tests/integration/db/test_search_reads.py::test_the_query_plan_of_the_ranked_query_does_not_scan_the_issue_table`)
+inlines a copy of revision 9's CTE text and asserts that `SCAN (i|issue)` is absent and `SEARCH i USING
+INDEX` present, nothing about `MATERIALIZE`, and it passes with the keywords in place — so **removing them
+turns nothing red**, and a sentence that implied it did
+turned debt into a false green. SPEC-090 §4.1, §8 step 10 and §12 now name the gap where they used to
+claim coverage, as debt under `AGENTS.md` P8, with **HIFA-81** (the only query-plan test inlines a copy of
+the CTE text instead of the adapter query) and **HIFA-80** (a test for §7's scenario) against it. (3)
+**The second `MATCH` does not cost 0.03-0.06 ms.** That step of the elimination series is `MATCH` →
+`MATCH + bm25`; the second `MATCH` over a materialized CTE was measured on its own — 6.70 vs 6.58 ms p50
+(1.02×) on a 10 000-issue fixture whose terms select 115 rows — so it costs a fraction of a millisecond,
+and the sentence above that annexed the `bm25` increment to it is withdrawn. A second pair that stood here,
+5.09 vs 4.90 ms (1.04×), is withdrawn in round three rather than completed: the record states neither its
+fixture, nor its term selectivity, nor its iteration count, and a ratio whose provenance is unstated is the
+defect this block exists to correct. (4) **R17's premise and its example named different filters.**
+`SCAN i` is the flat plan unfiltered or under a **state** filter; under a **team** filter the flat plan is
+`SEARCH i USING INDEX idx_issue_open`, which **passes** the first half — as point 2 above says correctly
+while the spec's R17 said both in one sentence. R17 now assigns each filter its own plan, and round three
+went one step further, because that was still a statement about the **flat** form: measured with §5.2's own
+text and both CTEs materialized, the normative query prints `SEARCH i USING INDEX idx_issue_open` under
+`team`, `SEARCH i USING INDEX idx_issue_team_state` under `team`+`state`, and **`SCAN i` under `state`
+alone** — so the requirement's first half was false for that filter, not merely unmet. R17 now prints the
+four-row table, asserts the half for `team` and `team`+`state` and for no other filter, and files the
+`state` case as **coverage**: no index on `issue` leads with `state_id` (SPEC-010 §3.2), so its remedy under
+SPEC-030 §10 is an index on `issue(state_id)` in a migration — **HIFA-82**, the other half of the rule this
+decision read from SPEC-030 — and not anything this delta adds. That `state` plan is also the statistics'
+to decide: with `ANALYZE` the review's fixture lost the `SCAN` (resolving `idx_issue_team_state`), with
+`ANALYZE` on a skewed 200-row fixture all four cases print `SCAN i`, and `grep -rn ANALYZE src/ scripts/
+tests/` answers nothing, so R17 is asserted on a database that has never run it and no `ANALYZE` is added.
+(5) **The provenance
+of the millisecond rows is now stated.** The flat row cannot be produced by any harness in the
+tree, because `_FTS_CTE` always materializes and re-typing revision 9's text is the only way to time it
+again; the committed harness (`tests/perf/test_search_speed.py`) calls `search_issues`, with two terms and
+always a `team=ENG` filter, so it can re-run the shape of the third row and nothing else. The three rows
+are the figures the defect was reported with, and SPEC-090 §5.2 says which is which instead of printing
+all three as "measured".
+
+**What this does not contradict in SPEC-030.** SPEC-030 §10 ("Out of scope") ends with: *"Query plan
+optimization beyond the indexes of SPEC-010: if `EXPLAIN QUERY PLAN` shows a `SCAN`, the solution is a new
+index in a migration, not a change in the adapter"* (`030-sqlite-adapter.md:2009-2010`). This decision
+**is** a change in the adapter's SQL, made for plan reasons — the unfiltered flat plan is `SCAN i` — and
+the rule's remedy set cannot reach the defect: no index on `issue` removes a correlated `issue_fts` probe,
+because the cost is the virtual table being the inner loop and not missing coverage; materializing a CTE is
+not an index, and no migration can express it. The rule is therefore read correctly **within its scope**,
+and its scope is the case it was written for: when the plan is bad **for a query that is the right query**,
+the remedy is an index in a migration, not an adapter that rewrites the query's shape. Here the query's own
+form was the defect, and the form is not the adapter's — four bullets above the rule, in the same
+list, says the adapter "only exposes the `issue_fts` table as existing, and the query, the ranking and the
+snippet are not its business" — so `_FTS_CTE` carries §5.2's normative text as SPEC-090 publishes it,
+rather than an optimisation the adapter invented. **Verdict: the rule does not forbid this fix**, and it
+does not need narrowing for this delta to stand; it does need to be read with its own neighbour bullet,
+and a future revision of SPEC-030 that said "a `SCAN` the query's own text caused is fixed in the spec that
+owns the text" would state it without leaving a reader to reconcile the two sentences. This decision
+amends nothing of SPEC-030.
