@@ -702,7 +702,8 @@ def test_move_rejects_an_unknown_target_state() -> None:
     uow, _ = world()
     with pytest.raises(NotFound) as caught:
         move_issue(uow, MoveIssue(issue="ENG-1", target_state="Nope"), Actor())
-    assert caught.value.resource == "workflow_state"
+    # The noun of what does not exist is the one both edges publish: never the table name.
+    assert caught.value.resource == "state"
 
 
 def test_move_toward_a_terminal_state_with_open_children_is_rejected() -> None:

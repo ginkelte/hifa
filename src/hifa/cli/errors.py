@@ -10,6 +10,7 @@ Map: `0` ok · `1` `doctor` only · `2` validation/config · `3` not found ·
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 import typer
 
@@ -149,15 +150,32 @@ def error_field_for(exc: BaseException) -> str | None:
     return getattr(exc, "field", None)
 
 
-def error_details_for(exc: BaseException) -> dict[str, object]:
+def error_details_for(exc: BaseException) -> list[dict[str, object]] | None:
+    """`details` of the envelope: the multi-error list, or `null`.
+
+    The envelope gives `details` exactly two shapes and no third — `null`, or the list
+    `[{"field": ..., "message": ...}]` that a refusal publishes when it reports **several**
+    validation errors, with `field` repeating the first one. The mapping an exception *carries*
+    is its accessor (`exc.details`): `rule`/`field`/`value` for a `Validation` or a
+    `Conflict`, `resource`/`key` for a `NotFound`, `labels`/`teams` for an ambiguous name. No
+    edge publishes that mapping — the rule travels in `message`, the 404's noun in `field`, the
+    ambiguous spellings in `message` — so this renderer forwards a list and answers `null` for
+    everything else. `LABEL_AMBIGUOUS` is one of those: its mapping is an accessor, and
+    `error.details` is `null` while `message` names the spellings and the levels.
+    """
     details = getattr(exc, "details", None)
-    if isinstance(details, dict):
-        return dict(details)
-    return {}
+    if not isinstance(details, (list, tuple)):
+        return None
+    errors: list[dict[str, object]] = []
+    for item in details:
+        if not isinstance(item, Mapping) or not {"field", "message"} <= set(item):
+            return None
+        errors.append({"field": item["field"], "message": item["message"]})
+    return errors or None
 
 
 def error_payload(exc: BaseException) -> dict[str, object]:
-    """`--json` error object."""
+    """`--json` error object: the four keys of the envelope, none of them optional."""
     payload: dict[str, object] = {
         "code": error_code_for(exc),
         "message": error_message_for(exc),

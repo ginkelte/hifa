@@ -33,11 +33,13 @@ from hifa.app.boards import issue_detail, list_blocked, list_issues
 from hifa.app.commands import (
     UNSET,
     Actor,
+    AddLabel,
     ArchiveIssue,
     CommentOnIssue,
     CreateIssue,
     MoveIssue,
     RelateIssues,
+    RemoveLabel,
     RestoreIssue,
     TrashIssue,
     UnrelateIssues,
@@ -54,6 +56,7 @@ from hifa.app.issues import (
     unrelate_issues,
     update_issue,
 )
+from hifa.app.labels import DEFAULT_LABEL_COLOR, add_label, remove_label
 from hifa.cli import output
 from hifa.cli.context import CliContext, resolve_team
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
@@ -611,6 +614,75 @@ def restore_command(
     _emit_issue(row, payload)
 
 
+@issue_app.command("label")
+def label_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    labels: list[str] = typer.Argument(..., help="Label names or ULIDs (one per transaction)."),
+    create: bool = typer.Option(
+        False, "--create", help="Create the label in the issue's team when neither level has it."
+    ),
+    color: str | None = typer.Option(
+        None, "--color", help="Color of a label created by --create, #RRGGBB."
+    ),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+) -> None:
+    """Attach one or more labels to one issue: N labels, N transactions."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        _reject_color_without_create(color, create)
+        row, payload, replaced = _run_label_add(
+            db_flag=db if db is not None else root.db,
+            ref=ref,
+            labels=_split_labels(labels),
+            create=create,
+            color=color,
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_issue_replaced(row, payload, replaced)
+
+
+@issue_app.command("unlabel")
+def unlabel_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    labels: list[str] = typer.Argument(..., help="Label names or ULIDs (one per transaction)."),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Detach one or more labels from one issue; a link the issue does not carry is exit 3."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        row, payload = _run_label_remove(
+            db_flag=db if db is not None else root.db,
+            ref=ref,
+            labels=_split_labels(labels),
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_issue_replaced(row, payload, None)
+
+
 @issue_app.command("comment")
 def comment_command(
     ctx: typer.Context,
@@ -1125,7 +1197,8 @@ def _resolve_assignee(repos: Repos, ref: str | None) -> str | None:
     if member is None:
         member = _member_by_display_name(repos, value)
     if member is None:
-        raise _not_found("assignee", value, noun="member")
+        # The field names the resource that is missing, not the flag that carried the value.
+        raise _not_found("member", value)
     return member.id
 
 
@@ -1167,6 +1240,23 @@ def _emit_issue(row: dict[str, Any], payload: dict[str, Any]) -> None:
         row,
         table_cols=ISSUE_TABLE_COLUMNS,
         json_obj=payload,
+        quiet_obj=payload["identifier"],
+    )
+
+
+def _emit_issue_replaced(
+    row: dict[str, Any], payload: dict[str, Any], replaced: dict[str, Any] | None
+) -> None:
+    """One issue plus the label the write took off it: the only two-key envelope of the tree.
+
+    `replaced` is `{id, name, color}` or `null`, the same three fields a `labels[]` element
+    carries, so a client that removes the displaced chip reads one shape for both. The table is
+    the row of `issue list` and `--quiet` is the identifier: neither has a column for it.
+    """
+    output.emit(
+        row,
+        table_cols=ISSUE_TABLE_COLUMNS,
+        json_obj={"issue": payload, "replaced": replaced},
         quiet_obj=payload["identifier"],
     )
 
@@ -1437,6 +1527,65 @@ def _run_restore(*, db_flag: str | None, ref: str) -> tuple[dict[str, Any], dict
     return _table_row(payload), payload
 
 
+def _run_label_add(
+    *, db_flag: str | None, ref: str, labels: tuple[str, ...], create: bool, color: str | None
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    """One `AddLabel` per label, each in its own transaction, and the issue after the last one.
+
+    A repeated value is one label: the edge de-duplicates before the first call, so no second
+    transaction is paid for a value it already wrote. With more than one label the envelope
+    reports the **last** replacement, because the issue it carries is the one after the final
+    write and one key cannot carry two.
+    """
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        issue: Issue | None = None
+        replaced: Label | None = None
+        for name in labels:
+            result = add_label(
+                uow,
+                AddLabel(
+                    issue=ref,
+                    label=name,
+                    create_if_missing=create,
+                    color=(color or DEFAULT_LABEL_COLOR) if create else None,
+                ),
+                actor,
+            )
+            issue = result.issue
+            if result.replaced is not None:
+                replaced = result.replaced
+        if issue is None:  # pragma: no cover - the argument is `required=True`
+            raise CliError("label needs at least one label", code="invalid_option", field="label")
+        with uow.read() as repos:
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+    return _table_row(payload), payload, None if replaced is None else _label_ref(replaced)
+
+
+def _run_label_remove(
+    *, db_flag: str | None, ref: str, labels: tuple[str, ...]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One `RemoveLabel` per label; detaching never replaces a sibling."""
+    uow = _open_uow(db_flag)
+    try:
+        with uow.read() as repos:
+            actor = _actor(repos)
+        issue: Issue | None = None
+        for name in labels:
+            issue = remove_label(uow, RemoveLabel(issue=ref, label=name), actor)
+        if issue is None:  # pragma: no cover - the argument is `required=True`
+            raise CliError("label needs at least one label", code="invalid_option", field="label")
+        with uow.read() as repos:
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+    return _table_row(payload), payload
+
+
 def _run_comment(
     *, db_flag: str | None, ref: str, body: str, parent: str | None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1463,6 +1612,16 @@ def _reject_board_anchor(before: str | None, after: str | None) -> None:
             "edit takes no board anchor: use `hifa issue move` when the position matters",
             code="invalid_option",
             field="before",
+        )
+
+
+def _reject_color_without_create(color: str | None, create: bool) -> None:
+    """A color that would be written nowhere is a typo, not a request."""
+    if color is not None and not create:
+        raise CliError(
+            "--color needs --create: there is no label to paint without it",
+            code="invalid_option",
+            field="color",
         )
 
 

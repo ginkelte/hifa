@@ -213,6 +213,63 @@ def test_labels_are_linked_and_deduplicated(seed: Seed) -> None:
     assert len(stored) == 2, "repeated labels must be de-duplicated, not linked twice"
 
 
+def test_the_label_flag_resolves_a_name_case_insensitively(seed: Seed) -> None:
+    """`-l BUG` is the same name as `-l bug`: the three attach paths resolve alike.
+
+    `issue label ENG-1 BUG` and `issue list -l BUG` already answered the label; `issue create`
+    answered `LABEL_NOT_FOUND` for the same name, which is two behaviours for one flag family.
+    """
+    uow = _uow(seed)
+    try:
+        issue = create_issue(
+            uow,
+            CreateIssue(team="ENG", title="Shouting", labels=("BUG", "DOCS")),
+            _actor(seed),
+        )
+    finally:
+        uow.close()
+
+    rows = _rows(
+        seed,
+        "SELECT label_id FROM issue_label WHERE issue_id = ? ORDER BY label_id",
+        (issue.id,),
+    )
+    assert sorted(row["label_id"] for row in rows) == sorted(
+        [seed.labels["bug"].id, seed.labels["docs"].id]
+    )
+
+
+def test_a_name_two_rows_of_one_level_spell_is_ambiguous_on_the_label_flag(seed: Seed) -> None:
+    """A hand-built `bug`/`Bug` pair of ENG is refused, not resolved to the first row."""
+    conn = sqlite3.connect(seed.path)
+    try:
+        conn.execute(
+            "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
+            " is_group, group_type, retired_at) VALUES (?, ?, ?, NULL, 'Bug', '#EB5757', NULL,"
+            " 0, NULL, NULL)",
+            ("01HIPAIR000000000000000001", seed.workspace.id, seed.team.id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    before = _counts(seed)
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Validation) as caught:
+            create_issue(
+                uow, CreateIssue(team="ENG", title="Ambiguous", labels=("bug",)), _actor(seed)
+            )
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field) == ("LABEL_AMBIGUOUS", "ref")
+    assert caught.value.exit_code == 2
+    assert caught.value.details["labels"] == ["Bug", "bug"]
+    assert "'Bug'" in caught.value.message and "'bug'" in caught.value.message
+    assert _counts(seed) == before == (0, 0, 0)
+
+
 def test_default_state_is_used_without_state_flag(seed: Seed) -> None:
     uow = _uow(seed)
     try:

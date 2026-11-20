@@ -152,7 +152,7 @@ gap-free and never reused — not even after an issue is trashed.
 | **Optional dashboard** | board, list, issue detail, quick add, draggable columns. FastAPI + Jinja2 + htmx + Alpine, all vendored: offline, no Node, strict CSP |
 | **One-command bootstrap** | `hifa init` seeds workspace, team, states, labels and your local user. Idempotent |
 | **Yours to move** | one file. `cp`, `rsync`, `git`, or drop it on a USB stick. WAL mode so a read never blocks a write |
-| **Tested like a product** | 845 tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
+| **Tested like a product** | 1625 collected tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
 
 ## CLI surface
 
@@ -164,12 +164,44 @@ Shipped and covered by tests:
 | `hifa issue create` | one issue in one transaction (row + label links + `created` history row) |
 | `hifa team create\|list\|show` | multi-team; `show --states` prints the team's workflow |
 | `hifa state list\|create\|update` | custom states per team, reorder with `--before` / `--after` |
+| `hifa label add\|list\|show\|update\|archive` | the label catalogue: levels, groups, rename and a reversible retire |
+| `hifa issue label\|unlabel REF LABEL...` | the label chips of one issue; `--create` mints the label in the issue's team |
 | `hifa issue comment REF [BODY]` | one comment: `--body-file`, `--parent` to reply, `--quiet` prints its id |
 | `hifa serve` | the dashboard |
 
 Exit codes are a contract, not a mood: `0` ok · `2` usage or validation · `3` not found ·
 `4` conflict · `5` refused transition · `6` internal bug. An agent can branch on them without
 parsing English.
+
+## Labels
+
+A label lives in the workspace (visible to every team) or in one team, and a `singleSelect` group
+lets one child replace another on the same issue — the write that attaches the new one detaches
+the old one and says which label it took off:
+
+```bash
+hifa label add -n Bug --color "#EB5757"           # a workspace label
+hifa label add -n infra --team ENG                # a label of one team
+hifa label add -n Severity --group singleSelect   # a group: a child replaces its sibling
+hifa label add -n High --parent Severity
+hifa label list --team ENG                        # NAME COLOR TEAM RETIRED
+hifa label update Bug --name Defect               # the chips follow the rename
+hifa label archive infra                          # reversible: --undo brings it back
+hifa issue label ENG-13 High --create             # mint it in the issue's team and link it
+hifa issue unlabel ENG-13 High
+```
+
+`issue label --json` is the one two-key envelope of the CLI, because the canonical issue object
+cannot say which chip the call displaced:
+
+```json
+{ "issue": { … }, "replaced": { "id": "01JCV5AAA", "name": "High", "color": "#EB5757" } }
+```
+
+A label in use is not retired (detach it first), and retiring twice is a conflict — the same
+answer `restore` gives for a label that was never retired. A `NAME` resolves over the whole
+workspace for `show`, `update` and `archive`, retired rows included; two teams sharing it is a
+refusal instead of a guess.
 
 ## Teams and workflow states
 
@@ -321,7 +353,7 @@ git clone https://github.com/ginkelte/hifa && cd hifa
 uv sync --extra web --extra test
 
 ruff check . && ruff format --check .   # style
-pytest                                  # 845 tests: unit, integration, e2e (CLI and web)
+pytest                                  # 1625 tests collected: unit, integration, e2e (CLI and web)
 lint-imports                            # the A1/A2 contracts
 python scripts/spec_contract_check.py --all   # spec ↔ code drift
 python scripts/check_edge_parity.py     # CLI vs web capability parity
@@ -446,10 +478,10 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 
 | | |
 |---|---|
-| Tests | **845** passing (unit, integration, e2e CLI and web) |
-| Code | ~10.7k lines in `src/`, ~9.4k in `tests/` |
-| Specs | 18 documents · 101 Gherkin scenarios · 39 recorded decisions |
-| Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `serve` (board, list, detail, quick add, drag) |
+| Tests | **1625** collected by `pytest` (1624 passing, 1 skipped): unit, integration, e2e CLI and web |
+| Code | ~16.5k lines in `src/`, ~22.7k in `tests/` |
+| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 70 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
+| Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `serve` (board, list, detail, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |
 

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
 from hifa.app.commands import Actor, CreateState, CreateTeam, Unset, UpdateState
+from hifa.app.labels import case_variant_at_level
 from hifa.config import (
     DEFAULT_COLOR,
     DEFAULT_ICON,
@@ -280,7 +281,9 @@ def bootstrap(
         if opts.seed_labels:
             for label_name, color in DEFAULT_LABELS:
                 entry = f"label:{label_name}"
-                if repos.labels.get_by_name(workspace.id, None, label_name) is not None:
+                # The seed is a creation path like any other: a level that already carries this
+                # name in another spelling is the label, not a second row beside it.
+                if case_variant_at_level(repos.labels, workspace.id, None, label_name) is not None:
                     skipped.append(entry)
                     continue
                 repos.labels.insert(
@@ -726,7 +729,7 @@ def _resolve_state(tx: Repos, ref: str) -> WorkflowState:
         if candidate.name.casefold() == wanted
     ]
     if not matches:
-        raise NotFound(resource="workflow_state", key=ref)
+        raise NotFound(resource="state", key=ref)
     if len(matches) > 1:
         raise Validation(
             f"state name {ref} is ambiguous; pass the state of a single team",
@@ -747,7 +750,7 @@ def update_state(uow: UnitOfWork, cmd: UpdateState, actor: Actor) -> WorkflowSta
     team must still hold **exactly one** `is_default` when the write ends, so a database already
     broken (zero or two defaults) is rejected instead of being silently carried forward.
 
-    raises: `NotFound(workflow_state)`, `Validation(STATE_NAME_EMPTY|STATE_TYPE_INVALID|
+    raises: `NotFound(state)`, `Validation(STATE_NAME_EMPTY|STATE_TYPE_INVALID|
     COLOR_FORMAT)`, `Conflict(UNIQUE_STATE_NAME|STATE_DEFAULT_INVARIANT)`
     """
     with uow.write() as tx:

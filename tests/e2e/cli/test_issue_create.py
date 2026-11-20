@@ -146,7 +146,8 @@ def test_create_with_an_estimate_outside_the_scale_exits_2(
     error = json.loads(result.stderr)["error"]
     assert error["code"] == "validation_error"
     assert error["field"] == "estimate"
-    assert error["details"]["rule"] == "ESTIMATE_NOT_IN_SCALE"
+    assert error["details"] is None
+    assert error["message"] == "estimate is not part of the fibonacci scale"
     written = run("issue", "create", "After the rejection", "--json")
     assert written.exit_code == 0, written.stdout + written.stderr
     assert json.loads(written.stdout)["identifier"] == "ENG-1"
@@ -215,6 +216,14 @@ def test_unknown_team_exits_3(initialized: SimpleNamespace) -> None:
 def test_unknown_label_exits_2(initialized: SimpleNamespace) -> None:
     result = run("issue", "create", "Nope label", "--label", "ghost")
     assert result.exit_code == 2
+
+
+def test_the_label_flag_is_case_insensitive(initialized: SimpleNamespace) -> None:
+    """`-l BUG` is `-l Bug`: `issue label` and `issue list -l` already answered it."""
+    result = run("issue", "create", "Shouting", "--label", "BUG", "--json")
+    assert result.exit_code == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert [label["name"] for label in payload["labels"]] == ["Bug"]
 
 
 def test_missing_database_exits_3(sandbox: SimpleNamespace) -> None:

@@ -81,7 +81,9 @@ def test_the_inverse_is_not_written(workspace: Path) -> None:
     blocked_by = run("issue", "relate", "ENG-2", "blocked_by", "ENG-1", "--json")
 
     assert blocked_by.exit_code == 4, out(blocked_by)
-    assert error_body(blocked_by)["error"]["details"]["rule"] == "RELATION_DUPLICATE"
+    error = error_body(blocked_by)["error"]
+    assert error["details"] is None
+    assert error["message"] == "relation already exists"
     assert len(edges(workspace)) == 1
 
 
@@ -91,7 +93,9 @@ def test_a_symmetric_edge_written_from_the_other_end_is_a_duplicate(workspace: P
     again = run("issue", "relate", "ENG-2", "related", "ENG-1", "--json")
 
     assert again.exit_code == 4, out(again)
-    assert error_body(again)["error"]["details"]["rule"] == "RELATION_DUPLICATE"
+    error = error_body(again)["error"]
+    assert error["details"] is None
+    assert error["message"] == "relation already exists"
     assert len(edges(workspace)) == 1
 
 
@@ -107,7 +111,9 @@ def test_an_issue_related_to_itself_is_refused(workspace: Path) -> None:
     result = run("issue", "relate", "ENG-1", "related", "ENG-1", "--json")
 
     assert result.exit_code == 2, out(result)
-    assert error_body(result)["error"]["details"]["rule"] == "RELATION_SELF"
+    error = error_body(result)["error"]
+    assert error["details"] is None
+    assert error["message"] == "an issue cannot be related to itself"
     assert edges(workspace) == []
 
 

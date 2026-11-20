@@ -172,3 +172,34 @@ def test_exit_code_and_hint_can_be_overridden() -> None:
     assert err.code == "DB_ERROR"
     assert err.exit_code == 6
     assert err.hint == "check the file"
+
+
+# --- the field of a 404 ------------------------------------------------------------------
+# A 404 publishes the noun of what does not exist. It is derived from `resource`, so no raise
+# site can disagree with another edge about the same input.
+
+
+def test_not_found_derives_its_field_from_the_resource() -> None:
+    err = NotFound(resource="label", key="infra")
+    assert err.field == "label"
+    assert err.resource == "label"
+
+
+def test_the_two_404s_of_a_label_are_told_apart_by_the_field() -> None:
+    """The label is missing versus the link between a label and an issue is missing."""
+    missing_label = NotFound(resource="label", key="infra")
+    missing_link = NotFound(resource="label_link", key="infra")
+    assert missing_label.field == "label"
+    assert missing_link.field == "label_link"
+    assert missing_label.field != missing_link.field
+
+
+def test_not_found_never_receives_a_field() -> None:
+    """The only keyword arguments are `resource`, `key` and `details`: a field cannot drift in."""
+    with pytest.raises(TypeError):
+        NotFound(resource="label", key="infra", field="ref")  # type: ignore[call-arg]
+
+
+def test_an_issue_404_and_a_state_404_name_the_resource_not_the_table() -> None:
+    assert NotFound(resource="issue", key="ENG-999").field == "issue"
+    assert NotFound(resource="state", key="Nope").field == "state"
