@@ -3611,3 +3611,106 @@ promise of R21 does not depend on but a test will meet: on a database **in WAL**
 database's bytes untouched and SQLite still creates the reader's `-shm` and `-wal` sidecars next to it; on
 the files where the promise is made — a foreign file, an empty file, a file SQLite refuses — no sidecar
 appears and the sha256 is the same after the probe as before it.
+
+## D-069 — One condition, one class, one code — and the exit set the probe was measured to have
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.1/§4.1/§4.2/§6/§7 (the probe's three verdicts, `Probe`'s two
+sets, the reachability sentence of revision 14), SPEC-100 §2.6/§2.7/§4.3 (R21)/§5.2/§6/§7 (the same
+verdicts and the exit set), SPEC-050 §2.5.5/§2.6/§5.3/§6 (the handler and the exit-4 row), SPEC-090 §11
+and §8 step 9 (the published set), D-068's sentence that `DB_READONLY` "is unreachable from" the probe and
+its claim that "the exit set of the verb does not move", D-066's "`0, 3, 6` and it does not move", and the
+absence of a definition for `DatabaseNotFound` and `CorruptDatabase` in the whole corpus · **Touches:**
+SPEC-020 §2.1, §2.6, §4.2 (REQ-F020-14), §6, §7, `Notes`; SPEC-030 §2.1, §4.1 (R1), §4.2 (REQ-F030-24),
+§6, §7, `Notes`; SPEC-050 §2.5.5, §2.6, §5.3, §6, `Notes`; SPEC-090 §8, §11, `Notes`; SPEC-100 §2.6,
+§2.7, §4.3 (R21), §5.2, §6, §7, `Notes`
+
+**The rule.** A condition the corpus names gets exactly **one class**, that class carries exactly **one
+code**, and every table that publishes the condition names the class that raises it. Both edges of a
+verdict publish that code verbatim — `error.code is "database_not_found"`, `error.code is
+"corrupt_database"` — with no translation step between the exception and the envelope, so a reader cannot
+meet two spellings of one fact depending on which document they opened.
+
+**Why the classes had to be declared, not merely cited.** SPEC-000 §6, SPEC-010 §6, SPEC-050 §6 and
+SPEC-100 §6 all published `DatabaseNotFound` → `database_not_found` → exit `3` → HTTP `503`, and
+SPEC-000 §6, SPEC-010 §6, SPEC-050 §6 and SPEC-100 §6 published `CorruptDatabase` → `corrupt_database` →
+exit `6` → HTTP `500`. No document declared either class. The adapter, which is the layer that raises
+them, used two other names: `NotFound(resource='database')` — the *other* `3`, code `not_found`, HTTP
+`404`, and a constructor call SPEC-020 §2.4 cannot build without `key=` — and `HifaError(code=
+'DB_CORRUPT')`, an internal string with no row anywhere. SPEC-030 §7 and SPEC-100 §7 were therefore
+jointly unsatisfiable: no implementation could answer both, because one of the two names did not exist and
+the other was not the code the tests asserted. §2.6 of SPEC-020 now declares both, next to `NotFound`, and
+§6 of the same spec gives every edge its mapping — which is the section SPEC-020 §6 already called "the
+table `cli/errors.py` and `api/errors.py` **must** be exactly".
+
+**Why the two codes are the wire spelling while the other five are `SCREAMING_SNAKE_CASE`.** §2.6 said
+every `code` is `SCREAMING_SNAKE_CASE` and that the edge translates it (`NOT_FOUND` → `not_found`). That
+stays true of `NotFound`, `Conflict`, `Validation`, `InvalidTransition` and the base. The two new classes
+carry `database_not_found` and `corrupt_database` because four tables already published those spellings
+and because a translation step is exactly where one condition acquires a second name; `NotAHifaDatabase`
+(SPEC-100 §6) has carried its wire code the same way since D-066. The alternative — a `SCREAMING_SNAKE`
+code plus a table row in each edge — was rejected: it reproduces the defect this decision removes, and it
+makes `error.code` a function of the edge rather than of the exception.
+
+**Why `DatabaseNotFound` is not a `NotFound` subclass.** It was the tempting shape — same bucket `3`, and
+"the database was not found" reads like the domain's `NotFound`. But every edge's handler is ordered by
+class (`except NotFound` first), and both would then publish `not_found` and a `404` for a missing file
+whose published status is `503` and whose published code is `database_not_found`. A subclass would also
+make `except NotFound` a silent re-badging of the condition, which is the failure mode of §5.3 itself. The
+class is a sibling of `NotFound` under `HifaError`, with `key` (the path) and no `resource`/`field`: what
+does not exist is the file, and the remedy is `hifa init`, not a corrected reference.
+
+**Why the handler needed an arm and not a wider net.** SPEC-050 §5.3 printed four `except` arms, then
+`KeyboardInterrupt` and `Exception`. Every `HifaError` subclass outside those four — the two new ones,
+`Fts5Unavailable`, `NotAHifaDatabase`, `MissingWebExtra` and the five refusals of §6 — fell to the last arm
+and answered exit `6` `internal_error`, which is precisely the answer that made SPEC-100 §7's
+`error.code is "corrupt_database"` unimplementable as printed. §5.3 now has an arm that publishes the code
+the exception carries and takes the exit §6's row declares; the four arms above it stay (they are the
+classes that carry a `field`) and publish a carried code too, which is the rule §6's `Validation` row
+already stated and which `not_a_hifa_database` at `2` and `DB_READONLY` at `4` require.
+
+**Why the exit set is `0, 3, 4, 6` and not `0, 3, 6`.** SPEC-030 §2.1 and SPEC-100 R21 both said the
+probe "applies no pragma, so `DB_READONLY` is unreachable from it". The measurement says otherwise for one
+input, and it is the input a user can actually have: a database **already in WAL** — which every hifa
+database is — inside a directory the process cannot write. The reader cannot create its `-shm`, so
+`PROBE_SQL`'s read answers `attempt to write a readonly database` (measured, SQLite 3.53.1), which
+SPEC-030 §6 has always mapped to `Conflict(code='DB_READONLY')` at exit `4`. The previous answer was exit
+`6` `internal_error` by falling through the handler: a wrong cause for a condition the corpus already had a
+row for. D-068 saw the case and dismissed it as "a permission failure, not a mode, and the adapter's own
+directory is `0700`/`0600`" — true of the directory `init` creates, false of every file a user passes with
+`--db`, which is the surface this verb exists for. The set was published in four places and now says
+`0, 3, 4, 6` in all of them, with the row that produces the `4`: §2.7, §6 and §7 of SPEC-100, §2.5.5 and §6
+of SPEC-050, §11 of SPEC-090.
+
+**Why `Probe` carries two sets instead of one.** `PROBE_SQL` returned tables **and views**, and two
+different questions were asked of that one set: "does this file carry a `workspace` **table**?" (R14c,
+R21) and "does this file carry anything at all?" (R14a). Measured, a foreign file carrying `CREATE VIEW
+workspace` answered yes to the first and passed `init`'s step 5, after which the migrator died with `view
+workspace already exists` — an exit no table publishes. `PROBE_SQL` now returns `type` and `name`, still
+**one** statement, and `Probe` carries its two projections: `tables` (`type = 'table'`) and `objects`
+(`type IN ('table','view')`). The marker verdicts of both edges read `tables`; only the empty-file test
+reads `objects`. Two sets are not a second statement, and the statement count the round certified does not
+move.
+
+**Why the close is `finally` and not a last line.** R21's step (b) and `init`'s step 5 printed
+`probe.conn.close()` as their final statement, so every refusal taken *after* the probe returned —
+`not_a_hifa_database`, `fts5_unavailable` — skipped it, while the same paragraphs declared "the caller
+closes `conn`". Both flows are now `try/finally`; `open_probe` itself closes the connection it opened
+before raising a refusal from the read, so no handle outlives a failed probe either.
+
+**What it does not change.** SPEC-090's search contract in every part (the `like` blocks, the four-row
+state table, `TextPredicate`, the counts); the WAL matrix of D-068's table (four inputs, with the tuple
+and without it) — the fifth input is added here as a measurement, not as a revision of that matrix;
+`reindex(conn)`'s signature and the eight statements between `BEGIN IMMEDIATE` and `COMMIT`; `db vacuum`'s
+probe obligation (still declared for a verb that does not ship in v1, still nobody's work in this round);
+D-066's recorded call shape for `not_a_hifa_database` (same code, same two exits, same two carriers); and
+the `.feature` corpus, which stays at 17 files and 240 scenarios. No checkbox is ticked by this decision
+and no `src/`, `tests/` or `scripts/` file moves.
+
+**Verification.** SPEC-030 §7's `@REQ-F030-24` scenario (missing path ⇒ `DatabaseNotFound` with
+`code "database_not_found"`; unreadable bytes ⇒ `CorruptDatabase` with `code "corrupt_database"`; the
+migrated database's `tables` and `objects`; a `CREATE VIEW workspace` file in `objects` and not in
+`tables`) and its new exit-`4` scenario; SPEC-100 §7's exit-`4` scenario and the view case added to the
+foreign-file scenario; SPEC-050 §5.3's handler and §6's exit-4 row; and the probe run the round was
+measured with — `open_probe` against a missing path, a file of garbage, a WAL database in a `0500`
+directory and a file carrying `CREATE VIEW workspace`, with the connection count before and after each
+call — which is what the two classes and the two sets are asserted against.

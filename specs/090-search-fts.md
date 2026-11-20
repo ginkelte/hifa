@@ -4,7 +4,7 @@ title: FTS5 full-text search
 component: application
 status: review
 version: 4
-spec_revision: 8
+spec_revision: 9
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/search.py
@@ -1091,7 +1091,7 @@ Feature: Full-text search over issues
    §2.4 (no text ⇒ no text predicate).
 9. **The two commands of this delivery are created from their own specs' contracts, in this ticket**:
    `hifa search` from SPEC-050 §2.5.1 (its flags, its table of §2.4.1.1, its exit codes) and
-   `hifa db reindex` from SPEC-100 §2.7/R21 (its transaction, its `{"reindexed": N}`, its exit `0/3/6`)
+   `hifa db reindex` from SPEC-100 §2.7/R21 (its transaction, its `{"reindexed": N}`, its exit `0/3/4/6`)
    — they are what the acceptance of §7 (`10-search.feature`) needs. This spec claims **no `cli/**`
    file**: `hifa search` lives in `cli/commands/search.py` under SPEC-050's `implements:` and `db reindex`
    in `cli/commands/db.py` under SPEC-100's, so neither module appears in this document's frontmatter and
@@ -1145,7 +1145,7 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
 |---|---|---|---|
 | `hifa search` (table) | not reachable: no query and no filter is `query_empty`, exit 2, `stdout` untouched | empty `stdout`, `0 issues` on `stderr` — the empty-collection line of SPEC-050 §2.4.1, exit 0; `--quiet` prints nothing | §6's sentence on `stderr` and its exit code; `stdout` stays empty |
 | `hifa search --json` | the same `query_empty` | `{"hits": [], "total": null, "has_more": false, "backend": "fts"\|"like"\|"none", "took_ms": …}` — `total` is `0` only with `--count` | the error envelope of SPEC-050 §2.4.5, exit 2 or 6 |
-| `hifa db reindex` | an empty database rebuilds `0` issues: `{"reindexed": 0}`, exit 0 — "there was nothing to rebuild" is a success, not a no-op error | — | exit 3 `database_not_found` (no such file) or `not_a_hifa_database` (a file that opens but is not a hifa database); exit 6 `fts5_unavailable` on a build without FTS5 or `corrupt_database` on an image SQLite refuses — the set is `0, 3, 6` and does not move (SPEC-100 R21, D-066) |
+| `hifa db reindex` | an empty database rebuilds `0` issues: `{"reindexed": 0}`, exit 0 — "there was nothing to rebuild" is a success, not a no-op error | — | exit 3 `database_not_found` (no such file) or `not_a_hifa_database` (a file that opens but is not a hifa database); exit 4 `DB_READONLY` (an intact WAL database in a directory the process cannot write — the read-only probe cannot create its `-shm`); exit 6 `fts5_unavailable` on a build without FTS5 or `corrupt_database` on an image SQLite refuses — the set is `0, 3, 4, 6` (SPEC-100 R21, D-066, D-069) |
 
 - **No loading state.** The command is one synchronous query against a local file: there is no progress
   to report and no partial output to flush. A long search prints nothing until it has its rows.
@@ -1161,6 +1161,15 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
 
 ## 12. Notes
 
+- spec_revision 9 (2026-11-20): **`db reindex`'s published exit set gains the `4` the probe was measured
+  to answer (HIFA-7, fifth review round, D-069).** `version` stays 4: no signature, query, column or
+  envelope of this spec changes, and §11 is its interface table, not its public contract.
+  §11 said the set was "`0, 3, 6` and does not move"; on SQLite 3.53.1 a database **already in WAL** in a
+  directory the process cannot write answers `attempt to write a readonly database` on the read-only
+  probe's `PROBE_SQL` read (`-shm` cannot be created), which SPEC-030 §6 maps to
+  `Conflict(code='DB_READONLY')` — exit `4`. The row now names it with the input that produces it, §8's
+  step 9 follows, and §7 — the search contract this round was told not to reopen — does not move: **28**
+  inline scenarios, 17 `.feature` files, 240 scenarios.
 - spec_revision 8 (2026-11-20): **the negated terms reach the port, the `NOT (…)` survives a NULL
   column, and the numbers in this note are the ones a probe printed (HIFA-7, third review round,
   D-067).** `version` 3 → 4: §2.2 gains a type and §2.4's signature changes, so the public contract
@@ -1205,7 +1214,7 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
   (2) **§11 publishes the same set SPEC-100 R21 does, with the code that reaches each exit.**
   `not_a_hifa_database` at `3` for a file that opens but is not a hifa database, `corrupt_database` at
   `6` for an image SQLite itself refuses, next to `database_not_found` (`3`) and `fts5_unavailable` (`6`):
-  the set is `0, 3, 6` and it does not move (D-066). The `.feature` corpus does not move either — 17
+  the set is `0, 3, 6` and it does not move (D-066; revision 9 below adds the `4`). The `.feature` corpus does not move either — 17
   files, **240** scenarios (228 `Scenario` + 12 `Scenario Outline`).
 - spec_revision 6 (2026-11-20): **the review round of HIFA-7 settled the three signatures this document
   published without saying how they are called, and closed eight contradictions it carried with its own
