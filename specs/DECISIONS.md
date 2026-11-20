@@ -2764,17 +2764,23 @@ step, in the same PR as the routes, because `CAPABILITIES` may not name a verb t
 ## D-061 — The label surface: five verbs, one replacement and one refusal to retire what is in use
 
 **Date:** 2026-11-20 · **Wins:** SPEC-040 §2, §4.1 (R10, R22), §5.6, §6 · **Touches:** SPEC-040
-§2.1/§2.2/§3.1/§4/§4.1/§5/§6/§7/§9/Notes, SPEC-050
-§2.3/§2.3.1/§2.4.1/§2.4.2/§2.4.3/§2.4.4/§2.4.5/§2.5/§2.5.3/§2.5.3.1/§2.5.4/§6/§3/§11,
+§2 (the table of §2's intro, which gains the four label command classes and `restore_label`),
+§2.1/§2.2/§3.1/§4.1/§4.2/§5/§5.6/§6/§7/§9/Notes, SPEC-050
+§2.3/§2.3.1/§2.4.1/§2.4.3/§2.4.4/§2.4.5/§2.5/§2.5.3/§2.5.3.1/§2.5.4/§2.7/§3/§6/§9/§11,
 SPEC-020 §2.5/§2.6/§4.2/§6/§7/Notes (the exception class of `validate_label_scope` and the `field` of
-`NotFound`), SPEC-060 §2.5.3/§5.3/§6.1/§6.3/§11 (the set that triggers the label-in-use `409`, the
-transport codes and the `field` of a 404), SPEC-001 REQ-F024, REQ-F034, §7.2 and Notes,
+`NotFound`), SPEC-060 §2.5.1/§2.5.3/§2.7/§5.3/§6.1/§6.3/§11 (the set that triggers the label-in-use
+`409`, the transport codes, the `field` of a 404 and its two published examples), SPEC-001 REQ-F024,
+REQ-F034, §7.2 and Notes,
 `specs/001-mvp-v1.tasks.md` (its header, its acceptance-coverage line and its Notes — no checkbox),
 `specs/acceptance/001-mvp-v1/09-labels.feature`, and the three `error.field` steps of a missing issue
 in `03-issues-crud.feature`, `15-cli-contract.feature` and `16-dashboard.feature` (see (h), the one
-place a change outside the label surface was forced), `specs/INDEX.md` (the label paragraph and the
-corpus count), and this file; `scripts/check_edge_parity.py` is the implementer's step, not this
-revision's
+place a change outside the label surface was forced), `specs/INDEX.md` (the label paragraph, the
+corpus count and the decision count), and this file; `scripts/check_edge_parity.py` is the
+implementer's step, not this revision's. **The list is the diff's, re-derived in round 3:** it also
+carries SPEC-050 §2.7 (the `hifa issue show ENG-999` example, whose `field` moves with (h)) and §9 (the
+provenance bullet that tells a reader where `label show|update` and `--undo` came from), and it does
+not carry SPEC-050 §2.4.2, which no hunk of this branch edits — the `replaced` object left that section
+in revision 24 and the entry said so while still naming it.
 
 **Prior state: labels worked on the way in and nowhere after that.** `--label` on `issue create` accepts
 repeats or a comma-separated list, resolves each name per team, creates nothing, links `issue_label` and
@@ -2953,27 +2959,30 @@ serves, so the rows land **in the same PR as the code**, not in this one:
 scope is the command's (§2.5's conventions), and the AND semantics inside the family are SPEC-030 §2.6's
 (unchanged).
 
-### (h) A 404 publishes what does not exist, and the resource is the accessor
+### (h) A 404 publishes what does not exist, and the resource is the accessor — recorded in D-062
 
-`NotFound` gains a derived `field` that returns its `resource` (SPEC-020 §2.6). It is the one place the
-two edges read a 404's `field` from, and it settles a contradiction the surface carried: SPEC-060 §2.5.3
-published `field: "label_link"` for a label the issue does not wear, while SPEC-050 §2.4.5 declared
-**both** of that verb's 404s `field: "label"` and promised "the same envelope as the API". The values are
-settled by **what is missing**, not by which edge asks — a **reference** that resolves nowhere is
-`NotFound(resource='label')` ⇒ `field: "label"`, and a label the issue exists without wearing is
-`NotFound(resource='label_link')` ⇒ `field: "label_link"` — and no raise site passes the field, so the
-two edges cannot drift apart again. The alternative rejected: an optional `field` argument per raise
-site, which is the invention this closes and one more place to disagree.
+`NotFound` gains a derived `field` that returns its `resource` (SPEC-020 §2.6): a **reference** that
+resolves nowhere is `NotFound(resource='label')` ⇒ `field: "label"`, and a label the issue exists without
+wearing is `NotFound(resource='label_link')` ⇒ `field: "label_link"`. That settles the contradiction the
+label surface carried — SPEC-060 §2.5.3 published `label_link` for the link while SPEC-050 §2.4.5
+declared **both** of that verb's 404s `label` — and no raise site passes the field, so the two edges read
+one value and cannot drift apart.
 
-**The price, paid once and here.** A derived `field` makes every 404 publish the `resource`, so
-`hifa issue show ENG-999` publishes `field: "issue"` and not the `ref` that SPEC-050 §2.4.5/§2.7/§6, SPEC-060
-§6.1/§6.3 and three acceptance steps of `03-issues-crud.feature`, `15-cli-contract.feature` and
-`16-dashboard.feature` used to print. Those are the only statements outside the label surface this
-revision edits, and the alternative was worse: keeping `ref` would have re-created the very defect this
-round fixes — one error, two declared `field` values — for the issue family instead of the label one.
-Every other `ref` in the corpus is `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` and does not
-move: it is a `Validation`-shaped field, not a resource. Nothing else of a 404 changes: the code stays
-`not_found`, the exit code stays 3 and the status stays 404.
+**D-062 is the record of the change and this subsection is its label half.** It states why a per-site
+`field` argument was rejected, what the derived value costs the whole issue family, and every file and
+section it forced; read them together.
+
+**The price, and the two universals a previous draft of this paragraph got wrong.** (1) It called the
+`error.field` steps of a missing issue "the only statements outside the label surface this revision
+edits"; the revision also edits SPEC-001 REQ-F034, SPEC-050 §2.5.3 (the `relations`, `--parent`,
+`--assignee` and label clauses that name a resource) and §2.5.3.1, SPEC-060 §5.3 (the mapping line), and SPEC-020 §6 and
+§7 (the `NotFound` row and the two `field` scenarios) — D-062 carries the list the diff gives. (2) It said
+"every other `ref` in the corpus is `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')`": the `ref`
+that stays is that one **and** the six sites of `Validation(rule='LABEL_AMBIGUOUS', field='ref')` — the
+`label_detail` comment and R22 of SPEC-040, its §6 row, its §7 scenario, and two sentences of SPEC-050
+§2.4.5 and §2.5.3 — which this same decision defines and which do not move, because there `field` names
+the argument the verb took and not a resource. Nothing else of a 404 changes: the code stays `not_found`,
+the exit code stays 3 and the status stays 404.
 
 ### (i) What this decision does not do
 
@@ -2984,22 +2993,108 @@ it is not discovered later). No re-parenting, no level change, no `label delete`
 `export`/`import`, or to the REST surface: SPEC-060 keeps `POST /issues/{ref}/labels ⇒ 200 IssueOut` and
 reads `.issue` from the result object, which is not a change of its contract.
 
-**Verification.** SPEC-040 goes to `version: 5` / `spec_revision: 28` (a return type, a field of
+**Verification.** SPEC-040 goes to `version: 5` / `spec_revision: 29` (a return type, a field of
 `CreateLabel`, a new command and four codes are §2; the second round corrects the catalogue scope, the
-matrix rows and one producer cell without touching §2's signatures), SPEC-050 to `version: 4` /
-`spec_revision: 25` (five leaf commands, two exit sets, one envelope, and the `TEAM` column it now
+matrix rows and one producer cell without touching §2's signatures; the third adds the §7 scenario of
+the retired rename and its count), SPEC-050 to `version: 5` /
+`spec_revision: 26` (five leaf commands, two exit sets, one envelope, and the `TEAM` column it now
 names; the second round adds the retired visibility of a `REF`, the two 404 `field` values, the
-`--clear-description` refusal and one filter row), SPEC-020 to `version: 5` / `spec_revision: 11` (the
-exception class `validate_label_scope` declares in §2.5, and the derived `field` of `NotFound` in §2.6),
-SPEC-060 to `version: 3` / `spec_revision: 10` (the set that triggers the label-in-use `409`; the second
-round publishes transport codes in §2.5.3 and the published `field` of a 404 in §5.3/§6), SPEC-001
-to `spec_revision: 15` (one 404 example in REQ-F034) and `specs/001-mvp-v1.tasks.md` to
-`spec_revision: 14` with **no checkbox ticked**. The executable half is `specs/acceptance/001-mvp-v1/09-labels.feature`: the three scenarios
+`--clear-description` refusal and one filter row; the third renames an unknown `-a/--assignee` resource
+to `member` and the `version` bump is the one the round-2 note owed, because two §2 statements had
+moved), SPEC-020 to `version: 5` / `spec_revision: 12` (the
+exception class `validate_label_scope` declares in §2.5, and the derived `field` of `NotFound` in §2.6;
+the third says which reader reads the `details` that carries them),
+SPEC-060 to `version: 4` / `spec_revision: 11` (the set that triggers the label-in-use `409`; the second
+round publishes transport codes in §2.5.3 and the published `field` of a 404 in §5.3/§6; the third
+corrects the §7 assertion, whose `version` 4 is owed for the two codes §2.5.3 moved), SPEC-001
+to `spec_revision: 16` (one 404 example in REQ-F034, and the count) and `specs/001-mvp-v1.tasks.md` to
+`spec_revision: 15` with **no checkbox ticked**. The executable half is `specs/acceptance/001-mvp-v1/09-labels.feature`: the three scenarios
 that already existed plus seventeen that pin the rename, the recolor, the two conflicts of the retire
 axis, the undo, the shared name, `--create`, `--color` without `--create`, the two shapes of a missing
-unlabel and the partial application of an N-label command — 20 scenarios, and the corpus of
-`specs/acceptance/001-mvp-v1/` is **238** (226 `Scenario` + 12 `Scenario Outline`), the number every
+unlabel and the partial application of an N-label command, plus the two the third round adds (the
+`--clear-description` refusal and the rename of a retired label) — 22 scenarios, and the corpus of
+`specs/acceptance/001-mvp-v1/` is **240** (228 `Scenario` + 12 `Scenario Outline`), the number every
 place that states it now carries; the second round changes no scenario count and no scenario text of
-that file except the one `error.field` step whose value §(h) settles. **This branch is the spec change
+that file except the one `error.field` step whose value §(h) settles, and the third changes no text of
+it either — it adds two scenarios and the count that follows. **This branch is the spec change
 only**: `src/hifa/app/labels.py`, `src/hifa/cli/commands/label.py`, `add_label`/`remove_label` and the
 seven capability rows are not in the tree, and that drift is what the `spec_revision` bumps record.
+
+## D-062 — A 404 publishes the resource it could not find
+
+**Date:** 2026-11-20 · **Wins:** SPEC-020 §2.6 (the exception owns the noun of what is missing) ·
+**Touches:** SPEC-020 §2.6, §4.2 (REQ-F020-14), §6, §7, Notes; SPEC-040 §2.2, §4.1 (R22), §5.6, §6;
+SPEC-050 §2.4.5, §2.5.3, §2.5.3.1, §2.7, §6, §11; SPEC-060 §2.5.1, §2.5.3, §2.7, §5.3, §6.1, §6.3, §7,
+§11; SPEC-001 REQ-F034 and Notes; `specs/acceptance/001-mvp-v1/03-issues-crud.feature`,
+`15-cli-contract.feature`, `16-dashboard.feature`; `specs/INDEX.md`
+
+**The rule.** `NotFound` derives `field` from its own `resource` (SPEC-020 §2.6): the noun of the thing
+that does not exist *is* the field the edge publishes, no raise site passes it, and a 404 therefore says
+`issue` for a missing issue, `label` for a reference that resolves nowhere, `label_link` for a label the
+issue exists without wearing, `member` for an unknown `-a/--assignee`. One exception, one field, on both
+edges.
+
+**Why the edges could not keep choosing it.** The surfaces had already drifted on the same input:
+SPEC-060 §2.5.3 published `field: "label_link"` for a label the issue does not wear while SPEC-050 §2.4.5
+declared **both** of that verb's 404s `label` and promised "the same envelope as the API", and both were
+published contracts a client could have coded against. A rule that lives in two spec tables and nowhere in
+the codebase is a rule with two implementations, and the second one is the bug.
+
+**The alternative rejected: an optional `field=` argument per raise site.** Four reasons, in order of
+weight. (1) It is the same defect with better manners: every raise site deciding the string is one more
+place to disagree, and the review found two of them already disagreeing in the published corpus. (2) Every raise
+site would carry information it does not have: `NotFound(resource='label', key=ref)` already says what
+is missing, and a `field` beside it can only repeat it or contradict it. (3) The default would be the
+contract — an omitted `field` would fall back to something, and a reader would have to know which
+something. (4) A derived value is testable in the domain (`NotFound(resource='label').field == 'label'`)
+instead of in each edge, so a new edge cannot get it wrong.
+
+**What it does not put on the wire.** The `resource`/`key` mapping `HifaError.details` returns is the
+exception's own accessor surface (SPEC-020 §2.6, §6), not the payload of an HTTP error: SPEC-060 §6.3
+declares `details` as `null` or a list of `{field, message}` and a 404 renders `"details": null`, because
+the resource already travels in `field` and the key in `message`. Widening §6.3 to carry a dict for one
+class of error is the alternative this decision did not take: it would change the shape of every error
+envelope to save one key, and it would give a client two places to read the same noun.
+
+**The consequence, which is the whole issue family and not the label one.** A derived field cannot be
+`ref` for an issue and `label` for a label: `ref` names the *parameter* the route took, and the rule says
+the field names the *resource* that is missing. So `GET /api/v1/issues/ENG-999` publishes
+`field: "issue"`, `hifa issue show ENG-999` prints `(field: issue)`, and the three acceptance steps of a
+missing issue assert it. The statements it forced, from the diff of this branch:
+
+- SPEC-020 §2.6 (the accessor and the sentence that says who reads `details`), §4.2 REQ-F020-14 (the two
+  observable values), §6's `NotFound` row, §7's two `field` scenarios.
+- SPEC-040 §2.2 and §5.6 (the raise sites, which pass `resource`/`key` and never `field`), §4.1 R22, and
+  §6's `NOT_FOUND` row, whose `When` cell lists the resources the field now publishes.
+- SPEC-050 §2.4.5 (both 404s of `issue unlabel`), §2.5.3 (the `--parent`, `--assignee` and label clauses
+  that name a resource, and the `-a/--assignee` value that moved from `assignee` to `member`), §2.5.3.1
+  (the rule that produced the second spelling), §2.7 (the `issue show ENG-999` example) and §6.
+- SPEC-060 §2.5.1 (the two 404s of the labels subresource), §2.5.3 (the same pair for the issue's labels),
+  §2.7 (the 404 example), §5.3 (the mapping line), §6.1 (`not_found`'s `field` cell), §6.3 (the envelope
+  sample) and §7 (the scenario that asserts it).
+- SPEC-001 REQ-F034, and the three `error.field` steps of a missing issue in
+  `03-issues-crud.feature`, `15-cli-contract.feature` and `16-dashboard.feature`.
+
+**What does not move.** The code stays `not_found`, the exit code 3 and the status 404. The `ref` values
+that are not resources stay exactly as they were: `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')`
+in SPEC-040 §6, where the field names the parameter the write carried, and the six
+`Validation(rule='LABEL_AMBIGUOUS', field='ref')` sites of the same decision (the `label_detail` comment
+and R22, §6's row, §7's scenario, SPEC-050 §2.4.5 and §2.5.3) — there the ambiguity is about the argument
+the verb took, and the argument is what a caller has to re-enter. No route, flag, column or enum value is
+added.
+
+**The `version` bumps it required.** SPEC-020 4 → 5 (a public attribute of the exception, §2.6 — taken
+in revision 11, under D-061's entry, because the two decisions shipped in one change),
+SPEC-050 4 → 5 (a published 404 `field` moves in §2.5.3, and §2.5.4 publishes a refusal it lacked),
+SPEC-060 3 → 4 (two `error.code` values of §2.5.3 move). SPEC-040 stays at `version: 5`: this decision
+changes no signature of its §2 — the raise sites already carried `resource` and `key`, and what moved is
+which edge value a 404 publishes.
+
+**Verification.** SPEC-020 `spec_revision` 11 → 12, SPEC-040 28 → 29 (the §7 scenario of the retired
+rename and its count, which the same round owed), SPEC-050 25 → 26, SPEC-060 10 → 11, SPEC-001 15 → 16
+and `specs/001-mvp-v1.tasks.md` 14 → 15 with **no checkbox ticked**. The sweep that closes it — every `ref`
+a 404 assertion or envelope sample still names, filtered by the two rules that legitimately keep one —
+returns nothing outside `LABEL_AMBIGUOUS` and `ISSUE_ARCHIVED`; the corpus of
+`specs/acceptance/001-mvp-v1/` is **240** scenarios (228 `Scenario` + 12
+`Scenario Outline`), the figure `SPEC-001 §7.2`, `specs/INDEX.md` and `specs/001-mvp-v1.tasks.md` now
+carry.

@@ -4,7 +4,7 @@ title: Domain core
 component: domain
 status: review
 version: 5
-spec_revision: 11
+spec_revision: 12
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -817,12 +817,18 @@ class InvalidTransition(HifaError):
 ```
 
 Each subclass fixes its attributes as read-only properties (`resource`/`key`/`field`,
-`rule`/`field`/`value`, `current`/`target`/`allowed`) and merges the derived ones into `details`
-without overwriting explicit values (`NotFound` writes `resource`/`key` there). `NotFound.field` is
-the one **derived** value of the family: it returns `resource`, the noun of what does not exist, and
-no raise site passes it, so every edge renders `field` of a 404 without inventing one — `label` for
-a label reference that resolves nowhere, `label_link` for a label the issue does not wear (SPEC-040
-§2.2, SPEC-050 §2.4.5, SPEC-060 §2.5.3). All kwargs are **keyword-only** except `message`.
+`rule`/`field`/`value`, `current`/`target`/`allowed`) and merges the derived ones into the mapping
+`details` returns, without overwriting explicit values. That mapping — `resource` and `key` for
+`NotFound`, `rule` and `field` for `Validation`, `rule` for `Conflict` — is the **exception's own
+accessor surface** (the dict `details` hands back, §6), not a wire payload: an edge reads it, it does
+not forward it. `NotFound.field` is the one **derived** value of the family — it returns `resource`,
+the noun of what does not exist, and no raise site passes it — so an edge that renders a 404 publishes
+that value as `error.field` and **nothing** into `error.details`, which stays `null`
+(SPEC-060 §6.3). A client that reads `"details": null` and a domain reader that reads
+`exc.details["resource"]` are therefore both correct, and neither has to know about the other. Every
+edge renders `field` of a 404 without inventing one — `label` for a label reference that resolves
+nowhere, `label_link` for a label the issue does not wear (SPEC-040 §2.2, SPEC-050 §2.4.5, SPEC-060
+§2.5.3). All kwargs are **keyword-only** except `message`.
 `code` is a stable `str` in `SCREAMING_SNAKE_CASE` that the edge uses to map to exit code /
 HTTP (table in §6).
 
@@ -1375,6 +1381,16 @@ Executable from top to bottom; every step has a verification command.
   `checksum`), infrastructure and not domain. It has no entity, repo or use case, by design.
 
 ## Notes
+
+- spec_revision 12 (2026-11-20): **the `details` of an exception is a surface, not a payload (HIFA-14,
+  D-061, D-062).** §2.6 said the derived `resource`/`key` are merged "into `details`", which made the
+  next reader ask why a 404 of SPEC-060 §6.3 carries `"details": null` while this spec says `NotFound`
+  writes two keys there. Both statements are true of different objects: the mapping is what the
+  exception's `details` property returns to a **domain** reader (§6), and the wire `details` of an edge
+  is the one that edge declares — `null` on a 404, because a 404 publishes `field` from that same
+  resource and nothing else (D-062). The paragraph now says so and names both readers, so the two
+  documents no longer read as a contradiction. `version` stays 5: §2.6's surface is the one revision 11
+  declared, and this revision only says who reads it.
 
 - spec_revision 11 (2026-11-20): **a 404 publishes what does not exist, and it is derived (HIFA-14,
   D-061).** `NotFound` gains `field`, a read-only accessor that returns `resource`: no raise site

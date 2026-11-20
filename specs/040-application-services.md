@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 5
-spec_revision: 28
+spec_revision: 29
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -1553,7 +1553,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-35** | A comment thread stops at three: `comment_on_issue` refuses the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')` and inserts nothing, and the reply that lands at depth 3 is stored | 2 scenarios, one at the boundary and one past it |
 | **REQ-F040-36** | `comment_on_issue` refuses a trashed issue with `Validation(rule='ISSUE_TRASHED')` and an archived one with `InvalidTransition(rule='ISSUE_ARCHIVED')`, both before a parent is read, and writes no row either way | 2 scenarios, one per layer |
 | **REQ-F040-37** | `add_label` returns `AddLabelResult(issue, replaced)`; a label of a `singleSelect` group replaces every sibling the issue carries, in the same transaction and before the insert, and the removal is recorded as its own `('label', <replaced name>, NULL)` row before the attach row; a `multiSelect` group and a label outside any group replace nothing | 3 scenarios: one replacement, one group that must not replace, one no-op |
-| **REQ-F040-38** | `update_label` changes `name`, `color` and `description` only and judges the new name's uniqueness at the label's own level; `retire_label` refuses a label with any `issue_label` row (`Conflict(rule='LABEL_IN_USE')`) and an already retired one (`Conflict(rule='LABEL_RETIRED')`); `restore_label` clears `retired_at` and refuses a label that is not retired (`Conflict(rule='LABEL_NOT_RETIRED')`); a name that matches labels of two teams is `Validation(rule='LABEL_AMBIGUOUS')` on the four catalogue-scoped references — `update_label`, `retire_label`, `restore_label` and `label_detail` — and can never fire on `add_label`/`remove_label`, whose names resolve in the issue's team first; those four resolve a **name** with `LabelRepo.list(..., include_retired=True)`, retired rows included, so `restore_label`, a repeated `retire_label` and the rename of a retired label are reachable by name instead of answering `NotFound` | 5 scenarios: the rename, `LABEL_IN_USE`, `LABEL_RETIRED`, the undo with `LABEL_NOT_RETIRED`, and `LABEL_AMBIGUOUS` |
+| **REQ-F040-38** | `update_label` changes `name`, `color` and `description` only and judges the new name's uniqueness at the label's own level; `retire_label` refuses a label with any `issue_label` row (`Conflict(rule='LABEL_IN_USE')`) and an already retired one (`Conflict(rule='LABEL_RETIRED')`); `restore_label` clears `retired_at` and refuses a label that is not retired (`Conflict(rule='LABEL_NOT_RETIRED')`); a name that matches labels of two teams is `Validation(rule='LABEL_AMBIGUOUS')` on the four catalogue-scoped references — `update_label`, `retire_label`, `restore_label` and `label_detail` — and can never fire on `add_label`/`remove_label`, whose names resolve in the issue's team first; those four resolve a **name** with `LabelRepo.list(..., include_retired=True)`, retired rows included, so `restore_label`, a repeated `retire_label` and the rename of a retired label are reachable by name instead of answering `NotFound` | 6 scenarios: the rename, `LABEL_IN_USE`, `LABEL_RETIRED`, the undo with `LABEL_NOT_RETIRED`, `LABEL_AMBIGUOUS`, and the rename of a retired row resolved by name |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -2266,6 +2266,13 @@ Feature: Application use cases
     And restore_label run again raises Conflict with rule "LABEL_NOT_RETIRED"
 
   @REQ-F040-38
+  Scenario: a retired label is renamed by the name it resolves to
+    Given the retired label "infra" with no link to any issue
+    When update_label is run on "infra" with name "platform"
+    Then the label reads "platform"
+    And label.retired_at is the instant it already carried
+
+  @REQ-F040-38
   Scenario: a name shared by two teams is ambiguous
     Given the label "Bug" of the ENG team and the label "Bug" of the OPS team
     When retire_label is run with the name "Bug"
@@ -2644,6 +2651,18 @@ Feature: Application use cases
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 29 (2026-11-20): **the rename of a retired label has a scenario on this side too, and
+  this file stops saying "5" (HIFA-14, D-061, D-062).** Revision 28 made a retired row reachable by
+  name for the four catalogue verbs and stated it in §2.2, R22 and REQ-F040-38, but the only walks §7
+  pinned were the repeated retire and the undo of one: the rename was the third verb of the same clause
+  and had no step, so a rule of this layer rested on a count that said five and on a scenario of another
+  layer. §7 gains it under `@REQ-F040-38` — `update_label` on the name `infra` of a retired row reads
+  `platform` and leaves `retired_at` as it was — and REQ-F040-38 now counts six. The flag-level refusal
+  of `--clear-description` with `-d/--description` gets no scenario here on purpose: it is an
+  `InvalidOption` of SPEC-050 §2.5.4/§6, this layer never sees a flag, and §6 has no `rule` for it — the
+  pair is pinned where it is declared (`09-labels.feature`). `version` stays 5: no signature, no
+  exception class and no rule of §2 changes; a scenario and a count are §4.2 and §7.
 
 - spec_revision 28 (2026-11-20): **a catalogue verb sees the retired label it was asked to act on
   (HIFA-14, D-061).** §4.1 R22, §2.2's `label_detail` comment and REQ-F040-38 said a catalogue-scoped

@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 3
-spec_revision: 10
+version: 4
+spec_revision: 11
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -1299,7 +1299,7 @@ Feature: hifa REST API
     Then the status is 404
     And the body has exactly the key "error"
     And error.code is "not_found"
-    And error.field is "ref"
+    And error.field is "issue"
     And error.details is null
 
   Scenario: no endpoint is async
@@ -1371,15 +1371,33 @@ Feature: hifa REST API
   resource (HIFA-14, D-061).** (1) §2.5.3 named `label_team_mismatch` and `label_retired` in the
   position where §6.1's catalog holds `error.code`, and that catalog has no such codes: the paragraph
   now publishes 422 `validation_error` with `rule='LABEL_TEAM_MISMATCH'` and 409 `conflict` with
-  `rule='LABEL_RETIRED'` — the transport code where the code goes, the rule where §5.3 and §6.3 put it,
-  the shape §2.5.3 already used for `LABEL_IN_USE`. (2) The same paragraph published only
+  `rule='LABEL_RETIRED'` — the transport code in `error.code`, and the rule as the **name SPEC-040 §6
+  gives it**, quoted the way §2.5.3 already quotes `LABEL_IN_USE` and rendered to the client in
+  `error.message` (in `error.details[].message` when one refusal reports several). No section of this
+  document declares a `rule` member: §5.3 maps exception classes to statuses and codes, and §6.3's
+  envelope carries `code`, `message`, `field` and `details` — so the name travels as text, never as a
+  key. (2) The same paragraph published only
   `field: "label_link"` for the labels subresource while SPEC-050 §2.4.5 declared both of its 404s with
   `field: "label"`; the values are settled by **what is missing** — a reference that resolves nowhere
   is `label`, a label the issue does not wear is `label_link` — and both edges read them from the
   derived `NotFound.field` (SPEC-020 §2.6, §5.3) instead of choosing one. That makes `field` of a
   missing issue the resource `issue` instead of the `ref` §6.1 used to publish, so §5.3, §6.1's
-  `not_found` row and §6.3's envelope sample say so. `version` stays at 3: no route, status code or
-  schema changes.
+  `not_found` row, §6.3's envelope sample and §7's 404 scenario say so. `version` 4: no route, status
+  code or schema changes, but §2.5.3's `error.code` for two inputs of `POST|DELETE
+  /api/v1/issues/{ref}/labels` moves — `label_team_mismatch` → `validation_error` and `label_retired` →
+  `conflict` — and a code a client branches on is §2 contract: that is the bump this entry owed and did
+  not take until revision 11.
+
+- spec_revision 11 (2026-11-20): **round 3 over this delta: the 404 example, the address of the rule and
+  the counts (HIFA-14, D-061, D-062).** (1) §7's "the 404 uses the error envelope" still asserted
+  `ref` as the `error.field` of `GET /api/v1/issues/ENG-999`, while §5.3, §6.1, §6.3 and §2.7 of this same
+  document — and SPEC-020 §2.6, which D-062 records — derive that value from the resource: the scenario
+  now asserts `issue`, and it was the one assertion the revision-10 cascade missed. The only `ref` this
+  document still publishes is §6.1's `invalid_transition` row, which is the explicit
+  `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` of SPEC-040 §6 and not a 404. (2) The
+  revision-10 note said the rule name sat "where §5.3 and §6.3 put it" and neither section declares a
+  `rule`: the name is the one SPEC-040 §6 gives the rule and it reaches the client in `error.message`.
+  (3) `version` 4, for the reason the entry above now carries.
 
 - spec_revision 9 (2026-11-20): **"label in use" is the rule the use case applies, not a narrower one
   (HIFA-14, D-061).** §2.5.3 said `issue_label` ≥ 1 row *and the issue not archived*, while

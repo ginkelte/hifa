@@ -64,6 +64,15 @@ Feature: Workspace and team labels
     And the error.code is "no_changes"
 
   @REQ-F024 @smoke
+  Scenario: label update refuses to clear and set the description at once
+    Given the workspace label "Bug" with description "renders wrong"
+    When I run "hifa label update Bug --clear-description -d 'a new one'"
+    Then the exit code is 2
+    And the error.code is "invalid_option"
+    And the "error.field" field is "description"
+    And the label "Bug" keeps its description
+
+  @REQ-F024 @smoke
   Scenario: renaming a label onto a name of the same level is a conflict
     Given the workspace labels "Bug" and "Defect"
     When I run "hifa label update Bug --name Defect"
@@ -158,6 +167,14 @@ Feature: Workspace and team labels
     Then the exit code is 4
     And the error.code is "conflict"
     And the label "infra" has a non-null retired_at
+
+  @REQ-F024 @smoke
+  Scenario: a retired label is renamed by its name
+    Given the retired workspace label "infra"
+    When I run "hifa label update infra --name platform"
+    Then the exit code is 0
+    And there is no row in "label" with name "infra"
+    And the label "platform" has a non-null retired_at
 
   @REQ-F024 @smoke
   Scenario: N labels are N transactions and the first failure decides the exit code
