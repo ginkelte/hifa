@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 5
-spec_revision: 27
+spec_revision: 28
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -942,15 +942,21 @@ def list_labels(
 # read as two statements of `LabelRepo.list` (UNSET team is not this call) and merged. `include_retired
 # =False` drops every row with `retired_at` not null. Ordered by `name` ASC and then by `id` ASC, so
 # two runs over the same data print the same table.
+#
+# That default is the **display** rule of a read that renders a catalogue, and it is not the rule the
+# catalogue writes resolve with: a read hides retired rows unless the caller asks for `--all`, while a
+# write that acts on a reference must see the retired label it was asked to restore or rename
+# (§4.1 R22 resolves with `include_retired=True`). Rendering a catalogue and acting on one reference
+# have different visibility needs, and this is the one place the difference is decided.
 
 
 def label_detail(db: Database, ref: str) -> Label: ...  # raises: NotFound(label), Validation(LABEL_AMBIGUOUS)
 #
 # `ref` is a ULID or a name, and the resolution rule depends on the kind of reference (§4.1 R22):
 #  - catalogue-scoped (`update_label`, `retire_label`, `restore_label`, `label_detail`): a ULID resolves
-#    with `LabelRepo.get`; a name resolves case-insensitively over every label of the workspace
-#    (`LabelRepo.list`, no team filter): exactly one match is the answer, none is `NotFound(label)`,
-#    and more than one — the same name in two teams — is
+#    with `LabelRepo.get`; a name resolves case-insensitively over every row of the workspace, retired
+#    ones included (`LabelRepo.list`, no team filter, `include_retired=True`): exactly one match is the
+#    answer, none is `NotFound(label)`, and more than one — the same name in two teams — is
 #    `Validation(rule='LABEL_AMBIGUOUS', field='ref')` instead of a silent pick, because these
 #    references have no team scope to narrow with;
 #  - issue-scoped (`add_label`, `remove_label`): the same ULID rule, and a name resolves in the
@@ -959,6 +965,10 @@ def label_detail(db: Database, ref: str) -> Label: ...  # raises: NotFound(label
 #  - `create_label.parent`: resolved at the label's own level (its team, or the workspace when the new
 #    label is a workspace label), and absent there, not a group, or a group of the other level is
 #    `Validation(rule='LABEL_GROUP_INVALID', field='parent')`.
+#
+# `include_retired=True` is what makes the four catalogue verbs able to act on a retired label at all:
+# `label archive infra --undo` on a retired label is the case the flag exists for, and with the read
+# default it would resolve `None` and answer `NotFound` where the contract says exit 0.
 
 
 # src/hifa/app/members.py  -- reads
@@ -1430,19 +1440,30 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   use.** `create_label`, `update_label`, `retire_label` and `restore_label` are the only writes of the
   `label` table (`add_label` creates only under `create_if_missing`, below). None of them deletes a row
   (D-015) and none touches `issue_label`.
-  - **`ref` resolution: one rule per kind of reference, and no third rule.** The four catalogue verbs
-    and `label_detail` share one scope; the two issue verbs share another; `create_label.parent` is
-    resolved at the level it belongs to.
+  - **`ref` resolution: one rule per kind of reference, and no third rule.** The three catalogue
+    writes (`update_label`, `retire_label`, `restore_label`) and the catalogue read (`label_detail`)
+    share one scope; the two issue verbs share another; `create_label.parent` is resolved at the level
+    it belongs to and is **not** one of the three kinds — it takes no `ref`, it names a parent.
     - *Issue-scoped* (`add_label`, `remove_label`): a ULID resolves with `LabelRepo.get`; a name
       resolves **in the issue's team, then in the workspace** (§5.6 step 4). No ambiguity is possible,
       because the issue's team is the tie-breaker: a team match wins over a workspace one, and two
       teams cannot be consulted.
     - *Catalogue-scoped* (`update_label`, `retire_label`, `restore_label`, `label_detail`): a ULID
-      resolves with `LabelRepo.get`; a name resolves case-insensitively across the **workspace**
-      (`LabelRepo.list`, no team filter). One match is the label, none is `NotFound(label, key=<ref>)`,
-      and two matches in different teams is `Validation(rule='LABEL_AMBIGUOUS', field='ref')` with the
-      team keys in the message. Nothing narrows it: `hifa label list --json` is how a caller obtains the
-      ULID (SPEC-050 §2.5.4). This is the only place `LABEL_AMBIGUOUS` can be raised.
+      resolves with `LabelRepo.get`; a name resolves case-insensitively across the **workspace**,
+      **retired rows included** — `LabelRepo.list(..., include_retired=True)`, no team filter. The flag
+      is not an option here: these four verbs exist to act on the catalogue, and the three things they
+      must be able to do with a retired row — clear `retired_at`, rename it, print it for `label show` —
+      are invisible under the read default of §2.2 (`include_retired=False`), which is the *display*
+      rule of a listing. A read that renders a catalogue hides retired rows; a reference that acts on
+      one row must see them. One match is the label, none is `NotFound(label, key=<ref>)`, and two
+      matches in different teams is `Validation(rule='LABEL_AMBIGUOUS', field='ref')` with the team keys
+      in the message. Ambiguity is judged over the same set the resolution reads, retired rows included,
+      so a retired `Bug` of one team and a live `Bug` of another is ambiguous rather than a silent pick
+      of the live one; two labels with one name in the **same** team cannot arise at all, because
+      `uq_label_team` and `uq_label_ws` count retired rows too (SPEC-010 R6, D-010), so
+      `LABEL_AMBIGUOUS` always means two teams and never one team twice. Nothing narrows it: the ULID of
+      a retired row comes from `hifa label list --json --all` (SPEC-050 §2.5.4). This is the only place
+      `LABEL_AMBIGUOUS` can be raised.
     - `create_label.parent` is resolved at the label's own level — the new label's team for a team
       label, the workspace for a workspace label: a parent absent at that level, not `is_group=1`, or a
       group of the other level is `Validation(rule='LABEL_GROUP_INVALID', field='parent')` (below).
@@ -1532,7 +1553,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-35** | A comment thread stops at three: `comment_on_issue` refuses the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')` and inserts nothing, and the reply that lands at depth 3 is stored | 2 scenarios, one at the boundary and one past it |
 | **REQ-F040-36** | `comment_on_issue` refuses a trashed issue with `Validation(rule='ISSUE_TRASHED')` and an archived one with `InvalidTransition(rule='ISSUE_ARCHIVED')`, both before a parent is read, and writes no row either way | 2 scenarios, one per layer |
 | **REQ-F040-37** | `add_label` returns `AddLabelResult(issue, replaced)`; a label of a `singleSelect` group replaces every sibling the issue carries, in the same transaction and before the insert, and the removal is recorded as its own `('label', <replaced name>, NULL)` row before the attach row; a `multiSelect` group and a label outside any group replace nothing | 3 scenarios: one replacement, one group that must not replace, one no-op |
-| **REQ-F040-38** | `update_label` changes `name`, `color` and `description` only and judges the new name's uniqueness at the label's own level; `retire_label` refuses a label with any `issue_label` row (`Conflict(rule='LABEL_IN_USE')`) and an already retired one (`Conflict(rule='LABEL_RETIRED')`); `restore_label` clears `retired_at` and refuses a label that is not retired (`Conflict(rule='LABEL_NOT_RETIRED')`); a name that matches labels of two teams is `Validation(rule='LABEL_AMBIGUOUS')` on the four catalogue-scoped references — `update_label`, `retire_label`, `restore_label` and `label_detail` — and can never fire on `add_label`/`remove_label`, whose names resolve in the issue's team first | 5 scenarios: the rename, `LABEL_IN_USE`, `LABEL_RETIRED`, the undo with `LABEL_NOT_RETIRED`, and `LABEL_AMBIGUOUS` |
+| **REQ-F040-38** | `update_label` changes `name`, `color` and `description` only and judges the new name's uniqueness at the label's own level; `retire_label` refuses a label with any `issue_label` row (`Conflict(rule='LABEL_IN_USE')`) and an already retired one (`Conflict(rule='LABEL_RETIRED')`); `restore_label` clears `retired_at` and refuses a label that is not retired (`Conflict(rule='LABEL_NOT_RETIRED')`); a name that matches labels of two teams is `Validation(rule='LABEL_AMBIGUOUS')` on the four catalogue-scoped references — `update_label`, `retire_label`, `restore_label` and `label_detail` — and can never fire on `add_label`/`remove_label`, whose names resolve in the issue's team first; those four resolve a **name** with `LabelRepo.list(..., include_retired=True)`, retired rows included, so `restore_label`, a repeated `retire_label` and the rename of a retired label are reachable by name instead of answering `NotFound` | 5 scenarios: the rename, `LABEL_IN_USE`, `LABEL_RETIRED`, the undo with `LABEL_NOT_RETIRED`, and `LABEL_AMBIGUOUS` |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -2014,8 +2035,8 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `LABEL_NOT_RETIRED` | `Conflict` | restoring a label whose `retired_at` is already NULL | `restore_label` | 4 | 409 |
 | `LABEL_GROUP_INVALID` | `Validation` | a group with a parent, a group without `group_type`, or a `parent` that is not an existing group of the same level (`field` names `parent` or `group_type`) | `create_label` | 2 | 422 |
 | `LABEL_NAME_EMPTY` | `Validation` | a label name that is blank after trimming (`field='name'`) | `create_label`, `update_label` | 2 | 422 |
-| `LABEL_AMBIGUOUS` | `Validation` | a label name that matches labels of two teams (`field='ref'`); the message names the team keys | `update_label`, `retire_label`, `restore_label`, `label_detail` | 2 | 422 |
-| `UNIQUE_LABEL_NAME` | `Conflict` | repeated `(workspace_id, team_id, name)` on create or on rename (the condition `LabelRepo.insert`/`update` reports as `DUPLICATE_LABEL`, which the use case translates into this name) | `create_label`, `update_label` | 4 | 409 |
+| `LABEL_AMBIGUOUS` | `Validation` | a label name that matches labels of two teams, retired rows included (`field='ref'`); the message names the team keys | `update_label`, `retire_label`, `restore_label`, `label_detail` | 2 | 422 |
+| `UNIQUE_LABEL_NAME` | `Conflict` | repeated `(workspace_id, team_id, name)` on create or on rename (the condition `LabelRepo.insert`/`update` reports as `DUPLICATE_LABEL`, which the use case translates into this name) | `create_label`, `update_label`, `add_label` (only under `create_if_missing`) | 4 | 409 |
 | `COLOR_FORMAT` | `Validation` | color outside `#RRGGBB` | `create_label`, `update_label`, `add_label` (only under `create_if_missing`) | 2 | 422 |
 | `UNIQUE_STATE_NAME` | `Conflict` | repeated state `(team_id, name)` | `create_state`, `update_state` | 4 | 409 |
 | `STATE_TYPE_INVALID` | `Validation` | `state_type` outside the six types | `create_state`, `update_state` | 2 | 422 |
@@ -2076,7 +2097,8 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `update_team` | team | `TEAM_KEY_INVALID` | `UNIQUE_TEAM_KEY` | — |
 | `archive_team` | team | `TEAM_HAS_OPEN_ISSUES` | `TEAM_ALREADY_ARCHIVED` | — |
 | `create_state` / `update_state` | team, state | `STATE_TYPE_INVALID`, `STATE_NAME_EMPTY`, `TEAM_ARCHIVED` | `UNIQUE_STATE_NAME` | — |
-| `create_label` / `update_label` / `retire_label` / `restore_label` | label, team | `LABEL_GROUP_INVALID`, `LABEL_NAME_EMPTY`, `LABEL_AMBIGUOUS`, `COLOR_FORMAT`, `TEAM_ARCHIVED` | `UNIQUE_LABEL_NAME`, `LABEL_RETIRED`, `LABEL_IN_USE`, `LABEL_NOT_RETIRED` | — |
+| `create_label` | label, team | `LABEL_GROUP_INVALID`, `LABEL_NAME_EMPTY`, `COLOR_FORMAT`, `TEAM_ARCHIVED` | `UNIQUE_LABEL_NAME` | — |
+| `update_label` / `retire_label` / `restore_label` | label | `LABEL_AMBIGUOUS`, plus `LABEL_NAME_EMPTY` and `COLOR_FORMAT` on `update_label` | `UNIQUE_LABEL_NAME` (`update_label` only), `LABEL_RETIRED`, `LABEL_IN_USE`, `LABEL_NOT_RETIRED` | — |
 | `create_member` / `update_member` / `deactivate_member` | member | `MEMBER_EMAIL_INVALID`, `MEMBER_NAME_EMPTY` | `UNIQUE_MEMBER_EMAIL`, `MEMBER_ALREADY_INACTIVE` | — |
 | `create_project` | team, member | `DATE_RANGE_INVERTED`, `PROJECT_TEAM_MISMATCH` | — | — |
 | `update_project` / `archive_project` | project, team, member | `DATE_RANGE_INVERTED` | — | — |
@@ -2093,8 +2115,10 @@ The two issue label verbs differ on exactly one input, and the difference is the
 assigns: a **name** that resolves at neither level is `LABEL_NOT_FOUND` on `add_label` (exit 2; that
 verb is its only producer) and `NotFound(resource='label')` on `remove_label` (exit 3), which is also
 what both verbs answer for a ULID that exists nowhere. `LABEL_AMBIGUOUS` appears in two cells and
-nowhere else — the row of `update_label` / `retire_label` / `restore_label` and the row of
-`label_detail`; no issue-scoped reference and no list can raise it.
+nowhere else — the row of `update_label` / `retire_label` / `restore_label` (its `Validation` cell) and
+the row of `label_detail`; no issue-scoped reference and no list can raise it. `create_label` has a row
+of its own on purpose: it takes no `ref`, so its `Validation` cell names only the parent, the name, the
+color and the team, and `LABEL_AMBIGUOUS` is not among them.
 
 Payload shape: the one of SPEC-020 §6 (`{"error": {"code", "message", "details"}}`). `details` always
 includes `resource`/`key` in `NotFound`, `rule`/`field` in `Validation` and `rule` in `Conflict`. The
@@ -2620,6 +2644,26 @@ Feature: Application use cases
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 28 (2026-11-20): **a catalogue verb sees the retired label it was asked to act on
+  (HIFA-14, D-061).** §4.1 R22, §2.2's `label_detail` comment and REQ-F040-38 said a catalogue-scoped
+  name resolves with `LabelRepo.list` and "no team filter", which is the read default
+  `include_retired=False` of §2.2 — that drops every retired row, so `label archive infra --undo` on a
+  retired label resolved `None` and answered `NotFound`/exit 3 where SPEC-050 §2.5.4 and
+  `09-labels.feature` say exit 0, and the double retire and the rename of a retired row were
+  unreachable by name for the same reason. The four catalogue verbs now resolve with
+  `LabelRepo.list(..., include_retired=True)`, stated identically in §2.2, R22 and REQ-F040-38, and
+  `LABEL_AMBIGUOUS` is judged over that same set: a retired `Bug` of one team and a live one of
+  another is ambiguous, while two rows with one name in the same team cannot exist because the partial
+  indexes count retired rows (SPEC-010 R6, D-010). The display default does not move — `list_labels`
+  still hides retired rows unless `--all`, and §2.2 now says in one sentence why a read that renders a
+  catalogue and a write that acts on one reference need different visibility. Also here: R22's lead
+  sentence names the three catalogue writes plus the read and keeps `create_label.parent` outside
+  them; the §6 matrix rows `create_label` alone, because it cannot raise `LABEL_AMBIGUOUS`;
+  `UNIQUE_LABEL_NAME`'s producer cell gains `add_label` under `create_if_missing`, which `# raises:`,
+  the `add_label` Conflict cell and SPEC-050 §2.5.3 already said. `version` stays at 5: no signature,
+  field or command changes — the four verbs already existed and their scope was always "the
+  catalogue".
 
 - spec_revision 27 (2026-11-20): **the label contract closes the loops revision 26 opened, and one of
   them was a bug (HIFA-14, D-061).** (1) The `singleSelect` replacement no longer treats the incoming

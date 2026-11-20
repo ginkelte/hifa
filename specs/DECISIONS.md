@@ -2764,12 +2764,17 @@ step, in the same PR as the routes, because `CAPABILITIES` may not name a verb t
 ## D-061 — The label surface: five verbs, one replacement and one refusal to retire what is in use
 
 **Date:** 2026-11-20 · **Wins:** SPEC-040 §2, §4.1 (R10, R22), §5.6, §6 · **Touches:** SPEC-040
-§2.1/§2.2/§3.1/§4/§5/§6/§7/§9/Notes, SPEC-050 §2.3/§2.3.1/§2.4.1/§2.4.2/§2.4.3/§2.4.4/§2.5/§2.5.3/§2.5.4/§3/§11,
-SPEC-020 §2.5/§4.2/§6/Notes (the exception class of `validate_label_scope`), SPEC-060
-§2.5.3/§11 (the set that triggers the label-in-use `409`), SPEC-001 REQ-F024, §7.2 and Notes,
+§2.1/§2.2/§3.1/§4/§4.1/§5/§6/§7/§9/Notes, SPEC-050
+§2.3/§2.3.1/§2.4.1/§2.4.2/§2.4.3/§2.4.4/§2.4.5/§2.5/§2.5.3/§2.5.3.1/§2.5.4/§6/§3/§11,
+SPEC-020 §2.5/§2.6/§4.2/§6/§7/Notes (the exception class of `validate_label_scope` and the `field` of
+`NotFound`), SPEC-060 §2.5.3/§5.3/§6.1/§6.3/§11 (the set that triggers the label-in-use `409`, the
+transport codes and the `field` of a 404), SPEC-001 REQ-F024, REQ-F034, §7.2 and Notes,
 `specs/001-mvp-v1.tasks.md` (its header, its acceptance-coverage line and its Notes — no checkbox),
-`specs/acceptance/001-mvp-v1/09-labels.feature`, `specs/INDEX.md` (the label paragraph and the corpus
-count), and this file; `scripts/check_edge_parity.py` is the implementer's step, not this revision's
+`specs/acceptance/001-mvp-v1/09-labels.feature`, and the three `error.field` steps of a missing issue
+in `03-issues-crud.feature`, `15-cli-contract.feature` and `16-dashboard.feature` (see (h), the one
+place a change outside the label surface was forced), `specs/INDEX.md` (the label paragraph and the
+corpus count), and this file; `scripts/check_edge_parity.py` is the implementer's step, not this
+revision's
 
 **Prior state: labels worked on the way in and nowhere after that.** `--label` on `issue create` accepts
 repeats or a comma-separated list, resolves each name per team, creates nothing, links `issue_label` and
@@ -2820,15 +2825,22 @@ two facts — one label left, another arrived — and R3's granularity is one ro
 
 **The invariant is stated over the set, not over one row.** "At most one label of a `singleSelect`
 group per issue, and it is the requested one" holds even when a hand-edited database carries two
-siblings: both are removed and `replaced` is the first in `name` ASC order, because R16 forbids an order
-that depends on how the rows came back. Through this port the case does not arise; stating it costs one
-clause and removes the question.
+siblings: every sibling **other than the incoming label** is removed (step 6 reads the group's rows with
+`l.id != label.id`), the attach row is written only when the label was not already linked, and
+`replaced` is the first removed sibling in `name` ASC order, because R16 forbids an order that depends
+on how the rows came back. Through this port the case does not arise; stating it costs one clause and
+removes the question.
 
 ### (c) The catalogue grows two verbs: `label update` and the undo of a retire
 
 `hifa label update REF [--name] [--color] [-d/--description] [--clear-description]` over `update_label`,
 and `hifa label show REF` over `label_detail` — the read had no consumer on the reference surface, and a
 catalogue whose only reader is `label list` cannot answer "what is this label" before renaming it.
+`--clear-description` together with `-d/--description` is exit 2 `invalid_option`, `field:
+"description"`: the pair says "clear it" and "set it to this" about one column, and a flag that
+contradicts another flag is a bad invocation, the same answer `--json` with `--quiet` and `--team` with
+`--no-team` already get. It is a refusal, not a precedence — a silent winner would leave the loser
+unexplained on a command whose whole job is one column.
 
 `restore_label` is a **second use case**, not a flag: `RetireLabel` carries a ref and nothing else, one
 use case opens one transaction (R1), and `trash_issue`/`restore_issue` are the family's precedent for
@@ -2893,8 +2905,22 @@ ambiguous there; and `label add --parent` is a group of the new label's **own le
 label hanging from a workspace group (or the reverse) is a level no rule of this corpus defines.
 
 More than one workspace match on a catalogue reference is `Validation(rule='LABEL_AMBIGUOUS',
-field='ref')` ⇒ exit 2, with the team keys in the message and `hifa label list --json` as the way to the
-ULID.
+field='ref')` ⇒ exit 2, with the team keys in the message and `hifa label list --json --all` as the way
+to the ULID.
+
+**That scope reads retired rows, and the listing does not.** The four catalogue references resolve with
+`LabelRepo.list(..., include_retired=True)`: these verbs exist to act on the catalogue, and the two
+things the family was extended for — clearing `retired_at` with `label archive --undo` and renaming a
+retired row — are invisible under the port's default `include_retired=False`. With the default,
+`label archive infra --undo` on a retired label resolved `None` and answered `NotFound`/exit 3 while the
+verb and its scenario say exit 0, and the double retire and the rename were equally unreachable by name.
+The two defaults therefore differ on purpose and both are stated: a **read that renders a catalogue**
+hides retired rows unless `--all`, and a **write that acts on one reference** sees them, because hiding
+a row from a listing is a display choice and hiding it from the verb that un-retires it is a dead
+contract. Ambiguity is judged over the same set the resolution reads, so a retired `Bug` of one team and
+a live `Bug` of another is `LABEL_AMBIGUOUS` rather than a silent pick of the live one; two rows with one
+name in the **same** team cannot arise, because `uq_label_team`/`uq_label_ws` count retired rows
+(SPEC-010 R6, D-010), so the code always means two teams and never one team twice.
 
 **The alternative rejected: resolving team-first on the catalogue verbs too.** There is no issue to take
 the team from, and `--team` on those three would be a second scope on a command that already has one for
@@ -2927,7 +2953,29 @@ serves, so the rows land **in the same PR as the code**, not in this one:
 scope is the command's (§2.5's conventions), and the AND semantics inside the family are SPEC-030 §2.6's
 (unchanged).
 
-### (h) What this decision does not do
+### (h) A 404 publishes what does not exist, and the resource is the accessor
+
+`NotFound` gains a derived `field` that returns its `resource` (SPEC-020 §2.6). It is the one place the
+two edges read a 404's `field` from, and it settles a contradiction the surface carried: SPEC-060 §2.5.3
+published `field: "label_link"` for a label the issue does not wear, while SPEC-050 §2.4.5 declared
+**both** of that verb's 404s `field: "label"` and promised "the same envelope as the API". The values are
+settled by **what is missing**, not by which edge asks — a **reference** that resolves nowhere is
+`NotFound(resource='label')` ⇒ `field: "label"`, and a label the issue exists without wearing is
+`NotFound(resource='label_link')` ⇒ `field: "label_link"` — and no raise site passes the field, so the
+two edges cannot drift apart again. The alternative rejected: an optional `field` argument per raise
+site, which is the invention this closes and one more place to disagree.
+
+**The price, paid once and here.** A derived `field` makes every 404 publish the `resource`, so
+`hifa issue show ENG-999` publishes `field: "issue"` and not the `ref` that SPEC-050 §2.4.5/§2.7/§6, SPEC-060
+§6.1/§6.3 and three acceptance steps of `03-issues-crud.feature`, `15-cli-contract.feature` and
+`16-dashboard.feature` used to print. Those are the only statements outside the label surface this
+revision edits, and the alternative was worse: keeping `ref` would have re-created the very defect this
+round fixes — one error, two declared `field` values — for the issue family instead of the label one.
+Every other `ref` in the corpus is `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` and does not
+move: it is a `Validation`-shaped field, not a resource. Nothing else of a 404 changes: the code stays
+`not_found`, the exit code stays 3 and the status stays 404.
+
+### (i) What this decision does not do
 
 No web route, no fragment, no `replaced` in the panel's chip (a `singleSelect` replacement leaves the
 replaced chip in the DOM until the labels container is re-rendered — HIFA-61's contract, named here so
@@ -2936,17 +2984,22 @@ it is not discovered later). No re-parenting, no level change, no `label delete`
 `export`/`import`, or to the REST surface: SPEC-060 keeps `POST /issues/{ref}/labels ⇒ 200 IssueOut` and
 reads `.issue` from the result object, which is not a change of its contract.
 
-**Verification.** SPEC-040 goes to `version: 5` / `spec_revision: 27` (a return type, a field of
-`CreateLabel`, a new command and four codes are §2), SPEC-050 to `version: 4` / `spec_revision: 24`
-(five leaf commands, two exit sets, one envelope, and the `TEAM` column it now names), SPEC-020 to
-`version: 4` / `spec_revision: 10` (the exception class `validate_label_scope` declares in §2.5),
-SPEC-060 to `version: 3` / `spec_revision: 9` (the set that triggers the label-in-use `409`), SPEC-001
-to `spec_revision: 14` and `specs/001-mvp-v1.tasks.md` to `spec_revision: 14` with **no checkbox
-ticked**. The executable half is `specs/acceptance/001-mvp-v1/09-labels.feature`: the three scenarios
+**Verification.** SPEC-040 goes to `version: 5` / `spec_revision: 28` (a return type, a field of
+`CreateLabel`, a new command and four codes are §2; the second round corrects the catalogue scope, the
+matrix rows and one producer cell without touching §2's signatures), SPEC-050 to `version: 4` /
+`spec_revision: 25` (five leaf commands, two exit sets, one envelope, and the `TEAM` column it now
+names; the second round adds the retired visibility of a `REF`, the two 404 `field` values, the
+`--clear-description` refusal and one filter row), SPEC-020 to `version: 5` / `spec_revision: 11` (the
+exception class `validate_label_scope` declares in §2.5, and the derived `field` of `NotFound` in §2.6),
+SPEC-060 to `version: 3` / `spec_revision: 10` (the set that triggers the label-in-use `409`; the second
+round publishes transport codes in §2.5.3 and the published `field` of a 404 in §5.3/§6), SPEC-001
+to `spec_revision: 15` (one 404 example in REQ-F034) and `specs/001-mvp-v1.tasks.md` to
+`spec_revision: 14` with **no checkbox ticked**. The executable half is `specs/acceptance/001-mvp-v1/09-labels.feature`: the three scenarios
 that already existed plus seventeen that pin the rename, the recolor, the two conflicts of the retire
 axis, the undo, the shared name, `--create`, `--color` without `--create`, the two shapes of a missing
 unlabel and the partial application of an N-label command — 20 scenarios, and the corpus of
 `specs/acceptance/001-mvp-v1/` is **238** (226 `Scenario` + 12 `Scenario Outline`), the number every
-place that states it now carries. **This branch is the spec change only**: `src/hifa/app/labels.py`,
-`src/hifa/cli/commands/label.py`, `add_label`/`remove_label` and the seven capability rows are not in the
-tree, and that drift is what the two `spec_revision` bumps record.
+place that states it now carries; the second round changes no scenario count and no scenario text of
+that file except the one `error.field` step whose value §(h) settles. **This branch is the spec change
+only**: `src/hifa/app/labels.py`, `src/hifa/cli/commands/label.py`, `add_label`/`remove_label` and the
+seven capability rows are not in the tree, and that drift is what the `spec_revision` bumps record.

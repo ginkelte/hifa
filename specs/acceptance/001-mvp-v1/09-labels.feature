@@ -139,7 +139,7 @@ Feature: Workspace and team labels
     When I run "hifa issue unlabel ENG-40 infra"
     Then the exit code is 3
     And the error.code is "not_found"
-    And the "error.field" field is "label"
+    And the "error.field" field is "label_link"
     And "ENG-40" still carries only "Bug"
 
   @REQ-F024 @smoke

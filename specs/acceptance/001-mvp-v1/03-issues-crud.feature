@@ -57,7 +57,7 @@ Feature: Issues — creation, reading and updating
     When I run "hifa issue show ENG-999 --json"
     Then the exit code is 3
     And the "error.code" field of stderr is "not_found"
-    And the "error.field" field of stderr is "ref"
+    And the "error.field" field of stderr is "issue"
 
   @REQ-F013 @smoke
   Scenario: edit writes one history row per changed column

@@ -33,7 +33,7 @@ Feature: HTTP dashboard
     When I execute a GET to "/api/v1/issues/ENG-999"
     Then the status is 404
     And the "error.code" field is "not_found"
-    And the "error.field" field is "ref"
+    And the "error.field" field is "issue"
 
   @REQ-F034 @smoke @slow
   Scenario: POST /api/v1/issues creates the issue and responds 201

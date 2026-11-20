@@ -3,8 +3,8 @@ id: SPEC-020
 title: Domain core
 component: domain
 status: review
-version: 4
-spec_revision: 10
+version: 5
+spec_revision: 11
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -743,6 +743,8 @@ class NotFound(HifaError):
     def resource(self) -> str: ...
     @property
     def key(self) -> str: ...
+    @property
+    def field(self) -> str: ...
 
 
 class Conflict(HifaError):
@@ -814,9 +816,13 @@ class InvalidTransition(HifaError):
     def allowed(self) -> tuple[str, ...]: ...
 ```
 
-Each subclass fixes its attributes as read-only properties (`resource`/`key`, `rule`/`field`/
-`value`, `current`/`target`/`allowed`) and includes them in `details` (explicit `details` are
-merged with the derived ones, without overwriting them). All kwargs are **keyword-only** except `message`.
+Each subclass fixes its attributes as read-only properties (`resource`/`key`/`field`,
+`rule`/`field`/`value`, `current`/`target`/`allowed`) and merges the derived ones into `details`
+without overwriting explicit values (`NotFound` writes `resource`/`key` there). `NotFound.field` is
+the one **derived** value of the family: it returns `resource`, the noun of what does not exist, and
+no raise site passes it, so every edge renders `field` of a 404 without inventing one — `label` for
+a label reference that resolves nowhere, `label_link` for a label the issue does not wear (SPEC-040
+§2.2, SPEC-050 §2.4.5, SPEC-060 §2.5.3). All kwargs are **keyword-only** except `message`.
 `code` is a stable `str` in `SCREAMING_SNAKE_CASE` that the edge uses to map to exit code /
 HTTP (table in §6).
 
@@ -930,7 +936,7 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-11** | `validate_relation` rejects self-relation (`Validation`), exact duplicate and symmetric duplicate (`Conflict`); `validate_relation_scope` rejects an edge between two workspaces (`RELATION_WORKSPACE_MISMATCH`) and accepts two teams of one workspace | 5 tests |
 | **REQ-F020-12** | `validate_label_scope` accepts workspace labels and own-team labels; rejects a label from another team with `Validation(rule='LABEL_TEAM_MISMATCH')` (exit 2) and a retired label with `Conflict(rule='LABEL_RETIRED')` (exit 4) | 4 tests |
 | **REQ-F020-13** | `validate_archive_team` rejects archiving a team with `open_issues > 0` and one already archived | 2 tests |
-| **REQ-F020-14** | The 5 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}` | structure test + `isinstance` test |
+| **REQ-F020-14** | The 5 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}`; `NotFound.field` returns its `resource` (`'label'` for `NotFound(resource='label', key='infra')`, `'label_link'` for `resource='label_link'`), so the edges publish one value per 404 without passing one | structure test + `isinstance` test + the `field` assertions of §7 |
 | **REQ-F020-15** | No `domain/` module imports what R11 forbids nor calls `now`, `today`, `time`, `uuid4`, `random` | AST test that walks the 6 files |
 | **REQ-F020-16** | No function of `rules`, `ranking` or `identifier` mutates its arguments or global state; two calls with the same input give the same output | double call + copy comparison |
 | **REQ-F020-17** | `validate_date_range` rejects `target < start` in `project` and in `cycle` (`ends_at <= starts_at`) | 2 tests |
@@ -1006,7 +1012,7 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `Validation` | `RELATION_WORKSPACE_MISMATCH` | an edge between two workspaces | exit 2 | 422 |
 | `Validation` | `RANKING_EXHAUSTED` | no float gap between two positions | exit 2 | 422 |
 | `Validation` | `STATE_ARCHIVED` | move/create against a `workflow_state` with `archived_at` | exit 2 | 422 |
-| `NotFound` | `NOT_FOUND` | nonexistent id/identifier | exit 3 | 404 |
+| `NotFound` | `NOT_FOUND` | nonexistent id/identifier; `field` is the `resource` (what does not exist, `label` vs `label_link`) | exit 3 | 404 |
 | `Conflict` | `CONFLICT` | uniqueness (`identifier`, `(team_id, number)`, duplicate label) | exit 4 | 409 |
 | `Conflict` | `RELATION_DUPLICATE` / `TEAM_ALREADY_ARCHIVED` / `LABEL_RETIRED` | logical duplicate, or the same change asked twice: a repeated relation, an archived team archived again, a retired label attached or retired again | exit 4 | 409 |
 | `InvalidTransition` | `INVALID_TRANSITION` | not raised by any function of this layer: the single producer is the use-case layer, which raises it for a write on an issue with `archived_at` not null (SPEC-040 §6, R20; D-042); the class exists so that condition maps to exit 5 of D-014 | exit 5 | 409 |
@@ -1241,6 +1247,8 @@ Feature: Pure domain core
     And error.code is "VALIDATION"
     And error.details.rule is "TITLE_EMPTY"
     And Validation is a subclass of HifaError
+    And a NotFound with resource "label" and key "infra" has field "label"
+    And a NotFound with resource "label_link" and key "b" has field "label_link"
 
   @REQ-F020-15
   Scenario: the domain imports no infrastructure and reads no clock
@@ -1367,6 +1375,15 @@ Executable from top to bottom; every step has a verification command.
   `checksum`), infrastructure and not domain. It has no entity, repo or use case, by design.
 
 ## Notes
+
+- spec_revision 11 (2026-11-20): **a 404 publishes what does not exist, and it is derived (HIFA-14,
+  D-061).** `NotFound` gains `field`, a read-only accessor that returns `resource`: no raise site
+  passes it, so an edge renders `field` of a 404 from the exception instead of choosing a string, and
+  the value is the noun of the missing thing — `label` for a label reference that resolves nowhere,
+  `label_link` for a label the issue does not wear (SPEC-040 §2.2, SPEC-050 §2.4.5, SPEC-060 §2.5.3).
+  The alternative rejected: a passed `field` per raise site, which is the invention this closes and a
+  second place to disagree. `version` 5: §2.6 declares a public attribute of the exception, the same
+  reason `version` 4 was bumped. REQ-F020-14 and its §7 scenario now name the observable.
 
 - spec_revision 10 (2026-11-20): **a retired label is a state conflict, not a bad argument (HIFA-14,
   D-061).** `validate_label_scope` refuses `label.retired_at not None` with `Conflict(rule=
