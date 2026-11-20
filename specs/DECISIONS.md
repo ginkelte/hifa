@@ -2760,3 +2760,171 @@ case, the verb, the two routes and the composer are not in `src/`, and the drift
 goes to `version: 3` (a name enters the `rules` row of §2, which is the public contract), SPEC-040 to
 `spec_revision` 25, SPEC-050 to 22, SPEC-070 to 25 and SPEC-001 to 12. The parity rows of (c) are T-20.2's
 step, in the same PR as the routes, because `CAPABILITIES` may not name a verb the tree does not have.
+
+## D-061 — The label surface: five verbs, one replacement and one refusal to retire what is in use
+
+**Date:** 2026-11-20 · **Wins:** SPEC-040 §2, §4.1 (R10, R22), §5.6, §6 · **Touches:** SPEC-040 §2.1/§2.2/§3.1/
+§4/§5/§6/§7/§9/Notes, SPEC-050 §2.3/§2.3.1/§2.4.1/§2.4.2/§2.4.3/§2.4.4/§2.5/§2.5.3/§2.5.4/§3/§11,
+SPEC-001 REQ-F024 and Notes, `specs/acceptance/001-mvp-v1/09-labels.feature`, `specs/INDEX.md`;
+`scripts/check_edge_parity.py` is the implementer's step, not this revision's
+
+**Prior state: labels worked on the way in and nowhere after that.** `--label` on `issue create` accepts
+repeats or a comma-separated list, resolves each name per team, creates nothing, links `issue_label` and
+the dashboard renders the chips. Everything after creation was declared in prose and hollow in the
+contract. SPEC-040 §2.2 named five label functions and left `add_label` returning an `Issue` — with no
+place for the `replaced` REQ-F024 has required since the first revision of the vertical, because
+`issue_label` is written only by `create_issue`. SPEC-050 published `label add|list|archive` and no
+`label update`, while the ticket asks to rename or recolor a label without editing SQLite by hand;
+`label archive --undo` was published with no use case behind it (`retire_label` only sets
+`retired_at`); `label archive`'s in-use refusal lived in a prose sentence while `retire_label`'s
+`raises:` line carried only `LABEL_RETIRED`; `AddLabel.create_if_missing` and `color` had no flag to
+arrive through; `label_detail` had no verb; `label list --team` named a flag whose meaning nobody
+wrote; and `issue label` carried a `--team` that can only contradict the issue's own team. Ten holes,
+one ticket, and the web half already split out as HIFA-61.
+
+### (a) The replacement travels in a result object, and the answer is the one two-key envelope
+
+`add_label` returns `AddLabelResult(issue, replaced)`. `replaced` is the label entity the write took off
+the issue, or `None`. `issue label --json` and `issue unlabel --json` emit
+`{"issue": <Issue>, "replaced": <{id,name,color}|null>}`; the table output stays one row with the
+columns of `issue list` and `--quiet` prints the identifier.
+
+**The alternative rejected: a `replaced` key on the canonical `Issue`.** §2.4.2's objects are emitted
+complete, so a key added for one verb appears on every issue of every command, and it would say
+"nothing was replaced" about a read that replaced nothing because it wrote nothing. The replacement is a
+fact about the **call**, not a property of the issue — the same distinction D-051 drew for the board
+rebalance, which is why `move` has no `rebalanced` key. Here the fact is demanded by a requirement, so
+it travels beside the object instead of inside it.
+
+**The alternative rejected: the CLI computing it.** It would read the labels before the write, call the
+use case, and diff — a second copy of the rule at the edge (P4), and a race between the two reads.
+**And the third: a string.** REQ-F024 wrote `replaced: <label>`; a `{id, name, color}` object is what a
+consumer can act on (the chip to remove) and it is the shape `labels[]` already carries, so a client
+reads one shape for both. The cost is that this is the only mutation of the tree answering two keys, and
+SPEC-050 §2.4.3 says so in one sentence rather than leaving it to be discovered.
+
+### (b) The replacement is two history rows, with the field name the adapter already uses
+
+A `singleSelect` group replaces: every label the issue carries with the same `parent_id` is deleted,
+then the incoming one is inserted. The history gets one row per label moved, sharing the single `now` of
+the use case, **detach first**: `('label', '<replaced name>', NULL)` and then `('label', NULL, '<incoming
+name>')`. `label` is the logical key SPEC-030 §2.5 already declares for this table, so no new name is
+invented and a test can count rows by `field = 'label'`.
+
+**Why a row at all.** A history that says "bug was added" while a label silently disappeared is a
+history that cannot explain the issue it describes. **Why not one row with both values.** The pair is
+two facts — one label left, another arrived — and R3's granularity is one row per change.
+
+**The invariant is stated over the set, not over one row.** "At most one label of a `singleSelect`
+group per issue, and it is the requested one" holds even when a hand-edited database carries two
+siblings: both are removed and `replaced` is the first in `name` ASC order, because R16 forbids an order
+that depends on how the rows came back. Through this port the case does not arise; stating it costs one
+clause and removes the question.
+
+### (c) The catalogue grows two verbs: `label update` and the undo of a retire
+
+`hifa label update REF [--name] [--color] [-d/--description] [--clear-description]` over `update_label`,
+and `hifa label show REF` over `label_detail` — the read had no consumer on the reference surface, and a
+catalogue whose only reader is `label list` cannot answer "what is this label" before renaming it.
+
+`restore_label` is a **second use case**, not a flag: `RetireLabel` carries a ref and nothing else, one
+use case opens one transaction (R1), and `trash_issue`/`restore_issue` are the family's precedent for
+two commands over one column. `label archive --undo` is the undo SPEC-050 already published; D-031 is
+the record of what happens when an edge publishes an `--undo` before the function exists.
+
+**A repeated change is a conflict, not a no-op.** `retire_label` of a retired label is
+`LABEL_RETIRED` (already declared), so `restore_label` of a live one is `LABEL_NOT_RETIRED`: the family
+answers a repeated change with exit 4 and `issue archive`'s idempotent 0 is the exception that has its
+own reason (an archive can be asked twice by a script that does not read). A silent 0 here would also
+hide the likelier mistake — a wrong reference.
+
+**What `update_label` may not touch.** `team_id`, `parent_id`, `is_group`, `group_type` and
+`retired_at`. Moving a label between levels or re-parenting it changes what every chip means and needs a
+product decision ("does the team keep the links?") that nothing in the corpus has taken. `label update`
+renames, recolors and re-describes; a retired label may be renamed, because the row is the record and
+the fix is worth having.
+
+### (d) `LABEL_IN_USE` means "any `issue_label` row", and the trash counts
+
+`retire_label` refuses a label with `Conflict(rule='LABEL_IN_USE')` when `LabelRepo.count_uses > 0` —
+every layer, archived and trashed issues included.
+
+**Why the stricter reading.** The alternative (only live issues) needs a count that filters the layer,
+and the port has no such read: `count_uses` counts rows of `issue_label`. Adding a second read to
+SPEC-030 for one refusal is a contract change in the adapter to serve a judgement the application layer
+owns. And the stricter reading is the true one: a restored issue comes back with its chips, and a label
+retired under an archived issue is a chip nothing can re-attach — `add_label` refuses a retired label
+(SPEC-020 R8), so the only way to fix it is `label archive --undo`, which is a fine answer but not one a
+refusal should hide.
+
+**The price, stated.** Retiring a label whose only uses are archived issues is refused, and the reader
+detaches it or restores what it is attached to. **And the recorded correction:** SPEC-060 §2.5.2's
+parenthetical — "(`issue_label` with ≥1 row and the issue not archived)" — narrows the condition to a set
+the use case cannot see. SPEC-040 wins (D-012) and this decision is the record; the route's `409` for
+`label in use` does not move, so SPEC-060's next revision drops the parenthetical and nothing else.
+
+### (e) `--create` is the cheap creation, and `issue label` loses a flag that had no meaning
+
+`hifa issue label REF LABEL... [--create] [--color HEX]`: `--create` maps to
+`AddLabel(create_if_missing=True)` and the label is created in the **issue's team** — not the
+workspace — because a label born while tagging an issue belongs to the team that is tagging. Color
+`#6B6F76` by default, the same default as `label add --color`; a group, a workspace label or a
+description stays `label add`'s job, so REQ-F040-26's "one creation path" survives with one named
+exception. `--color` without `--create` is exit 2 `invalid_option`: a color that would be written
+nowhere is a typo, and `AddLabel`'s own rule already requires the color when it creates.
+
+`--team` is **removed** from `hifa issue label`: the label has to belong to the issue's team or be a
+workspace label, so a flag that could only contradict the issue is not a scope, it is a trap. `--team`
+at leaf level stays the global option of §2.2, which this verb does not consult. No user can be
+surprised by the removal: the verb is not in the Typer tree yet.
+
+### (f) One resolution rule for a label reference, and one refusal for the name two teams share
+
+`label show|update|archive` and `label_detail` resolve `REF` as a ULID, or as a name matched
+case-insensitively over the workspace. More than one match is `Validation(rule='LABEL_AMBIGUOUS',
+field='ref')` ⇒ exit 2, with the team keys in the message and `hifa label list --json` as the way to the
+ULID.
+
+**The alternative rejected: resolving team-first like `issue list --label`.** There is no issue to take
+the team from, and `--team` on these three verbs would be a second scope on a command that already has
+one for `add` (creation) and `list` (a listing). A silent pick between two teams' "Bug" is the one
+outcome a rename must never have. **`label list --team` means the set an issue of that team can wear**
+(the team's plus the workspace ones), because that is the set `issue label` accepts and the `TEAM`
+column already tells the two apart; with no `--team` it is every label of the workspace.
+
+### (g) Edge parity: three rows of debt, four of exemption — the implementer's step
+
+The web half is HIFA-61 (T-20.3: `POST`/`DELETE /_/issues/{identifier}/labels`). `CAPABILITIES` may only
+name a verb the tree has and a route the app serves, so the rows land **in the same PR as the code**, not
+in this one:
+
+- `issue.label` — `cli="issue label"`, `web=None`, `debt="HIFA-61"`
+- `issue.unlabel` — `cli="issue unlabel"`, `web=None`, `debt="HIFA-61"`
+- `label.list` — `cli="label list"`, `web=None`, `debt="HIFA-61"` (the panel's picker has no catalogue
+  without it, which is what T-20.3 says)
+- `label.create`, `label.show`, `label.update`, `label.archive` — `cli=…`, `web=None`, `reason="no label
+  administration page is contracted in SPEC-070 v1; the panel only attaches and detaches"`: an EXEMPT
+  row, printed on every run, because no ticket is going to close a gap no spec opened. Naming HIFA-61
+  for these four would be the dishonest pointer the checker's own docstring forbids.
+
+`issue list --label` needs no row and no change: the filter is the `issue.list` capability and the AND
+semantics inside the family are SPEC-030 §2.6's (unchanged).
+
+### (h) What this decision does not do
+
+No web route, no fragment, no `replaced` in the panel's chip (a `singleSelect` replacement leaves the
+replaced chip in the DOM until the labels container is re-rendered — HIFA-61's contract, named here so
+it is not discovered later). No re-parenting, no level change, no `label delete` (D-015). No change to
+`create_issue`'s use of labels, to `issue list --label`, to `export`/`import`, or to the REST surface:
+SPEC-060 keeps `POST /issues/{ref}/labels ⇒ 200 IssueOut` and reads `.issue` from the result object,
+which is not a change of its contract.
+
+**Verification.** SPEC-040 goes to `version: 5` / `spec_revision: 26` (a return type, a field of
+`CreateLabel`, a new command and four codes are §2), SPEC-050 to `version: 4` / `spec_revision: 23`
+(five leaf commands, two exit sets, one envelope), SPEC-001 to `spec_revision: 13`. The executable
+half is `specs/acceptance/001-mvp-v1/09-labels.feature`: the three scenarios that already existed plus
+fifteen that pin the rename, the recolor, the two conflicts of the retire axis, the undo, the shared
+name, `--create`, `--color` without `--create`, the missing link and the partial application of an
+N-label command. **This branch is the spec change only**: `src/hifa/app/labels.py`,
+`src/hifa/cli/commands/label.py`, `add_label`/`remove_label` and the seven capability rows are not in the
+tree, and that drift is what the two `spec_revision` bumps record.
