@@ -13,11 +13,68 @@ from dataclasses import replace
 from hifa.adapters.sqlite import reads
 from hifa.adapters.sqlite.connection import Database
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage, ListFilters
-from hifa.domain.entities import Team
+from hifa.domain.entities import IssueRelation, Team
 from hifa.domain.errors import NotFound, Validation
 
 #: Collections a detail read asks for. Owned by `issue_detail`, which rejects any other name.
 DETAIL_INCLUDE: frozenset[str] = reads.DETAIL_INCLUDE
+
+#: How a relation row reads from one end, in the order the detail publishes. `blocks` first, its
+#: inverse second, then the symmetric types: the same vocabulary the `issue relations` table uses,
+#: declared once so that the sort and the section headings cannot drift apart.
+RELATION_READINGS: tuple[str, ...] = (
+    "blocks",
+    "blocked_by",
+    "duplicate",
+    "related",
+    "similar",
+)
+
+#: The collections of a detail payload, in the order the object carries them. Every caller renders
+#: them in this order, whatever order it asked for them in: two invocations with the same set of
+#: requested collections print the same bytes.
+DETAIL_COLLECTIONS: tuple[str, ...] = ("comments", "relations", "history", "children")
+
+
+def _relation_reading(relation: IssueRelation, asking_id: str) -> str:
+    """How one stored row reads from `asking_id`: its own type, or the inverse from the far end."""
+    direction = "out" if relation.issue_id == asking_id else "in"
+    return relation.type.name_as_seen(direction)
+
+
+def _ordered_relations(
+    relations: tuple[tuple[IssueRelation, IssueListItem], ...], asking_id: str
+) -> tuple[tuple[IssueRelation, IssueListItem], ...]:
+    """The relations in reading order, then by the far end's identifier as text.
+
+    The statement that returns these rows selects them from both ends and carries no order, and
+    which name a row reads as depends on the end it is being read from — so the order can only be
+    produced here, where the row and its far end are one pair. The comparison is on the identifier
+    as text, not on the number: `ENG-20` sorts before `ENG-9`, which is the order the printed
+    table shows.
+    """
+    rank = {name: index for index, name in enumerate(RELATION_READINGS)}
+
+    def key(pair: tuple[IssueRelation, IssueListItem]) -> tuple[int, str]:
+        relation, far = pair
+        return (rank[_relation_reading(relation, asking_id)], far.identifier)
+
+    return tuple(sorted(relations, key=key))
+
+
+def detail_collections(detail: IssueDetail) -> dict[str, tuple[object, ...]]:
+    """The four collections of a detail, keyed in the object's fixed order.
+
+    The caller picks the ones it renders; the order of the keys is this layer's, so an edge that
+    formats them one section at a time does not have to remember it.
+    """
+    values: dict[str, tuple[object, ...]] = {
+        "comments": tuple(detail.comments),
+        "relations": tuple(detail.relations),
+        "history": tuple(detail.history),
+        "children": tuple(detail.children),
+    }
+    return {name: values[name] for name in DETAIL_COLLECTIONS}
 
 
 def list_teams(db: Database) -> tuple[Team, ...]:
@@ -192,6 +249,11 @@ def issue_detail(
 ) -> IssueDetail:
     """Detail by identifier or ULID; `NotFound(issue, key=ref)` when it does not exist.
 
+    `relations` comes back ordered: the adapter hands over the rows of both ends unordered, and
+    how one reads — `blocks` from the blocker, `blocked_by` from the blocked issue — is a function
+    of the asking end, so the sort happens here, on the reading and then the far end's identifier.
+    Every caller inherits it, because this is the one call that produces the tuple.
+
     `include_trashed` is the visibility argument of a caller that answers for an issue the
     trash layer holds (SPEC-070 §2.1.1, D-059): the default keeps the read's own predicate
     `i.trashed = 0`, so a trashed reference is a `NotFound`, and `True` drops that one
@@ -206,7 +268,7 @@ def issue_detail(
         conn.close()
     if detail is None:
         raise NotFound(resource="issue", key=ref)
-    return detail
+    return replace(detail, relations=_ordered_relations(detail.relations, detail.issue.id))
 
 
 def viewer(db: Database) -> tuple[str | None, str | None]:
@@ -260,9 +322,12 @@ def database_ok(db: Database) -> bool:
 
 
 __all__ = [
+    "DETAIL_COLLECTIONS",
     "DETAIL_INCLUDE",
+    "RELATION_READINGS",
     "board_counts",
     "database_ok",
+    "detail_collections",
     "issue_detail",
     "list_board",
     "list_blocked",
