@@ -1,3 +1,10 @@
+# [0.12.0](https://github.com/ginkelte/hifa/compare/v0.11.0...v0.12.0) (2026-11-20)
+
+
+### Features
+
+* **search:** the three backends, the verb that ranks and the page that stopped answering 501 (HIFA-7) ([#35](https://github.com/ginkelte/hifa/issues/35)) ([05025f7](https://github.com/ginkelte/hifa/commit/05025f74478fc613b48d26bcbc4b090d0398dd1e))
+
 # [0.11.0](https://github.com/ginkelte/hifa/compare/v0.10.0...v0.11.0) (2026-11-20)
 
 
