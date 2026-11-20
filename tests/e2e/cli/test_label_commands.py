@@ -170,6 +170,17 @@ def test_a_group_and_a_child_are_created_at_the_same_level(cli: Cli) -> None:
     assert _label(cli, "High")["parent_id"] == group["id"]
 
 
+def test_label_show_names_the_group_and_the_parent_of_a_child(cli: Cli) -> None:
+    _group(cli, "Severity", "singleSelect")
+    _child(cli, "High", "Severity")
+
+    group_lines = cli.run("label", "show", "Severity").stdout.splitlines()
+    child_lines = cli.run("label", "show", "High").stdout.splitlines()
+
+    assert group_lines[3].split() == ["Group", "singleSelect"]
+    assert child_lines[4].split() == ["Parent", "Severity"]
+
+
 def test_group_together_with_parent_is_a_group_refusal(cli: Cli) -> None:
     result = _add(cli, "Severity", "--group", "multiSelect", "--parent", "Area", "--json")
 
