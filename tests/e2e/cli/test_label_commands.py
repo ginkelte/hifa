@@ -104,6 +104,17 @@ def test_duplicating_a_label_at_the_same_level_is_a_conflict(cli: Cli) -> None:
     assert error_json(result)["code"] == "conflict"
 
 
+def test_a_case_variant_of_a_catalogued_name_is_a_conflict(cli: Cli) -> None:
+    """One name spelled two ways is one row here: the second spelling is refused, exit 4."""
+    assert _add(cli, "Bug").exit_code == 0
+
+    result = _add(cli, "bug", "--json")
+
+    assert result.exit_code == 4
+    assert error_json(result)["code"] == "conflict"
+    assert _maybe_label(cli, "bug") is None
+
+
 def test_label_add_prints_the_row_of_label_list(cli: Cli) -> None:
     result = _add(cli, "Bug", "--color", "#EB5757")
 
@@ -593,6 +604,26 @@ def test_a_repeated_label_is_one_label_and_one_history_row(cli: Cli) -> None:
     assert result.exit_code == 0, result.stderr
     assert _labels_of(cli, identifier) == ["Bug"]
     assert len(cli.history(identifier)) == 1
+
+
+def test_a_name_in_two_spellings_is_refused_instead_of_attaching_one(cli: Cli) -> None:
+    """The index is case-sensitive, so the pair is reachable; the verb refuses it, exit 2."""
+    identifier = cli.create("wears nothing")
+    assert _add(cli, "Bug").exit_code == 0
+    cli.execute(
+        "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
+        " is_group, group_type, retired_at)"
+        " SELECT '01HZZZZZZZZZZZZZZZZZZZZZZ1', workspace_id, NULL, NULL, 'bug', '#6B6F76',"
+        " NULL, 0, NULL, NULL FROM label WHERE name = 'Bug'"
+    )
+
+    result = cli.run("issue", "label", identifier, "bug", "--json")
+
+    assert result.exit_code == 2
+    error = error_json(result)
+    assert (error["code"], error["field"]) == ("validation_error", "ref")
+    assert "'Bug'" in str(error["message"]) and "'bug'" in str(error["message"])
+    assert _labels_of(cli, identifier) == []
 
 
 def test_issue_label_json_of_a_plain_add_has_a_null_replaced(cli: Cli) -> None:
