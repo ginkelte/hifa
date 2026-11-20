@@ -386,3 +386,65 @@ def test_flag_db_wins_over_env(sandbox: SimpleNamespace) -> None:
     assert result.exit_code == 0, out(result)
     assert other.is_file()
     assert not sandbox.db.exists()
+
+
+# --- la bandera `already_initialized` ---------------------------------------------------
+
+
+def _drop_workspace_row(db: Path) -> None:
+    """Leaves the schema in place and the singleton table empty."""
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM workspace")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_init_reports_already_initialized_from_the_workspace_row(
+    sandbox: SimpleNamespace,
+) -> None:
+    """A table is not a row: an empty `workspace` seeds again and answers `false`."""
+    run("init")
+    _drop_workspace_row(sandbox.db)
+    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workspace") == 0
+
+    second = run("init", "--json")
+
+    assert second.exit_code == 0, out(second)
+    payload = json.loads(second.stdout)
+    assert payload["already_initialized"] is False
+    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workspace") == 1
+
+
+def test_a_second_init_after_the_row_was_reseeded_reports_true(sandbox: SimpleNamespace) -> None:
+    run("init")
+    _drop_workspace_row(sandbox.db)
+    run("init")
+
+    third = run("init", "--json")
+
+    assert third.exit_code == 0, out(third)
+    payload = json.loads(third.stdout)
+    assert payload["created"] == []
+    assert payload["already_initialized"] is True
+
+
+def test_init_seeds_a_missing_path_and_an_empty_file(sandbox: SimpleNamespace) -> None:
+    sandbox.db.parent.mkdir(parents=True, exist_ok=True)
+    if sandbox.db.exists():
+        sandbox.db.unlink()
+    assert not sandbox.db.exists()
+
+    missing = run("init", "--json")
+    assert missing.exit_code == 0, out(missing)
+    assert json.loads(missing.stdout)["already_initialized"] is False
+    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workspace") == 1
+
+    sandbox.db.unlink()
+    sandbox.db.write_bytes(b"")
+    empty = run("init", "--json")
+    assert empty.exit_code == 0, out(empty)
+    assert json.loads(empty.stdout)["already_initialized"] is False
+    assert scalar(sandbox.db, "SELECT COUNT(*) FROM workspace") == 1
