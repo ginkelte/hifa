@@ -1,3 +1,10 @@
+# [0.14.0](https://github.com/ginkelte/hifa/compare/v0.13.0...v0.14.0) (2026-11-20)
+
+
+### Features
+
+* the issue history reads as sentences (HIFA-46) ([#39](https://github.com/ginkelte/hifa/issues/39)) ([8fa6b00](https://github.com/ginkelte/hifa/commit/8fa6b00542e9706525392e7a735d44f60d50054f)), closes [#6B6F76](https://github.com/ginkelte/hifa/issues/6B6F76)
+
 # [0.13.0](https://github.com/ginkelte/hifa/compare/v0.12.0...v0.13.0) (2026-11-20)
 
 
