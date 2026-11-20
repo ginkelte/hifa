@@ -3,8 +3,8 @@ id: SPEC-020
 title: Domain core
 component: domain
 status: review
-version: 5
-spec_revision: 13
+version: 6
+spec_revision: 14
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -60,7 +60,7 @@ here.
 | `INITIAL_GAP`, `MIN_GAP` | `ranking` | stable constants | yes |
 | `validate_title`, `validate_priority`, `validate_due_date`, `validate_date_range`, `validate_estimate`, `validate_state_team`, `validate_parent`, `validate_close`, `validate_transition`, `validate_relation`, `validate_relation_scope`, `validate_label_scope`, `validate_archive_team`, `validate_comment_body`, `validate_comment_parent_depth` | `rules` | functions | yes |
 | `MAX_TITLE`, `MAX_BODY`, `MAX_DESCRIPTION`, `MAX_SUBISSUE_DEPTH`, `MAX_COMMENT_DEPTH` | `rules` | stable constants | yes |
-| `HifaError`, `NotFound`, `Conflict`, `Validation`, `InvalidTransition` | `errors` | exceptions | yes |
+| `HifaError`, `NotFound`, `Conflict`, `Validation`, `InvalidTransition`, `DatabaseNotFound`, `CorruptDatabase` | `errors` | exceptions | yes |
 
 ### 2.1 `domain/enums.py`
 
@@ -814,10 +814,57 @@ class InvalidTransition(HifaError):
     def target(self) -> str: ...
     @property
     def allowed(self) -> tuple[str, ...]: ...
+
+
+class DatabaseNotFound(HifaError):
+    """The database file the edge was given is not there, and nothing created it.
+
+    `key` is the path, and it is the only data the verdict carries. Exit 3, HTTP 503 (§6): the
+    remedy is `hifa init`, not a corrected reference, which is why it is not a 404 (§6, D-069)."""
+
+    code = "database_not_found"
+    default_message = "database not found"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        key: str,
+        details: Mapping[str, Any] | None = None,
+    ) -> None: ...
+
+    @property
+    def key(self) -> str: ...
+
+
+class CorruptDatabase(HifaError):
+    """The bytes are not a database SQLite can read.
+
+    `detail` is the message class SQLite answered — `file is not a database`,
+    `database disk image is malformed` — and the raw driver text is never copied into it; `key` is
+    the path when the raise site knows it. Exit 6, HTTP 500 (§6, D-069)."""
+
+    code = "corrupt_database"
+    default_message = "corrupt database"
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        detail: str | None = None,
+        key: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None: ...
+
+    @property
+    def detail(self) -> str | None: ...
+    @property
+    def key(self) -> str | None: ...
 ```
 
 Each subclass fixes its attributes as read-only properties (`resource`/`key`/`field`,
-`rule`/`field`/`value`, `current`/`target`/`allowed`) and merges the derived ones into the mapping
+`rule`/`field`/`value`, `current`/`target`/`allowed`, `key` for `DatabaseNotFound`,
+`detail`/`key` for `CorruptDatabase`) and merges the derived ones into the mapping
 `details` returns, without overwriting explicit values. That mapping — `resource` and `key` for
 `NotFound`, `rule` and `field` for `Validation`, `rule` for `Conflict` — is the **exception's own
 accessor surface** (the dict `details` hands back, §6), not a wire payload: an edge reads it, it does
@@ -829,8 +876,15 @@ that value as `error.field` and **nothing** into `error.details`, which stays `n
 edge renders `field` of a 404 without inventing one — `label` for a label reference that resolves
 nowhere, `label_link` for a label the issue does not wear (SPEC-040 §2.2, SPEC-050 §2.4.5, SPEC-060
 §2.5.3). All kwargs are **keyword-only** except `message`.
-`code` is a stable `str` in `SCREAMING_SNAKE_CASE` that the edge uses to map to exit code /
-HTTP (table in §6).
+`code` is a stable `str` that the edge uses to map to exit code /
+HTTP (table in §6). The family's five older classes carry it in `SCREAMING_SNAKE_CASE` and the edge
+**translates** it to the wire spelling of §6 (`NOT_FOUND` → `not_found`, `VALIDATION` →
+`validation_error`, `INVALID_TRANSITION` → `invalid_transition`); `DatabaseNotFound` and
+`CorruptDatabase` carry the wire
+spelling itself — `database_not_found`, `corrupt_database` — because those two verdicts are named by a
+driver condition and by a class at the same time, and a translation step between the two is where the
+second name appears. `NotAHifaDatabase` (SPEC-100 §6) is the same convention at an edge, and §6 says
+which exits and statuses the two codes answer (D-069).
 
 ## 3. Data it touches
 
@@ -942,7 +996,7 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-11** | `validate_relation` rejects self-relation (`Validation`), exact duplicate and symmetric duplicate (`Conflict`); `validate_relation_scope` rejects an edge between two workspaces (`RELATION_WORKSPACE_MISMATCH`) and accepts two teams of one workspace | 5 tests |
 | **REQ-F020-12** | `validate_label_scope` accepts workspace labels and own-team labels; rejects a label from another team with `Validation(rule='LABEL_TEAM_MISMATCH')` (exit 2) and a retired label with `Conflict(rule='LABEL_RETIRED')` (exit 4) | 4 tests |
 | **REQ-F020-13** | `validate_archive_team` rejects archiving a team with `open_issues > 0` and one already archived | 2 tests |
-| **REQ-F020-14** | The 5 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}`; `NotFound.field` returns its `resource` (`'label'` for `NotFound(resource='label', key='infra')`, `'label_link'` for `resource='label_link'`), so the edges publish one value per 404 without passing one | structure test + `isinstance` test + the `field` assertions of §7 |
+| **REQ-F020-14** | The 7 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}`; `NotFound.field` returns its `resource` (`'label'` for `NotFound(resource='label', key='infra')`, `'label_link'` for `resource='label_link'`), so the edges publish one value per 404 without passing one; `DatabaseNotFound` and `CorruptDatabase` carry the wire codes `database_not_found` and `corrupt_database` (§2.6, §6) and are not `NotFound` subclasses, so no `except NotFound` arm absorbs them | structure test + `isinstance` test + the `field` and `code` assertions of §7 |
 | **REQ-F020-15** | No `domain/` module imports what R11 forbids nor calls `now`, `today`, `time`, `uuid4`, `random` | AST test that walks the 6 files |
 | **REQ-F020-16** | No function of `rules`, `ranking` or `identifier` mutates its arguments or global state; two calls with the same input give the same output | double call + copy comparison |
 | **REQ-F020-17** | `validate_date_range` rejects `target < start` in `project` and in `cycle` (`ends_at <= starts_at`) | 2 tests |
@@ -1019,6 +1073,8 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `Validation` | `RANKING_EXHAUSTED` | no float gap between two positions | exit 2 | 422 |
 | `Validation` | `STATE_ARCHIVED` | move/create against a `workflow_state` with `archived_at` | exit 2 | 422 |
 | `NotFound` | `NOT_FOUND` | nonexistent id/identifier; `field` is the `resource` (what does not exist, `label` vs `label_link`) | exit 3 | 404 |
+| `DatabaseNotFound` | `database_not_found` | the database file is not there and nothing created it: `open_probe` and the `ro` open of `connect` on a nonexistent path (SPEC-030 §2.1, §6); `key` is the path | exit 3 | 503 |
+| `CorruptDatabase` | `corrupt_database` | the bytes are not a database SQLite can read — `file is not a database`, `database disk image is malformed` — raised by the `PROBE_SQL` read of `open_probe` and by `translate_sqlite_error` (SPEC-030 §2.1, §6); `detail` is the message class, never the raw text | exit 6 | 500 |
 | `Conflict` | `CONFLICT` | uniqueness (`identifier`, `(team_id, number)`, duplicate label) | exit 4 | 409 |
 | `Conflict` | `RELATION_DUPLICATE` / `TEAM_ALREADY_ARCHIVED` / `LABEL_RETIRED` | logical duplicate, or the same change asked twice: a repeated relation, an archived team archived again, a retired label attached or retired again | exit 4 | 409 |
 | `InvalidTransition` | `INVALID_TRANSITION` | not raised by any function of this layer: the single producer is the use-case layer, which raises it for a write on an issue with `archived_at` not null (SPEC-040 §6, R20; D-042); the class exists so that condition maps to exit 5 of D-014 | exit 5 | 409 |
@@ -1026,6 +1082,15 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 
 `exit 1` does **not** appear in this table: it is reserved for `hifa doctor` (warn) by D-001/D-014. Every mapping
 bug or unclassified error is `6`.
+
+**The two `database_*` rows are the corpus's one condition with one name, and this table is where that
+name is fixed.** `DatabaseNotFound` and `CorruptDatabase` carry the wire spelling in `code` (§2.6), so an
+edge publishes `error.code is "database_not_found"` and `error.code is "corrupt_database"` without a lookup
+between the class and the envelope; the exits (`3`, `6`) and the statuses (`503`, `500`) are the ones
+SPEC-000 §6, SPEC-010 §6, SPEC-050 §6 and SPEC-100 §6 already published under the same two class names —
+what was missing was the classes, and D-069 records why `database_not_found` is a `3` with a `503` and not
+a `404`: the file the user named does not exist, so no reference can be corrected and the remedy is
+`hifa init`.
 
 The exception's accessor surface, not the payload of an edge. `HifaError` exposes `code`, `message`,
 `field` and `details` (§2.6), and `exc.details` is the mapping the class carries: `resource` and `key`
@@ -1264,6 +1329,10 @@ Feature: Pure domain core
     And Validation is a subclass of HifaError
     And a NotFound with resource "label" and key "infra" has field "label"
     And a NotFound with resource "label_link" and key "b" has field "label_link"
+    And a DatabaseNotFound with key "/tmp/no/hifa.db" has code "database_not_found" and key "/tmp/no/hifa.db"
+    And a CorruptDatabase with detail "file is not a database" has code "corrupt_database"
+    And a CorruptDatabase with no arguments is constructible and its detail is None
+    And DatabaseNotFound and CorruptDatabase are subclasses of HifaError and not of NotFound
 
   @REQ-F020-15
   Scenario: the domain imports no infrastructure and reads no clock
@@ -1390,6 +1459,32 @@ Executable from top to bottom; every step has a verification command.
   `checksum`), infrastructure and not domain. It has no entity, repo or use case, by design.
 
 ## Notes
+
+- spec_revision 14 (2026-11-20): **the two verdicts four specs named now have the two classes that were
+  missing (HIFA-7, fifth review round, D-069).** `version` 5 → 6: §2.6 gains two classes, which is the
+  public contract, and §2.1's symbol table follows it.
+  (1) **`DatabaseNotFound` is referenced by four documents and defined by none.** SPEC-000 §6, SPEC-010
+  §6, SPEC-050 §6 and SPEC-100 §6 published the class, the code `database_not_found`, exit `3`
+  and HTTP `503`; SPEC-030 §2.1 raised `NotFound(resource='database')` — the *other* `3`, whose code is
+  `not_found` and whose status is `404`. §2.6 now declares the class next to `NotFound`: `code =
+  "database_not_found"`, `key` (the path) as its only data, and §6 gives it exit `3` and HTTP `503`.
+  It is **not** a `NotFound` subclass: a subclass would be caught by every `except NotFound` arm of the
+  edges — SPEC-050 §5.3's included — which publishes `not_found` and a `404`, and that is precisely the
+  second name this revision removes.
+  (2) **`CorruptDatabase` had three names and no mapping.** SPEC-030 §2.1 raised
+  `HifaError(code='DB_CORRUPT')`, SPEC-100 §6 and SPEC-050 §6 published `corrupt_database`, and
+  SPEC-010 §6 and SPEC-000 §6 published the class — which did not exist. §2.6 declares it with
+  `code = "corrupt_database"`, `detail` (the message class SQLite answered) and an optional `key`; §6
+  gives it exit `6` and HTTP `500`. `DB_CORRUPT` stops existing as a code: SPEC-030 §6's row now maps the
+  driver message to this class, so the adapter's internal code and the published code are one string.
+  (3) **Why the two codes are the wire spelling and the rest are not.** §2.6 stated that every `code` is
+  `SCREAMING_SNAKE_CASE` and that the edge translates it; that is still true of the five classes it was
+  written for. These two carry `database_not_found`/`corrupt_database` because the corpus already
+  published those spellings in four tables and because a translation step is the place a condition
+  acquires a second name — the `NotAHifaDatabase` precedent of SPEC-100 §6, now stated once for the
+  family.
+  §7 rewrites the `@REQ-F020-14` scenario in place (four steps on the two classes) and adds no scenario:
+  the inline count stays **40**. No other signature, table or count moves.
 
 - spec_revision 13 (2026-11-20): **this file stops publishing a payload (HIFA-14, D-062).** §6 called a
   dict of `{"issue", "open_children"}` "the exact shape of the payload, identical in CLI `--json` and in

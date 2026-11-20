@@ -4,9 +4,12 @@ Source of truth for `hifa`. The code is derived: every spec must allow its **com
 regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Template: [`_template.md`](./_template.md).
 
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
-**11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 3` / `spec_revision: 6`
-after the engine change of D-039 and the governed outcome classifier of D-040). Accepted debt P-01…P-09 in
-[`DECISIONS.md`](./DECISIONS.md) (**62 decisions: D-001 … D-062**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
+**2 approved specs, 10 at `review` and 1 draft**, which is the `status:` of each frontmatter and what
+the Status column of the Map below repeats (SPEC-110, the release pipeline, is the draft, at `version: 3`
+/ `spec_revision: 9` after the engine change of D-039, the governed outcome classifier of D-040 and the
+three revisions that followed it).
+Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md) (**67 decisions: D-001 … D-067**; P-12 closed
+by D-041). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035, D-058):** the canonical seed is
 `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · In Review(4.5) ·
@@ -38,6 +41,30 @@ same PR (SPEC-050 §11) — three as `debt="HIFA-61"` (`issue.label`, `issue.unl
 four as `debt="HIFA-62"` (`label.create`, `label.show`, `label.update`, `label.archive`, the dashboard's
 label administration page; D-061(g)).
 
+**The search surface is contracted and the page is no longer a stub (HIFA-7, D-063, D-064, D-067):**
+`hifa search` (SPEC-090 §2.5, SPEC-050 §2.5.1) and `GET /search` (SPEC-070 §2.1.8) are the two edges of
+the use case behind **`search_issues(db, query, *, now)`**, the entry point SPEC-040 §2.2 declares (D-064)
+— over the FTS5 index of SPEC-090 §3. Each edge is a **consumer** that parses its own text with
+`parse_query(raw)` and composes the `SearchQuery` from its own flags and the instant its clock read; the
+parser takes no flag and no default team, and `app/` holds no clock (SPEC-090 §2.3, R13). The text half
+crosses the port as one `TextPredicate` — the two FTS5 expressions and **both** term tuples, positive and
+negated — so a query that only excludes (`-bug`) and a query with no text at all are two different
+arguments and the adapter can tell them apart (SPEC-090 §2.4, D-067). The page has exactly four states: empty (`200`, no `q`), results,
+no results (`200`, `hits=[]`) and error (`422`, a query SPEC-090 §6 refuses); it never answers `400`, which
+is what the sidebar link to `/search` used to hit (D-063). `hifa db reindex` (SPEC-100 R21) is the only
+corrective action of the index and the only verb of the `db` group that ships: `db migrate`, `db vacuum`,
+`db path` and `hifa doctor` stay declared and unimplemented, one debt ticket each. Its rebuild is the
+idempotent sequence R21 prints (`CREATE VIRTUAL TABLE IF NOT EXISTS`, `DROP TRIGGER IF EXISTS`, `CREATE
+TRIGGER`), because a dropped virtual table leaves the three triggers of SPEC-090 §3.1 behind, and its
+`sqlite_master` verdict runs on a **read-only** probe before the file is opened for writing — a path that
+does not exist answers `3` `database_not_found` without being created — so a file that opens but is not a
+hifa database is `3` `not_a_hifa_database` and only an image SQLite refuses is `6` `corrupt_database`
+(D-066). The command
+palette (`GET /_/palette`, T-20.4) is **not** part of this change and keeps the contract R19 gave it; what
+it inherits is R21's rule for every edge that composes a query, and only for the day it ships. The listing's
+`q` (`GET /api/v1/issues?q=`) is the **title filter of D-025** on every edge and is not the search: no
+`MATCH`, no `backend`, no ranking, no effect on `order` (SPEC-060 §2.5.1, rev 13).
+
 **Design principles P1-P9 (AGENTS.md §5) are normative since D-032; the web edge contract
 joined `.importlinter` in the same change.**
 
@@ -63,18 +90,18 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
 | ID | Component | Spec | Governs (`implements`) | Depends on | Status |
 |---|---|---|---|---|---|
 | 000 | System architecture | [000-system-architecture.md](./000-system-architecture.md) | `pyproject.toml` (**packaging keys except the version-producing ones**, D-038/D-039), `.importlinter` (`src/hifa/__init__.py` is not claimed here: D-038 gives it to SPEC-110) | — | approved |
-| 001 | **Vertical v1 spec (MVP)** | [001-mvp-v1.md](./001-mvp-v1.md) + [tasks](./001-mvp-v1.tasks.md) | the whole MVP (scope + AC) | 000…100 | approved |
+| 001 | **Vertical v1 spec (MVP)** | [001-mvp-v1.md](./001-mvp-v1.md) + [tasks](./001-mvp-v1.tasks.md) | the whole MVP (scope + AC) | 000…100 | review |
 | 010 | Data model | [010-data-model.md](./010-data-model.md) | `adapters/sqlite/migrations/*.sql`, `migrate.py`, `connection.py` | 000 | approved |
-| 020 | Domain core | [020-domain-core.md](./020-domain-core.md) | `domain/**`, `tests/unit/domain/**` | 000, 010 | approved |
-| 030 | SQLite adapter | [030-sqlite-adapter.md](./030-sqlite-adapter.md) | `adapters/sqlite/**`, `ports.py`, `tests/integration/db/**` | 010, 020 | approved |
-| 040 | Application services | [040-application-services.md](./040-application-services.md) | `app/**`, `tests/integration/app/**` | 020, 030 | approved |
-| 050 | CLI | [050-cli.md](./050-cli.md) | `cli/**`, `tests/e2e/cli/**` | 040 | approved |
-| 060 | REST API | [060-api-rest.md](./060-api-rest.md) | `api/**`, `tests/e2e/api/**` | 040 | approved |
-| 070 | Web dashboard | [070-web-dashboard.md](./070-web-dashboard.md) | `web/**`, `tests/e2e/web/**` | 040, 060 | **partial** (stage 1 delivered: read-only board/list/detail + quick add + `/healthz`; read contract closed by D-025…D-028, write paths contracted by D-053…D-056, the write guard of §2.1.7 by D-057, the two routes that read through the trash — detail and panel with `Restore` alone, §2.1.1/R29 — by D-059) |
-| 080 | Import / export | [080-transfer-csv-json.md](./080-transfer-csv-json.md) | `app/transfer.py`, `adapters/sqlite/transfer_sql.py` | 040 | approved |
-| 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | approved |
-| 100 | Config and bootstrap | [100-config-bootstrap.md](./100-config-bootstrap.md) | `config.py`, `app/teams.py::bootstrap`, `cli/commands/db.py` | 010, 040 | approved |
-| 110 | Semantic release pipeline | [110-release.md](./110-release.md) | `.github/workflows/release.yml`, `.github/release/tag-message.sh`, `.github/release/assert-outcome.sh`, `.releaserc.json`, `package.json`, `package-lock.json`, `CHANGELOG.md`, `.github/signers/**`, `pyproject.toml` (the `version` literal and the version-producing keys, D-038/D-039), `src/hifa/__init__.py`, `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py`, `tests/e2e/test_release_outcome.py`, `tests/fixtures/release/*.log` | 000, 050 | draft (`version: 3`, `spec_revision: 6`: npm `semantic-release` engine, literal version, `v0.1.0` bootstrap — D-039; per-step secrets, governed and tested outcome classifier — D-040) |
+| 020 | Domain core | [020-domain-core.md](./020-domain-core.md) | `domain/**`, `tests/unit/domain/**` | 000, 010 | review |
+| 030 | SQLite adapter | [030-sqlite-adapter.md](./030-sqlite-adapter.md) | `adapters/sqlite/**`, `ports.py`, `tests/integration/db/**` | 010, 020 | review |
+| 040 | Application services | [040-application-services.md](./040-application-services.md) | `app/**`, `tests/integration/app/**` | 020, 030 | review |
+| 050 | CLI | [050-cli.md](./050-cli.md) | `cli/**`, `tests/e2e/cli/**` | 040 | review |
+| 060 | REST API | [060-api-rest.md](./060-api-rest.md) | `api/**`, `tests/e2e/api/**` | 040 | review |
+| 070 | Web dashboard | [070-web-dashboard.md](./070-web-dashboard.md) | `web/**`, `tests/e2e/web/**` | 040, 060 | **review** — partial delivery. Stage 1 delivered: read-only board/list/detail + quick add + `/healthz`; read contract closed by D-025…D-028, write paths contracted by D-053…D-056, the write guard of §2.1.7 by D-057, the two routes that read through the trash — detail and panel with `Restore` alone, §2.1.1/R29 — by D-059, and the `/search` page with its four states — §2.1.8, D-063) |
+| 080 | Import / export | [080-transfer-csv-json.md](./080-transfer-csv-json.md) | `app/transfer.py`, `adapters/sqlite/transfer_sql.py` | 040 | review |
+| 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | review (`version: 4`, `spec_revision: 8`: promoted by HIFA-7 — the one entry point `search_issues(db, query, *, now)` in §2.3, `parse_query` as the text parser the edges compose over, the page's consumption in §2.6 (D-063/D-064), the two `like` forms (§5.3) with the `TextPredicate` that carries the negated terms across the port and the NULL-safe `NOT` of both of them (D-067, R14)) |
+| 100 | Config and bootstrap | [100-config-bootstrap.md](./100-config-bootstrap.md) | `config.py`, `app/teams.py::bootstrap`, `cli/commands/db.py` | 010, 040 | review |
+| 110 | Semantic release pipeline | [110-release.md](./110-release.md) | `.github/workflows/release.yml`, `.github/release/tag-message.sh`, `.github/release/assert-outcome.sh`, `.releaserc.json`, `package.json`, `package-lock.json`, `CHANGELOG.md`, `.github/signers/**`, `pyproject.toml` (the `version` literal and the version-producing keys, D-038/D-039), `src/hifa/__init__.py`, `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py`, `tests/e2e/test_release_outcome.py`, `tests/fixtures/release/*.log` | 000, 050 | draft (`version: 3`, `spec_revision: 9`: npm `semantic-release` engine, literal version, `v0.1.0` bootstrap — D-039; per-step secrets, governed and tested outcome classifier — D-040) |
 
 ## Dependency graph
 

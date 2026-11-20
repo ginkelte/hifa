@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 4
-spec_revision: 11
+version: 7
+spec_revision: 14
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -113,8 +113,23 @@ writes and a shared connection turns contention into `database is locked`.
 
 ### 2.4 Pydantic v2 schemas
 
-All output models use `model_config = ConfigDict(from_attributes=True)`. All input models,
-`ConfigDict(extra="forbid")`. No loose `dict`s: the shape of the JSON is the schema.
+**`model_config = ConfigDict(from_attributes=True)` is for the models that validate a use case's
+dataclass**, i.e. the ones a handler builds with `Model.model_validate(<frozen dataclass>)` out of
+`app/` or `adapters/`: `IssueOut`, `TeamOut`, `StateOut`, `LabelOut`, `ProjectOut`, `CycleOut`,
+`MemberOut`, `CommentOut`, `RelationOut`, `AttachmentOut`, `SearchHit` and `SearchPage`. **Every input
+model** (the `*Create`/`*Patch`/`*Move`/`*Add` set) uses `ConfigDict(extra="forbid")`. No loose `dict`s:
+the shape of the JSON is the schema.
+
+A model that is **composed here and not validated from a dataclass** carries neither config, and that is
+deliberate rather than an omission: the nested references of §2.4.1 (`TeamRef`, `StateRef`, `MemberRef`,
+`ProjectRef`, `MilestoneRef`, `CycleRef`, `ParentRef`, `LabelRef`), the envelopes of §2.6 (`IssuePage`,
+`TeamList`, the eight bounded lists and their `items`), the aggregates computed in the handler
+(`HistoryEntry`, `TeamProgress`), and `HealthOut` are built field by field, so `from_attributes` would
+declare a coercion path nothing uses. **The error bodies carry no config either** — `ErrorBody`,
+`ErrorEnvelope` — and on purpose: they are built from a `DomainError`, whose `code`/`message`/`field`
+are copied into the schema by `api/errors.py`, so they must not accept an arbitrary object as their
+source. Adding `from_attributes` there would make any exception with those attribute names
+envelope-shaped, which is the one place of this layer where that freedom is a hazard.
 
 ```python
 # src/hifa/api/schemas.py
@@ -594,9 +609,20 @@ class AttachmentCreate(BaseModel):
 
 
 class SearchHit(BaseModel):
-    issue: IssueOut
-    snippet: str
-    score: float  # mayor = mejor; 0.0 cuando backend="like" (SPEC-090 §2, D-016)
+    """The flat hit of SPEC-090 §2.2 — eleven fields, in this order, and no `issue` wrapper (D-064)."""
+
+    model_config = ConfigDict(from_attributes=True)
+    issue_id: str
+    identifier: str
+    title: str
+    state_name: str
+    state_type: StateType
+    priority: int
+    due_date: str | None
+    assignee_display_name: str | None
+    updated_at: str
+    snippet: str  # carries <mark>/</mark> literally: no edge escapes it (R15, SPEC-090 REQ-S090-03)
+    score: float  # higher = better; 0.0 when backend="like" (SPEC-090 §2, D-016)
 
 
 class ErrorBody(BaseModel):
@@ -666,7 +692,7 @@ Filter semantics (identical to SPEC-050 §2.5.3, translated to HTTP):
 | `project`, `cycle` | id; `cycle=none` ⇒ `cycle_id IS NULL` (alias of `no_cycle=true`) |
 | `parent` | `issue.id` or `identifier`; `parent=none` ⇒ `parent_id IS NULL` (root issues only) |
 | `ids` | list of `identifier`/ULID, `IN`; it wins over the rest of the filters |
-| `q` | FTS5 search delegated to SPEC-090; with `q` the default `order` becomes `relevance` (see R9) |
+| `q` | the **title filter** of D-025 (SPEC-030 §2.6): `i.title LIKE '%term%' ESCAPE '\'` over `ListFilters.q`, case-insensitive, `%`/`_`/`\` escaped inside the term, an empty or blank `q` dropped. It declares no `MATCH`, no `backend` and no ranking, and it does not touch `order`; the workspace search is `GET /api/v1/search` (§2.5.4, SPEC-090 §2.5) |
 | `open` | `true` ⇒ `is_open = 1`; `false` ⇒ no `is_open` filter |
 | `archived` | `exclude` ⇒ `archived_at IS NULL`; `include` ⇒ no filter; `only` ⇒ `archived_at IS NOT NULL` |
 | `trashed` | `true` ⇒ `trashed = 1` (implies `open=false` and `archived=include`) |
@@ -730,13 +756,22 @@ D-061). The `409` is the status it always was; what this revision settles is the
 | GET | `/openapi.json` | — | OpenAPI 3.1 | — |
 
 **Search declares no contract of its own (D-016).** The endpoint is the query-string translation of
-`hifa search` (SPEC-050 §2.5.3) and its authority is **SPEC-090 §2**: the **11 filters** (`team`,
+`hifa search` (SPEC-050 §2.5.1) and its authority is **SPEC-090 §2**: the **11 filters** (`team`,
 `state`, `assignee`, `label`, `priority`, `due`, `is` and the negated `-field:` form of SPEC-090 §4
 R8), `limit` `1..200` (default **50**), `offset`, `all` (`is:all`), `count` and the envelope
-`{hits, total, has_more, backend, took_ms}`. `score` is **higher = better** (the `-bm25` is normalized
-inside SPEC-090); with `backend="like"` it is `0.0`. An invalid filter value, a `limit` out of
-range or an empty `q` ⇒ 422 `validation_error` with a populated `field` (`invalid_filter`, `invalid_limit`,
-`query_empty` in SPEC-090 §2.2).
+`{hits, total, has_more, backend, took_ms}`, whose elements are the **eleven flat fields** of
+`SearchHit` (§2.2) and not a nested `Issue`. `score` is **higher = better** (the `-bm25` is normalized
+inside SPEC-090); with `backend="like"` it is `0.0`.
+
+**A refused query is published as SPEC-090 §6 publishes it: one refusal, one envelope.** An invalid
+filter value, a `limit` out of range, an `offset < 0`, a query over the limits or an empty `q` ⇒ `422`
+with `error.code` = the code SPEC-090 §6 gives the refusal (`invalid_filter`, `invalid_limit`,
+`query_too_long`, `query_empty`), `error.message` = that section's sentence for it and `error.field` = the
+**input** that carried it — `limit`, `offset`, `priority`, `due` or `q`. The code never travels in
+`error.field`: `field` names the parameter a client fixes, and the rule name is the code (§6.1). The
+endpoint's parameters are the query-string translation of `hifa search`'s flags, so the edge composes the
+`SearchQuery` on this side too — `parse_query(q)` plus the parameters — and passes the instant its own
+clock read (`search_issues(db, query, now=…)`, SPEC-090 §2.3).
 
 ```python
 class HealthOut(BaseModel):
@@ -779,14 +814,23 @@ class TeamList(BaseModel):
 
 
 # Search: envelope of SPEC-090 §2 (D-016), NOT the list envelope of R3.
-# `score` es mayor = mejor; nunca negativo.
+# The five keys and the eleven-field SearchHit are SPEC-090 §2.2: this class repeats them and
+# defines neither. `score` is higher = better, never negative; `total` is null without `count`.
 class SearchPage(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     hits: list[SearchHit]
-    total: int | None  # None si count=false
+    total: int | None
     has_more: bool
     backend: Literal["fts", "like", "none"]
     took_ms: float
 ```
+
+Both validate a dataclass — `search_issues` returns the **frozen dataclasses** of SPEC-090 §2.2 — and both
+carry `model_config = ConfigDict(from_attributes=True)`, which §2.4 requires of exactly that family of
+models. That is not decoration: `SearchPage.model_validate(page)` and `SearchHit.model_validate(hit)`
+are the conversion — every field is read by attribute, the nested hits included, and no edge builds a
+`dict` or calls `model_dump()` on the way in. A schema without the config rejects the use case's own
+return value.
 
 | Param | Contract |
 |---|---|
@@ -818,8 +862,14 @@ Rules:
   paginating because a changed order is an error, not a silent restart at the first page.
 - The cursor is not a security token: it is not signed. A tampered cursor can only produce a
   422 or a shifted page.
-- With `q` present and no explicit `order`, the order is FTS5 relevance (`score` DESC) and
-  keyset pagination uses `(score, id)`; in that case `order` is not accepted (422 if sent).
+- `q` does **not** change the order, and no order is refused because `q` is present. The title filter of
+  D-025 is one predicate among many in `ListFilters` (SPEC-030 §2.6): it produces no score, no band and
+  no `relevance`, and `order` stays the one the client sent or `manual.asc` by default (D-011). The
+  keyset is the same `(key, id)` with and without `q`, because the filter narrows the rows and never
+  reorders them. There is no `relevance` in this route's vocabulary: §2.4's `OrderField` carries
+  `created_at`, `updated_at`, `priority`, `due_date`, `sort_order`, `board_order` and `number`, and the
+  order vocabulary of the row of §2.5.1 is `manual`, `created`, `updated`, `priority` and `due`. The
+  search that ranks by `bm25` is `GET /api/v1/search` (§2.5.4, SPEC-090 §2).
 
 Equivalence with the CLI (SPEC-050 §2.5.3), so that a script can migrate from one to the other without
 guessing:
@@ -939,14 +989,23 @@ HTTP/1.1 422 Unprocessable Entity
 
 ```console
 $ curl -s 'localhost:7777/api/v1/search?q=login&limit=2'
-{"hits":[{"issue":{…},"snippet":"**login** with **SSO** (Okta)","score":0.82},
-         {"issue":{…},"snippet":"**login** legacy without **SSO**","score":0.37}],
+{"hits":[{"issue_id":"01JCV5AAA","identifier":"ENG-13","title":"SSO login (Okta)",
+          "state_name":"In Progress","state_type":"started","priority":2,"due_date":null,
+          "assignee_display_name":"Ginkelte","updated_at":"2026-11-18T09:12:00Z",
+          "snippet":"<mark>login</mark> with <mark>SSO</mark> (Okta)","score":0.82},
+         {"issue_id":"01JCV5BBB","identifier":"ENG-02","title":"legacy login without SSO",
+          "state_name":"Done","state_type":"completed","priority":0,"due_date":null,
+          "assignee_display_name":null,"updated_at":"2026-11-02T16:40:00Z",
+          "snippet":"<mark>login</mark> legacy without <mark>SSO</mark>","score":0.37}],
  "total":15,"has_more":true,"backend":"fts","took_ms":4.2}
 ```
 
 `score` is **higher = better** (D-016): the `-bm25` of FTS5 is normalized inside SPEC-090, so
 no value comes out negative. The envelope is the one of SPEC-090 §2 — `hits, total, has_more, backend,
-took_ms` —, not the list envelope of R3.
+took_ms` —, not the list envelope of R3, and each hit is the eleven flat fields of §2.2: the `snippet`
+carries the literal `<mark>`/`</mark>` pair of SPEC-090 R15 as text, unescaped and unrewritten at this
+edge (R15), because the markers are the only markup the search produces and an API client that wants a
+different emphasis reads them and renders its own.
 
 ```console
 $ curl -si localhost:7777/api/v1/issues/ENG-999
@@ -1000,7 +1059,7 @@ Nothing is ever written to `v_*` or to `issue_fts`.
 | **R6** | **REF is resolved at the app-layer edge, not in the router.** The router passes the string; `identifier` case-insensitive first, ULID after; no match ⇒ `NotFound`. `LIKE` is never used and nothing is guessed by prefix. → **REQ-F060-06** |
 | **R7** | **No remote assets.** `docs_url=None`, `redoc_url=None`, no `StaticFiles` under `/api`, no CDN in any response. `GET /docs` ⇒ 404. → **REQ-N060-03** |
 | **R8** | **Creation and deletion codes.** A `POST` that creates a top-level resource ⇒ 201 + `Location`. `DELETE /issues/{ref}` is **soft only**: 200 with the resource and `trashed: true`; **there is no physical delete and no `?hard`** (D-015 — the only compaction is `hifa db vacuum`), and a `hard` in the query string is rejected with 422 `validation_error`, `field: "hard"`. The labels subresource **does not** create top-level resources and is idempotent (SPEC-040 R10): `POST /issues/{ref}/labels` and `DELETE /issues/{ref}/labels/{label}` ⇒ **200** with the complete issue, never 201 and never 204. → **REQ-F060-07** |
-| **R9** | **Search: contract of SPEC-090 §2 (D-016).** `q` requires `min_length=1` and `≤ 512` chars; `limit` `1..200` default `50`; the 11 filters are those of SPEC-090 §2, with no parameters of its own. `score` is **higher = better** and **never negative** (`0.0` with `backend="like"`); the default order is `score DESC, id ASC` and an explicit `order` with `q` ⇒ 422. `snippet` arrives as-is from SPEC-090 §2: FTS5 `snippet(issue_fts, -1, '<mark>', '</mark>', '…', 12)`, with `<mark>`/`</mark>` around the terms and no escaping in `app/` (REQ-S090-03). → **REQ-F060-09** |
+| **R9** | **Search: contract of SPEC-090 §2 (D-016).** `q` requires `min_length=1` and `≤ 512` chars; `limit` `1..200` default `50`; the 11 filters are those of SPEC-090 §2, with no parameters of its own. `score` is **higher = better** and **never negative** (`0.0` with `backend="like"`); the default order is `score DESC, id ASC` — which here is `sort=relevance`, the default of the `sort` parameter of §2.5.4. **`q` does not change the order, and no `order`/`sort` value is refused because `q` is present**: this endpoint declares `sort` (the five values of SPEC-090 §2.5, all valid with or without `q`) and no `order` parameter at all, so there is nothing to refuse — a `sort` with `q` is a search ordered by that key, and the ranking of SPEC-090 R9/R12 is what `relevance` means. `snippet` arrives as-is from SPEC-090 §2: FTS5 `snippet(issue_fts, -1, '<mark>', '</mark>', '…', 12)`, with `<mark>`/`</mark>` around the terms and no escaping in `app/` (REQ-S090-03). → **REQ-F060-09** |
 | **R10** | **Single-direction relations.** `POST /relations` with `type=blocks` creates `issue_id → related_issue_id`. `blocked_by` is not persisted: the inverse is derived on read. → **REQ-F060-10** |
 | **R11** | **Read-only.** With `read_only=True`, any method ≠ GET/HEAD ⇒ 403 `forbidden` with the `message` `"server in read-only mode"`, before touching the database. → **REQ-F060-11** |
 | **R12** | **A single error format.** Pydantic's 422s and those of `RequestValidationError` are rewritten into the envelope of §6.3; FastAPI's `{"detail": [...]}` format **never** goes out. → **REQ-F060-12** |
@@ -1064,7 +1123,7 @@ Starlette returns a plain-text 500, breaking R3 and R14.
 ```
 NotFound            -> 404  not_found                (field = e.field, the `resource`)
 Conflict            -> 409  conflict
-Validation          -> 422  validation_error        (field = e.field)
+Validation          -> 422  validation_error        (field = e.field; a lowercase e.code wins, §6.1)
 InvalidTransition   -> 409  invalid_transition      (field = e.field)
 RequestValidationError -> 422 validation_error      (field = "body.<campo>" | "query.<param>")
 HTTPException(405)  -> 405  method_not_allowed
@@ -1080,7 +1139,7 @@ Exception           -> 500  internal_error
 
 | `error.code` | HTTP | When | `field` |
 |---|---|---|---|
-| `validation_error` | 422 | invalid payload/query, unknown field, null `title`, `limit` out of range, invalid cursor | yes |
+| `validation_error` | 422 | invalid payload/query, unknown field, null `title`, `limit` out of range on a listing (`/issues`), invalid cursor | yes |
 | `not_found` | 404 | nonexistent ref/resource | the `resource` of the `NotFound` (`issue`, `label`, `label_link`, …) |
 | `conflict` | 409 | uniqueness, label in use, team with issues, member with open issues, duplicate relation | yes |
 | `invalid_transition` | 409 | writing an issue with `archived_at` not null (SPEC-040 §6, R20) | `ref` |
@@ -1090,6 +1149,15 @@ Exception           -> 500  internal_error
 | `unsupported_media_type` | 415 | `Content-Type` other than JSON | `content-type` |
 | `database_unavailable` | 503 | `database is locked` after `busy_timeout` | `null` |
 | `internal_error` | 500 | unmapped exception | `null` |
+| `query_empty`, `query_too_long`, `invalid_limit`, `invalid_filter` | 422 | a `GET /api/v1/search` the search contract refuses (SPEC-090 §6) | the **input** that carried it: `q`, `limit`, `offset`, `priority`, `due` |
+
+**The search refuses with its own four codes, and that is the one deliberate exception to
+`validation_error`.** A search refusal is already spelled — `invalid_limit`, `invalid_filter`,
+`query_too_long`, `query_empty` — by the component that raises it (SPEC-090 §6), it is the code the CLI
+publishes for the same input (SPEC-050 §6), and re-badging it as `validation_error` on the way out would
+give one refusal two names depending on the transport. The same sentence is the message, and `field`
+names the parameter: this is the rule of §2.5.4 and the last row of the catalog above. Every other
+`Validation` of this layer is `validation_error`, unchanged.
 
 `InvalidTransition` and `Conflict` share a status (409) but **not** the `code`: the client distinguishes
 "retryable with different data" (conflict) from "the issue is archived" (invalid_transition). The map is
@@ -1191,9 +1259,18 @@ Feature: hifa REST API
     Then the status is 200
     And the body has the keys hits, total, has_more, backend, took_ms
     And the body does not have the keys items, next_cursor, total_estimate
-    And each hit has the keys issue, snippet, score
+    And each hit has the keys issue_id, identifier, title, state_name, state_type, priority, due_date, assignee_display_name, updated_at, snippet, score
+    And no hit has the key issue
     And all scores are greater than or equal to 0
     And the hits come sorted by score descending
+
+  Scenario: a refused search publishes SPEC-090's code and names the input
+    Given a team ENG
+    When GET /api/v1/search?q=login&limit=201 is performed
+    Then the status is 422
+    And error.code is "invalid_limit"
+    And error.field is "limit"
+    And error.message is "limit must be between 1 and 200"
 
   Scenario: keyset pagination neither duplicates nor loses rows
     Given a team with 7 issues
@@ -1367,6 +1444,68 @@ Feature: hifa REST API
 
 ## 11. Notes
 
+- spec_revision 14 (2026-11-20): **`q` does not move the order, and §2.4's config rule now says what the
+  models actually do (HIFA-7, third review round).** `version` 6 → 7: §2.4's normative instruction
+  changes (which models carry `from_attributes`) and R9 is the rule a client reads.
+  (1) **R9 refused something this document does not declare.** It said "an explicit `order` with `q` ⇒
+  422", against SPEC-090 §2.5 — which accepts `sort` with `q` — and against §2.6 of this document, whose
+  own `order` rule is the listing's keyset order and has nothing to do with a search. The sentence is
+  replaced: `q` does not change the order and no `order`/`sort` value is refused because `q` is present;
+  the endpoint declares `sort` (the five values of SPEC-090 §2.5, valid with or without `q`) and no
+  `order` parameter at all. `relevance` is what `score DESC, id ASC` means.
+  (2) **§2.4's blanket rule was false.** "All output models use `model_config =
+  ConfigDict(from_attributes=True)`" was not true of `IssuePage`, `TeamList`, `HistoryEntry`,
+  `TeamProgress`, `HealthOut`, `ErrorBody`/`ErrorEnvelope` or the eight nested references, and revision
+  13 restated it as "mandatory for every output model". The rule is now the truthful one — the config
+  belongs to the models that validate a use case's dataclass, named one by one — with the reason the
+  others carry neither config (composed field by field, so `from_attributes` would declare a coercion
+  path nothing uses) and the reason the error bodies are declared without it on purpose (they must not
+  accept an arbitrary exception as their source, which would make any object with those attribute names
+  envelope-shaped). No model gains or loses a field, and no error body gains config. §2.6's sentence
+  under `SearchPage` follows.
+- spec_revision 13 (2026-11-20): **`q` on the issue listing has one meaning, and it is not the search's
+  (HIFA-7, second review round).** `version` 5 → 6, because §2.5.1's filter table and §2.6's order rule
+  both change.
+  (1) **§2.5.1 and §2.6 published an FTS5 search on a route that has none.** They said `q` was "FTS5
+  search delegated to SPEC-090" and that "with `q` the default `order` becomes `relevance`", which
+  contradicts SPEC-090 §2.5, D-025, SPEC-030 §2.6 and SPEC-040 §4 — every one of them says the listing's
+  `q` is a `LIKE '%term%'` over `title` — and `relevance` is not even a member of this document's own
+  `OrderField` (§2.4). `q` is now the title filter of D-025 and nothing else: no `MATCH`, no `backend`, no
+  ranking, no band, and no effect on `order`, with the sentence pointing at the route that does search
+  (§2.5.4).
+  (2) **`SearchHit` and `SearchPage` now declare `from_attributes`.** §2.4 as it then read made it
+  mandatory for every output model (revision 14 narrows that sentence to the models that validate a
+  dataclass, which is exactly this pair) and these two, added in revision 12, carried no `model_config` —
+  while the use case returns SPEC-090's frozen dataclasses, so the schemas could not validate what they
+  were written to publish. One sentence under them states that `model_validate` over the dataclasses
+  **is** the conversion.
+  (3) **A citation of the note below pointed at §2.2 for a class §2.4.4 declares**; it now says §2.4.4.
+- spec_revision 12 (2026-11-20): **the search hit this edge publishes is the one SPEC-090 declares, flat
+  and eleven fields, and a refused search keeps its own code (HIFA-7 review round, D-064).** `version`
+  4 → 5, because the `SearchHit` of §2.4.4 changes shape:
+  (1) **`SearchHit(issue: IssueOut, snippet, score)` is gone.** It was the nested shape D-064 retired and
+  this document never heard of the decision — D-064's `Touches:` did not name SPEC-060, so it got no
+  `spec_revision` bump in that round. It now publishes the eleven flat fields in the order of SPEC-090
+  §2.2 — `issue_id, identifier, title, state_name, state_type, priority, due_date,
+  assignee_display_name, updated_at, snippet, score` — with no `issue` wrapper, because every consumer
+  (the CLI table of SPEC-050 §2.4.1.1 and the page's read model of SPEC-070 §2.3.5) reads those eleven
+  and nothing a nested 31-key `Issue` would add. §2.6's comment and §7's assertion follow: the scenario
+  now asserts the eleven keys **and** that no hit carries `issue`.
+  (2) **One refusal, one envelope.** §2.5.4 published `422 validation_error` with `field` ∈
+  `{invalid_filter, invalid_limit, query_empty}` — a code list in the `field` position — while SPEC-090
+  §6 publishes those four as `error.code` with `field` naming the input. §2.5.4, §5.3 and §6.1 now say the
+  same thing: the code is `invalid_limit` / `invalid_filter` / `query_too_long` / `query_empty`,
+  `error.message` is SPEC-090 §6's sentence for it, and `error.field` is the **input** that carried the
+  refusal (`q`, `limit`, `offset`, `priority`, `due`). §6.1 gains the row, §5.3's mapping says when a
+  `Validation` passes its own lowercase code through, and §2.5.4 says that the edge composes the
+  `SearchQuery` and passes its clock's instant (`search_issues(db, query, now=…)`, SPEC-090 §2.3). The
+  first row of §6.1 still owns `limit` out of range **on a listing**, which is `validation_error` and is
+  not the search.
+  (3) **The §2.7 sample showed markers no layer produces and a shape the contract no longer has.** It
+  rendered `**login** with **SSO**` — bold markdown, which contradicts R15 — and nested an `issue` object
+  per hit. It is now the flat hit with the literal `<mark>`/`</mark>` of SPEC-090 R15, unescaped at this
+  edge, with a sentence saying why. §7 goes 25 → **26** scenarios (the 422 one is new) and none is
+  removed.
 - spec_revision 10 (2026-11-20): **this edge publishes transport codes, and its 404s publish the
   resource (HIFA-14, D-061).** (1) §2.5.3 named `label_team_mismatch` and `label_retired` in the
   position where §6.1's catalog holds `error.code`, and that catalog has no such codes: the paragraph

@@ -3122,3 +3122,595 @@ checkbox ticked and no scenario added or removed: the corpus is still **240 (228
 still holds **62** decisions. No `version` moves in that round: §6 of SPEC-020 stops claiming a payload
 the edges never built, and a pointer, a sample's fourth key and the spelling of a noun are not a change
 to any requirement, flag, route, exit code or payload shape.
+
+## D-063 — A page with no query is a state, not a refusal
+
+**Date:** 2026-11-20 · **Wins:** SPEC-070 §2.1.8 (the page owns its four states) and SPEC-090 §2.6.1 (the
+use case owns `query_empty`) · **Touches:** SPEC-070 §2.1.1, §2.1.8, §2.1.9, §2.3.5, §4 (R21), §6, §7,
+§11; SPEC-090 §1, §2.5, §2.6, §2.6.1, §6, §7, §11, §12; `specs/INDEX.md`
+
+**The rule.** `GET /search` has exactly four states: **empty** (no `q`, or a `q` of spaces) ⇒ `200`,
+the use case is not called; **results** ⇒ `200`; **no results** (`hits=[]` from a valid query) ⇒ `200`;
+**error** (a query SPEC-090 §6 refuses) ⇒ `422`, the same template with the query kept. It answers `400`
+for none of them. `query_empty` survives as the refusal of the two edges that are **asked to run a
+query**: `hifa search` (exit 2) and `GET /api/v1/search` (422, SPEC-060 §2.5.4).
+
+**Why the surfaces could not keep the `400`.** SPEC-070 §2.1.1 and §6 declared "an empty `q` in `/search`
+⇒ `400`", and `base.html` renders `<a href="/search">` in the top bar of **every** page: the one URL the
+navigation offers answered an error page, which is the dead end T-11 was opened to remove. The
+contradiction was not between two specs but between a spec row and a link the same spec declares in
+§2.1.1 — and a page whose only entry point is a `400` is a page nothing links to, whatever the table
+says.
+
+**Why `422` and not `400` for the query it cannot read.** The page never *asked* for a query: the reader
+did, in a form the page serves. A missing `q` is not invalid input, it is the state the page is in before
+the first search; a `q` SPEC-090 refuses is invalid input, and `422` with the input kept is what this
+layer already does for every other rejection (§6). `400` stays where it already was: the `/_/` family
+without `HX-Request` (R5) and the cross-site write guard (R28) — both of them a malformed *client*, not
+a mistyped query.
+
+**The alternatives rejected.** (1) *Keep the `400` and point the sidebar at `/search?q=`* — there is no
+query to prefill, and a seeded one would run a search nobody asked for on every click. (2) *Let the page
+call `search_issues` with an empty text and render the `query_empty` it raises* — the page would catch
+the refusal to show the empty state, which is a `400` wearing the markup of a `200`; the state is
+declared instead, and the use case is never called without something to search for. (3) *Make the empty
+state a `404`* — the page exists and the workspace exists; only the query is absent.
+
+**What it does not change.** The CLI's exit `2` and the API's `422` for `query_empty`, its code and its
+message; the `q` grammar of SPEC-090 §2.3; the palette (`/_/palette`, R19), whose two phases already
+answer an empty `q` with actions only; and the board/list `q`, which is the title filter of D-025.
+
+**Verification.** SPEC-090 §2.6.1 lists the seven consumer rules; SPEC-070 §2.1.8's state table is the
+contract and §7 has a scenario per state (the empty one asserts `200` and the absence of any hit); the
+catalogue of §6 no longer carries `type something to search`, because it was a refusal that no longer
+exists — the empty state's copy is a read-model key of §2.3.5.
+
+## D-064 — The search use case is `search_issues`, and the hit is flat
+
+**Date:** 2026-11-20 · **Wins:** SPEC-090 §2.2/§2.3 (the shape of the payload) and SPEC-040 §2.2 (the
+entry point every edge calls) · **Touches:** SPEC-090 §1, §2.3, §2.5, §2.6, §2.6.1, §8, §12; SPEC-050
+§2.3, §2.4.1, §2.4.1.1, §2.4.3, §2.5.1, §7, §11; SPEC-070 §2.1.4, §2.1.8, §4 (R21), §11;
+`specs/INDEX.md`
+
+**The rule.** (1) **One entry point:** `search_issues(db: Database, query: SearchQuery) -> SearchPage`,
+the signature SPEC-040 §2.2 has carried, is what every edge calls; `SearchService` is the object
+`app/search.py` builds over `Reads` and nobody outside that module constructs; `parse_query(raw)` is the
+public parser and the class's `parse` method is gone. (2) **One hit shape:** `SearchHit` of SPEC-090 §2.2,
+flat and eleven fields — `issue_id, identifier, title, state_name, state_type, priority, due_date,
+assignee_display_name, updated_at, snippet, score`. D-002's `{issue, snippet, score}` is the one part of
+that resolution that does not survive: it predates the dataclass and would have made every edge read six
+values out of a nested 31-key `Issue`.
+
+**Why the entry point had to be settled.** The corpus carried three answers to "how do I search": SPEC-040
+§2.2 declares the function, SPEC-090 §2.3 declared the class, SPEC-050 §2.3 and SPEC-070 §2.1.4/R21 called
+the class, and T-11 was opened on the observation that "there is no `search_issues` use case". A class
+whose constructor takes `SearchReads` cannot be the application port: an edge that builds it has to import
+`adapters/sqlite/reads.py` to obtain the port, which A3 forbids for `web/` and `cli/`, and D-012 settles the
+question in advance — an edge calls a function of SPEC-040 §2.2 and declares none of its own. The
+implementation is one function that constructs the service, calls it once and returns its page, so the
+class keeps the logic and the port stays a function.
+
+**Why the hit is flat.** The CLI table (SPEC-050 §2.4.1.1) and the page (`search_vm`, SPEC-070 §2.3.5)
+print the same six fields — identifier, title, state, priority, updated, snippet — and a flat hit hands
+them each one key; the nested shape hands them `hit.issue.identifier`, `hit.issue.title`,
+`hit.issue.state.name`, `hit.issue.priority`, `hit.issue.updated_at` and `hit.snippet`, i.e. a 31-key
+payload to render six values, with two keys of the same object read at two depths. The envelope stays the
+five keys of SPEC-090 §2.2 — `hits, total, has_more, backend, took_ms` — and only the element changes.
+
+**The alternatives rejected.** (1) *Promote `SearchService` to the port and declare it in SPEC-040 §2.2* —
+a port whose constructor takes an adapter object forces every edge to know the adapter; it also leaves
+`search_issues` declared and unimplemented in the spec that owns the port. (2) *Keep `{issue, snippet,
+score}`* — see above; it also contradicts the flat hit every scenario of SPEC-090 §7 already asserts.
+(3) *Two shapes, one per edge* — the same query would answer two payloads depending on who asked, which is
+exactly what D-016 forbids and what the API already defers to SPEC-090 for.
+
+**What it does not change.** The `hifa search` flags, the envelope's five keys, the ranking, the `like`
+fallback, the `snippet`'s markers and the rule that no edge escapes them; the API's `SearchPage`
+(SPEC-060 §2.5.4) and its `422`; the CLI's exit codes `0/2/6`; and the page's `count=False`, which is
+D-063's page, not this shape's.
+
+**Verification.** SPEC-090 §8 step 11 names `search_issues`/`parse_query`/`SearchService` for the contract
+check; SPEC-050 §7 asserts the eleven keys of a hit; SPEC-070 §7 asserts the six rendered fields and the
+single escaping of the snippet; `grep -rn "SearchService(" src/hifa/cli src/hifa/web` must return nothing.
+
+## D-065 — `fts5_unavailable` has one producer, and it is the connection layer
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.1/§6 (the class and the check) · **Touches:** SPEC-030 §1,
+§2.1, §2.2, §4.2, §5.1, §6, §7, §10, `Notes`; SPEC-050 §6; SPEC-100 R21, `Notes`; SPEC-090 §6, §11
+
+**The rule.** `fts5_unavailable` is raised by **`require_fts5(conn)`** of SPEC-030 §2.1, and by nothing
+else. It answers `SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'`
+(`FTS5_ENABLED_SQL`) and raises `Fts5Unavailable(code='fts5_unavailable')` when the connection's SQLite was
+built without the module: exit `6`, HTTP `500`, the internal class of D-014. It runs in exactly two
+declared places — in `migrate()`, before the backup and before the first `BEGIN`, when
+`pending_migrations()` is non-empty (the v1 schema creates the `issue_fts` virtual table, so a build
+without FTS5 cannot apply it); and as the **first statement of `reindex(conn)`** (SPEC-100 R21), the one
+command whose whole job is to write the index. It does **not** run in `connect()`.
+
+**Why the code needed a producer at all.** SPEC-050 §6 and SPEC-100 R21 published `fts5_unavailable` and
+sent the reader to "the migrator (SPEC-030 §2.3)" for the check; §2.3 of that document declared neither the
+class nor the statement, and nothing in the corpus tested it. A published code with no producer is worse
+than an unpublished one: the implementer either invents the check in the edge (where A7 says the edge maps
+codes and does not define them) or never writes it and the exit `6` is dead. The producer now lives where
+the fact lives — the adapter owns the connection, so the adapter is the layer that can ask the connection
+what its SQLite was compiled with.
+
+**Why not in `connect()`.** A database whose index cannot be read is still searchable: SPEC-090 R14 sends
+that query to the `like` path with exit `0`, because the rows are in `issue` and a reader who gets their
+issues is better served than a reader who gets an error. A check in `connect()` would refuse the
+connection and take those rows away from every command, including the ones that never touch the index. The
+two callers that *must* have the module ask for it explicitly.
+
+**Why `pragma_compile_options` and not `PRAGMA compile_options`.** It is one `SELECT` over a table-valued
+function (SQLite ≥ 3.16; the corpus already requires ≥ 3.35 for `RETURNING`), it composes with a `WHERE`
+so the answer is a row or no row rather than a string a caller has to parse, and it works on a read-only
+connection — which matters because `connect(readonly=True)` is how every read reaches the file.
+
+**The alternatives rejected.** (1) *Raise it from the migrator only* — `db reindex` runs on a database that
+is already migrated, so it would never meet the check and would fail with `no such module: fts5` from
+inside its transaction, which is the unnamed error this decision removes. (2) *Let `translate_sqlite_error`
+map `no such module: fts5`* — that mapping is for errors the driver raises on a statement the caller wrote;
+here the caller writes no statement that can fail, and SPEC-090 R14 already claims `no such module: fts5`
+as a *fallback trigger* of the search, so the same string would mean two things in two layers. (3) *A
+`doctor` check* — `doctor` reports and repairs nothing (R20), and a build without FTS5 makes `doctor`'s own
+C8 unanswerable.
+
+**What it does not change.** The search's behaviour on a degraded build — `backend="like"`, exit `0`
+(SPEC-090 §6, R14); the exit set of `db reindex`, `0/3/6` (R21); and `hifa db migrate`'s own exit codes,
+which already had `6` for `SQLITE_TOO_OLD`. `not_a_hifa_database` stays where it was born, the `hifa init`
+refusal of R14c.
+
+**Verification.** SPEC-030 §7's two scenarios — the check passes on a build that has the module and raises
+`Fts5Unavailable` with `code="fts5_unavailable"` on one that does not (the second stubs `FTS5_ENABLED_SQL`
+with no row, which is the only way to test it on a build that has FTS5); REQ-F030-23; and
+`grep -rn "fts5_unavailable" src/hifa` returning exactly one raiser.
+
+## Amendments to D-063 and D-064 (review round, 2026-11-20)
+
+Appended, not rewritten: the two decisions of this ticket are five hours old and were reviewed against the
+corpus rather than against their own prose, so what follows corrects them in place and leaves their text
+standing.
+
+**D-063, `400` and the write guard.** The rule above puts "the cross-site write guard (R28)" among the
+places `400` stays. It does not: R28 and SPEC-070 §6 answer **`403`** (`text/plain`, `cross-site write
+refused`, `Cache-Control: no-store`), and the guard is not a `400` of that layer at all. The sentence is
+wrong on a status code and nothing else; the argument around it — a missing `q` is a state, a malformed one
+is a `422` — is untouched, and so is the list of places `400` does stay (the `/_/` family without
+`HX-Request`, R5). SPEC-070 §2.1.1 and §2.1.8 carried the same slip and are corrected in the same commit.
+
+**D-064, the parser takes one argument.** The rule above says `parse_query(raw)` is the public parser and
+that it turns the raw string **plus the CLI flags** into the `SearchQuery` — and SPEC-090 §2.3 said the
+same in one sentence. Both are corrected: **`parse_query(raw: str) -> ParsedQuery`** parses text and
+nothing else, where `ParsedQuery` carries the free text, the filters the text itself carried, the
+terms-derived values (`terms`, `match`, `match_title`, `like_terms`) and `is_empty`; the **edge** composes
+the `SearchQuery` from that plus its own flags, which override the embedded value of the same field, plus
+the `limit`/`offset`/`sort`/`count` only it owns. The twelve flags of `hifa search` never enter the parser,
+and neither does `default_team`, which the previous revision declared: it let the parser read
+`[cli].default_team` and stamp it into `SearchFilters.team`, so `parse_query` was not a function of its
+argument, `app/` read configuration (A1/A3), and a workspace-wide search was silently narrowed to one team
+that no flag named. The team comes from the edge that resolved it, as `--team`'s value does.
+
+**D-064, the use case takes the instant.** `search_issues(db, query, *, now)` — `now` aware and in UTC —
+is the signature, and `SearchService(reads).search(query, *, now)` passes it down. The rule above writes
+the signature without it, and that signature could not compute a relative `due:` window: SPEC-090 R13 used
+a `Clock` this module may not import (A2), and the adapter is forbidden to call `datetime.now`. The instant
+comes from the edge's clock; SPEC-090 R13 derives `today = now.astimezone(zone).date()` where `zone` is the
+**query's** timezone (the team's when the query names one, **UTC** otherwise, because the schema has no
+workspace timezone and the default team is configuration).
+
+**D-064, `Touches:` was incomplete.** The list above names SPEC-090, SPEC-050, SPEC-070 and `specs/INDEX.md`
+and omits **SPEC-060**, which publishes the same hit as `SearchHit(issue: IssueOut, snippet, score)` in
+§2.2, asserts its three keys in §2.6 and §7, and therefore needed a `spec_revision` bump and a §Notes
+pointer in that round and got neither. SPEC-060 is added here and its revision 12 does the work; the lesson
+is the one SPEC-030's rev 12 already wrote down about D-059 — a decision whose `Touches:` list is short by
+one spec produces a corpus with two shapes for one payload.
+
+## D-066 — `not_a_hifa_database` names the file, and the edge that refuses it names the exit
+
+**Date:** 2026-11-20 · **Wins:** SPEC-100 R21/§6 (the detection, its two rows and the sequence of the
+rebuild) · **Touches:** SPEC-100 §2.6, §2.7, §4.3 (R21), §6, §7, §11; SPEC-050 §6, §11; SPEC-090 §11,
+§12; `specs/INDEX.md`
+
+**The rule.** `hifa db reindex` reads the file before it writes to it: one
+`SELECT name FROM sqlite_master` and the two tables a hifa database cannot lack — `workspace`, the marker
+`hifa init` already uses (R14c), and `issue`, the table the rebuild indexes. A file that **opens** and is
+**valid SQLite** but carries no both ⇒ `not_a_hifa_database`, exit `3`, nothing written. A file that
+**SQLite itself refuses** (`file is not a database`, `database disk image is malformed`) ⇒
+`corrupt_database`, exit `6`. The exit set of the verb does not move: `0, 3, 6`.
+
+**Why the code had to come back.** SPEC-100's revision 9 removed `not_a_hifa_database` from R21 and sent
+"another tool's SQLite file" to `corrupt_database`, on the argument that the corpus maps every unreadable
+file to that class. The input does not behave that way: a valid foreign file opens, passes
+`require_fts5(conn)`, has its virtual table created by the repair path and fails only at the rebuild, with
+`no such table: main.issue` — which SPEC-030 §6 maps to `DB_NOT_MIGRATED`, a code that says the schema is
+older than the binary. The published answer for a foreign file was therefore a code about a migration that
+will never exist, for a file no migration can ever touch: not a code without a producer, worse — a producer
+that answers something else.
+
+**Why two exits for one code.** `hifa init` publishes `not_a_hifa_database` at exit `2` and keeps it: what
+it refuses is the `--db` **argument** — the user named a path expecting it to be free, and `--force` is the
+override — which is what `2` means in SPEC-050 §6. `db reindex` refuses something else: the **database** it
+was told to operate on is not a hifa database, and that is what `3` carries for every command of the corpus
+(`database_not_found`, `not_found`). One name for one condition, with each edge's exit saying what it had to
+refuse. The alternative — a second code such as `not_a_hifa_database_for_reindex` — would have been a second
+spelling of one fact, which is the class of defect this corpus keeps removing. `NotAHifaDatabase` is the
+class of the `db` group (`code = "not_a_hifa_database"`, no `field`); `init` goes on raising the
+`Validation` of R14c with the same lowercase code, and both surfaces are rows of SPEC-050 §6.
+
+**What it also fixed.** The same round made the rebuild's statement sequence executable. The three triggers
+of SPEC-090 §3.1 are `AFTER INSERT/DELETE/UPDATE ON issue`, so they belong to `issue` and not to the index:
+`DROP TABLE issue_fts` takes the virtual table and its shadow tables and leaves all three in `sqlite_master`,
+and the verbatim `CREATE TRIGGER issue_fts_ai` that revision 9 prescribed raises `trigger issue_fts_ai
+already exists` inside the transaction. R21 prints the sequence it means — `CREATE VIRTUAL TABLE IF NOT
+EXISTS`, `DROP TRIGGER IF EXISTS` for each of the three names, the three `CREATE TRIGGER`s,
+`VALUES('rebuild')` — so every starting state (both present, table gone, triggers gone, both gone) ends at
+exit `0` with the index rebuilt and the triggers back.
+
+**The alternatives rejected.** (1) *Keep `corrupt_database` and correct SPEC-030's mapping so the rebuild
+error becomes `corrupt_database`* — the mapping is right about a migration state and wrong only about this
+input; rewriting it would make every `no such table` a corruption. (2) *Detect with `PRAGMA user_version`
+instead of `sqlite_master`* — a foreign file has `user_version 0`, which is also what an unmigrated hifa
+database has, so the check could not tell them apart. (3) *Check the columns of `issue` as well* — the two
+table names are the declared verdict; a column check would be a second statement, and a second rule to keep
+in sync with SPEC-010, for a file that has already answered the question this command asks. (4) *Leave the
+detection to the migration path* — nothing in `migrate()` runs on a database whose `user_version` is
+current, and a foreign file has no `user_version` at all, so the file would reach the rebuild with its
+schema still unexamined.
+
+**Verification.** SPEC-100 §7: the recreate scenario drops the table **and** the triggers and asserts exit
+`0`, the triggers back and `backend="fts"`; the refusal scenario asserts exit `3` `not_a_hifa_database` for
+a valid SQLite file carrying a `notes` table and exit `6` `corrupt_database` for a file with no SQLite
+header. SPEC-050 §6 publishes the `NotAHifaDatabase` row and SPEC-090 §11 publishes the same set. The
+sequence was executed against SQLite 3.53.1 from a database whose `issue_fts` had been dropped with the
+three triggers left in place.
+
+## Amendments to D-063, D-064 and D-065 (second review round, 2026-11-20)
+
+Appended, not rewritten, for the reason the block above gives: these decisions were reviewed against the
+corpus, not against their own prose.
+
+**D-063, the listing's `q`.** The rule says what it does not change: "the board/list `q`, which is the title
+filter of D-025". True, and unenforced. SPEC-060 §2.5.1 and §2.6 described `GET /api/v1/issues?q=` as
+"FTS5 search delegated to SPEC-090", with `order` defaulting to a `relevance` that is not even a member of
+that document's `OrderField`, and D-063's `Touches:` did not name SPEC-060 — so the one row of the corpus
+that contradicted the decision survived the round that wrote it. SPEC-060 rev 13 now says the filter: no
+`MATCH`, no `backend`, no ranking, no band and no effect on `order`. The lesson is the one D-064's third
+amendment already wrote about the same document: a decision whose `Touches:` list is short by one spec
+produces a corpus with two meanings for one parameter.
+
+**D-063, the palette's call.** SPEC-070 R21 fixed the palette's composition — "both compose the
+`SearchQuery` … call `search_issues(db, query, now=…)`" — while §2.1.9 of the same document said the palette
+"is a separate ticket — this revision contracts the page alone". A spec may not exclude a route and
+constrain its call in the same breath without saying so: R21 now states that the rule binds **every edge
+that composes a query**, that this revision ships one of them, and that the palette is one when it ships;
+§2.1.9 carries the matching sentence. Nothing of the palette's markup, its two phases or its fragment is
+contracted here — the exclusion stands, and the inheritance of the call rule is named.
+
+**D-064, the parser's layer.** The rule makes `parse_query(raw) -> ParsedQuery` the public parser of
+`app/search.py`. SPEC-040 §4's table of "edge names that are NOT part of the port" went on filing it as a
+"CLI/JS helper (paths and query string), they do not touch the database" for nine revisions — an
+application-layer symbol described as edge code, which is the direction A3 forbids the edges to move in.
+SPEC-040 rev 32 removes the row, states the owner (SPEC-090 §2.3) and why the function gets no §2.2 row of
+its own, and corrects the older bullet of its Notes that had repeated the classification.
+
+**D-065, the second carrier of the code.** The rule ends "`not_a_hifa_database` stays where it was born, the
+`hifa init` refusal of R14c". It now has a second surface: `db reindex` answers the same code at exit `3`
+for a file that opens and is not a hifa database (D-066). `fts5_unavailable` is untouched — one producer,
+`require_fts5(conn)`, the same two call sites — and the exit set of `db reindex` is still `0, 3, 6`.
+
+## Amendments to D-063, D-064, D-065 and D-066 (third review round, 2026-11-20)
+
+Appended, not rewritten, for the reason the two blocks above give: these decisions were reviewed against
+the corpus and against their own executable text, and two of the corrections below are statements the
+reviewer ran.
+
+**D-063, `q` and the order.** The amendment above says the listing's `q` has "no effect on `order`" and
+names SPEC-060 §2.5.1 and §2.6 as the places that now say so. One sentence of the same document survived
+the round: **R9**, which read "the default order is `score DESC, id ASC` and an explicit `order` with `q`
+⇒ 422". The search endpoint declares no `order` at all — its parameter is `sort`, the five values of
+SPEC-090 §2.5, and `relevance` is what `score DESC, id ASC` means — so R9 refused a parameter this
+document does not publish, in the one place a client reads the refusal. R9 now states the rule the other
+three sections state: `q` does not change the order, and no `order`/`sort` value is refused because `q` is
+present. SPEC-060 rev 14.
+
+**D-064, the port carries the text half.** The rule makes `search_issues(db, query, *, now)` the entry
+point and `SearchService` its implementation, and it left the port's text arguments where revision 6 had
+them: `reads.search(match=…, match_title=…, like_terms=…)`, with `like_terms` described as "the positive
+terms". §5.3 (rev 7) then printed a form whose entire predicate is a negation, and the adapter's third
+state was declared as "`like_terms == ()` **and no negated term**" — a condition that, inside the
+adapter, is spelled `like_terms == ()` and nothing else, because nothing in its arguments could carry a
+negated term. The no-positive form could not be called, and "no text at all" could not be told from "text
+that is all negation". §2.4's `text` argument is now a `TextPredicate` with both tuples (D-067), and
+§2.4's table decides the path from its four fields alone. `SearchService.search`'s signature does not
+move: what it passes down does. SPEC-090 rev 8, `version` 3 → 4.
+
+**D-064, `NOT` over a nullable column.** The `like` path is the decision's own contract — the fallback of
+R14a/R14b — and its printed `NOT (title LIKE :n0 OR description LIKE :n0)` dropped rows: with
+`description IS NULL` (legal, SPEC-010 §3.4) and a title that does not carry the term, the predicate is
+`NULL`, `NOT NULL` is `NULL`, and the `WHERE` discards the row. Measured on a four-row fixture — `i1`
+title "Deploy roto", `i2` "Bug del deploy" with a NULL description, `i3` "Otra cosa" with a NULL
+description, `i4` "Otra mas" with "tiene bug dentro" — the revision-7 form of `hifa search -bug` returned
+**1** row (`i1`) instead of the **2** it must return; with `COALESCE(description, '')` inside the `NOT`
+block it returns `i1` and `i3`, the `description IS NULL` row included. R14 now states the rule once — "a
+predicate under `NOT` treats a NULL column as empty" — and §5.3 carries it in both forms. The `fts` path
+needs no such rule: there `NOT` is evaluated over the index, which stores a NULL column as an empty one.
+
+**D-065, where `require_fts5` runs in `reindex`.** The rule puts the check "as the **first statement of
+`reindex(conn)`**", i.e. on the writable connection R21 opened before it had identified the file. With the
+probe now first (D-066, below), the check moved with it: `require_fts5(probe)` runs on the **read-only**
+probe, which is what the rule's own last paragraph already claims is possible ("it works on a read-only
+connection"), and the writable connection is opened only after the verdict. One producer, two call sites,
+unchanged: `migrate()` and `reindex`.
+
+**D-066, the two carriers, and the order of the probe.** The rule says `db reindex` "reads the file before
+it writes to it". It did not read it before it **opened** it: revision 10 opened the database read-write
+(which creates a missing path — 4096 bytes, empty schema, SPEC-030 §2.1) and then asked `sqlite_master`,
+so `database_not_found` was unreachable and the command created the file it promised not to touch. R21 now
+prints three ordered steps — (a) the path exists? no ⇒ `3` `database_not_found`, nothing opened; (b) a
+**read-only** open, the `sqlite_master` verdict and `require_fts5` ⇒ `3` or `6`, nothing written; (c) only
+then the writable connection and the transaction — and (a) and (b) leave the file byte-identical
+(measured: a foreign file keeps its sha and its 8192 bytes and leaves no `-wal`/`-shm` behind). The probe
+opens by URI mode and **not** with `connect(readonly=True)`: that function of SPEC-030 §2.1 applies the
+whole `PRAGMAS` tuple and its first entry is `journal_mode=WAL`, a write to the header that answers
+`attempt to write a readonly database` on a file that is not already in WAL — exit `4` on exactly the
+input the step exists to name. The decision's **other** carrier was dead for a different reason: `hifa
+init` ran its "no `workspace` table" probe **after** the migrator, and `001_init.sql` creates `workspace`
+on any `user_version`-0 file, so a foreign file was migrated (measured: `workspace` and `issue` present
+after applying the migration to a file with a `notes` table) and the probe could never fire. It is now
+§5.2 step 5, before the migrator, on the same read-only open: refused at `2` with no table created and no
+migration run, byte-identical, `--force` the override §6 already named. Both exits of the one code are
+now reachable, which is what the decision claims and could not previously show. §7 pins both: the missing
+path (`database_not_found`, no file created) and the foreign file (`not_a_hifa_database`, bytes unchanged).
+SPEC-100 rev 11, `version` 4 → 5.
+
+**One count, corrected in passing.** SPEC-100 §11's revision-10 note said "the six statements" and then
+enumerated eight (`CREATE VIRTUAL TABLE`, 3 × `DROP TRIGGER`, 3 × `CREATE TRIGGER`, `VALUES('rebuild')`);
+it now says eight between `BEGIN IMMEDIATE` and `COMMIT`, ten counting those two.
+
+## D-067 — The adapter receives the text half as one predicate, with both of its tuples
+
+**Date:** 2026-11-20 · **Wins:** SPEC-090 §2.2/§2.3 (the shape the service builds) and SPEC-090 §2.4 (what
+the port receives) · **Touches:** SPEC-090 §2.2, §2.3, §2.4, §2.5, §4.1 (R4, R14), §5.1, §5.3, §8, §12;
+`specs/INDEX.md`
+
+**The rule.** The text half of a search crosses the port as **one** frozen `TextPredicate` —
+`match: str | None`, `match_title: str | None`, `like_terms: tuple[str, ...]`,
+`not_terms: tuple[str, ...]` — built by **`build_text_predicate(text)`** in `app/search.py` and passed as
+`reads.search(conn, text=predicate, …)`. It replaces the three loose keywords (`match`, `match_title`,
+`like_terms`) of the previous signature. The negated terms are an argument of the port; the adapter never
+parses the text and never receives it.
+
+**Why the negated terms had to become an argument.** Revision 7 printed a `like` form whose whole
+predicate is a negation, and the port carried no way to ask for it: `like_terms` is "the positive terms",
+and the third text state was declared as "`like_terms == ()` **and no negated term**". Inside the
+adapter, "no negated term" has no representation — so `hifa search -bug` and `hifa search --state Done`
+were the same three arguments, and every implementation had to choose which of the two answers to break.
+An argument is the only place a decision can be made without re-deriving the query; the alternative —
+letting `reads.py` call `sanitize_terms` — puts the parser of `app/` inside the adapter and gives the two
+layers two copies of one rule.
+
+**Why not a field on `SearchQuery`.** `SearchQuery.text` already carries the negation (`-bug` is text),
+and `SearchQuery` is composed by each edge from the `ParsedQuery` plus its own flags. A `not_terms` field
+there would be a second copy of one fact, filled by the edge — which means the edge would have to read
+the terms, the one thing §2.3 forbids it to do for anything but its two local decisions, and a copy that
+can disagree with the text it was parsed from. The direction is the other one: `SearchService` derives
+both tuples from `query.text` in step 4 of §5.1 and the predicate is the only object that carries them.
+
+**Why one object and not four keywords.** The path is a function of four values, and it is now decidable
+by reading one argument's fields (§2.4's table): `match is not None` ⇒ `fts`; `match is None` with
+`like_terms` ⇒ the first `like` form; `match is None` with `like_terms == ()` and `not_terms` non-empty ⇒
+the second `like` form; both tuples empty ⇒ `backend="none"` and no text predicate. Four independent
+keywords invite a caller to pass three of them, which is how the third state became unreachable in the
+first place.
+
+**The alternatives rejected.** (1) *Add `not_terms` next to `like_terms`* — it works, and it leaves the
+three states spread over two booleans and a nullable string in five places (§2.4, §5.1, R4, R14, §5.3)
+instead of one table; the object is what makes the table writable once. (2) *A `TextPredicate` with only
+`not_terms` and `like_terms`* (no FTS expressions) — the adapter would then build `MATCH`, which is
+`app/`'s job (R4, REQ-N090-05: `app/search.py` holds the grammar, `reads.py` holds the SQL). (3) *A
+`backend` field the service computes* — the service cannot know the retry: when the `MATCH` raises one of
+R14's four triggers the adapter answers `backend="like"` while the predicate still carries a `match`, and
+a field would be a promise the retry breaks.
+
+**What it does not change.** `SearchQuery`, `SearchFilters`, `ParsedQuery` and `SearchPage` (no field
+moves); the `fts` path's SQL (§5.2); R14's four retry triggers and its ranking bands; the CLI flags, the
+API parameters and the page's four states; and `search_issues(db, query, *, now)`, whose signature every
+edge already calls (D-064).
+
+**Verification.** SPEC-090 §2.4's table is the contract and §5.1 steps 4-5 name the four values; §8 step 4
+asks for the split test (`deploy -bug -infra` ⇒ `like_terms=("deploy",)`, `not_terms=("bug","infra")`);
+§7's purely-negative scenario asserts `backend="like"` with the three surviving issues; and the two SQL
+blocks of §5.3 were executed against the four-row fixture of the D-064 amendment above — `hifa search -bug`
+returns **2** rows with the new block and returned **1** with the old one, the row whose `description` is
+`NULL` being the one that moved.
+
+## D-068 — The probe is a symbol of the connection layer, and the flag counts rows
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.1/§4.1/§4.2 (the read-only open and the placement of
+`require_fts5`), SPEC-100 R14/R21/§5.2 (the probe and the meaning of `already_initialized`), and D-065's
+sentence that put the check "as the **first statement of `reindex(conn)`**" · **Touches:** SPEC-030 §2.1,
+§4.1 (R1), §4.2 (REQ-F030-23, REQ-F030-24), §6, §7, `Notes`; SPEC-100 §2.5, §2.6, §4.2 (R14), §4.3 (R21),
+§5.2, §6, §7, §11; SPEC-050 §2.5.1, §6, §11
+
+**The rule.** `hifa db reindex` and `hifa init` identify a file on **one** symbol of the adapter:
+**`open_probe(path) -> Probe`** in `connection.py`, where `Probe` is `(conn, tables)` and `tables` is what
+**`PROBE_SQL`** — `SELECT name FROM sqlite_master WHERE type IN ('table','view')` — returned. It opens by
+URI `mode=ro` with `uri=True`, sets `row_factory` and `isolation_level`, **applies no pragma of `PRAGMAS`**,
+runs `PROBE_SQL` exactly once, raises `NotFound(resource='database')` for a path that does not exist
+(nothing created, because `mode=ro` never creates) and `HifaError(code='DB_CORRUPT')` for bytes SQLite
+refuses (`file is not a database`, `database disk image is malformed` — raised by the **read**, since
+`sqlite3.connect()` is lazy), and answers `tables == frozenset()` for an empty file. The caller closes
+`conn`. **`require_fts5` runs on that probe**, immediately after `open_probe()` returns and before any
+writable statement exists; `reindex(conn)` declares it as a precondition and no longer claims it as its own
+first statement. **`already_initialized` is `True` iff a `workspace` row existed when `init` read the
+database** — missing file, empty file and migrated-but-unseeded all answer `False`.
+
+**Why the probe had to become a symbol.** SPEC-100 R21 prescribed
+`sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)` inside `cli/commands/db.py`. Two independent rules
+forbade it: `@REQ-F030-05` (no `sqlite3.connect` outside `connection.py` and `migrate.py`) and the port
+itself, which published no read-only open without pragmas. A step that can only be implemented by breaking
+a requirement of the layer it runs in is not a specification of that layer; it is a request for a symbol
+that does not exist yet. Declaring the symbol is also what makes the probe **testable as one thing**: two
+edges (`reindex` step (b), `init` step 5) with two independently written `sqlite_master` comprehensions is
+the class of defect this corpus keeps removing.
+
+**Why the probe applies no pragma.** It is the only read-only open of the corpus and it must work on a file
+the verb has not identified yet. `connect(readonly=True)` cannot: it applies the whole `PRAGMAS` tuple (R1),
+and the first entry, `journal_mode=WAL`, is a write to the file header. Measured on SQLite 3.53.1 — the
+four inputs, with the tuple and without it:
+
+| Input | `connect(readonly=True)` (the tuple) | `open_probe` (no pragma) |
+|---|---|---|
+| foreign file in `delete` mode | `attempt to write a readonly database` ⇒ `Conflict(DB_READONLY)`, exit `4` | `tables` read, file byte-identical |
+| 0-byte file | `attempt to write a readonly database` | `tables == frozenset()`, still 0 bytes |
+| bytes SQLite refuses | `DatabaseError: file is not a database` ⇒ `corrupt_database` | `corrupt_database`, from `PROBE_SQL` |
+| seeded hifa database (WAL) | tuple applies — and identifies nothing | `tables` read, `workspace` and `issue` present |
+
+The last row is the one that settles the argument. The previous revision said the tuple failed "only on a
+file that is not already in WAL", which reads as a licence: our files are WAL, so use `connect`. It is
+true and useless — whether the open succeeds is a function of **the file's journal mode**, exactly the fact
+the probe was opened to establish, so a probe built on it answers exit `4` on a foreign file and something
+else on a hifa file. A condition on an unread file is not an error to report, it is another reason to read
+no pragma. (One case does fail on a WAL file at rest: inside a directory the process cannot write, a reader
+cannot create the `-shm` it needs and answers the same `attempt to write a readonly database`. That is a
+permission failure, not a mode, and the adapter's own directory is `0700`/`0600` — R16.)
+
+**Why `reindex(conn)` keeps its connection and does not become `reindex(path)`.** The alternative shape is
+real — the verb would own both opens, and the order would be one function's body — and it was rejected for
+two reasons. `migrate(path)` takes a path because a migration is a thing done **to** a file; a rebuild is a
+thing done **in** a transaction, and `db vacuum` (SPEC-090 R19) owes the rebuild on a connection it already
+holds, so a path-shaped `reindex` would either reopen the file it is inside or force `vacuum` to duplicate
+the sequence. And `not_a_hifa_database` is a verdict about the **argument** the verb was given, taken before
+any write-capable handle exists: keeping it in the command, next to the `stat` of step (a), is what lets
+R21 say "nothing is opened for writing until the file has been identified" and mean it. What the signature
+needed was not a different shape but an honest precondition, and that is what it now has.
+
+**Why the flag is a row and not a table.** "`workspace` and `team` exist" was underdetermined, and both
+readings were wrong. The table reading makes **every** `init` report `true` — step 6's migrator creates the
+table on any `user_version`-0 file, so "the table exists" is true of every database that reaches step 7 —
+which contradicts R14(a)'s "created and seeded" and makes the flag carry no information at all. The row
+reading says what a person means by "already initialized": there is a workspace **in** this database. It
+also repairs the argument for step 5's position: under the table reading, a foreign file migrated first
+would answer `true` (a lie); under the row reading it would answer `false` and be **seeded** on top of
+another tool's tables (a worse lie), and the exit `2` of R14(c) would be unreachable, because
+`001_init.sql` leaves a `workspace` table behind. The probe is before the migrator because the refusal must
+be reachable, not because the flag would be wrong.
+
+**What it does not change.** SPEC-090's search contract in every part (the `like` blocks, the four-row
+state table, `TextPredicate`, the counts); `reindex(conn)`'s signature and the eight statements between
+`BEGIN IMMEDIATE` and `COMMIT`; the exit sets (`db reindex` `0/3/6`, `init` `0/2/4`, `doctor` `0/1/2/3`);
+`fts5_unavailable`'s single producer (D-065 stands, only its placement moves); `not_a_hifa_database`'s two
+carriers and their two exits (D-066); and the `.feature` corpus, which stays at 17 files and 240 scenarios.
+
+**Verification.** SPEC-030 §7's `@REQ-F030-24` scenario (four inputs, `PRAGMA foreign_keys` answering `0`
+on the probe's connection, the sha256 of each existing file unchanged); SPEC-100 §7's new scenario for the
+flag's four inputs; and the harness that runs the symbols the two specs now name against a missing path, an
+empty file, a foreign file and a seeded database — the probe, `reindex` end to end on those four states and
+`init`'s `already_initialized` — which is what this revision was measured with. One measured detail the
+promise of R21 does not depend on but a test will meet: on a database **in WAL** the probe leaves the
+database's bytes untouched and SQLite still creates the reader's `-shm` and `-wal` sidecars next to it; on
+the files where the promise is made — a foreign file, an empty file, a file SQLite refuses — no sidecar
+appears and the sha256 is the same after the probe as before it.
+
+## D-069 — One condition, one class, one code — and the exit set the probe was measured to have
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.1/§4.1/§4.2/§6/§7 (the probe's three verdicts, `Probe`'s two
+sets, the reachability sentence of revision 14), SPEC-100 §2.6/§2.7/§4.3 (R21)/§5.2/§6/§7 (the same
+verdicts and the exit set), SPEC-050 §2.5.5/§2.6/§5.3/§6 (the handler and the exit-4 row), SPEC-090 §11
+and §8 step 9 (the published set), D-068's sentence that `DB_READONLY` "is unreachable from" the probe and
+its claim that "the exit set of the verb does not move", D-066's "`0, 3, 6` and it does not move", and the
+absence of a definition for `DatabaseNotFound` and `CorruptDatabase` in the whole corpus · **Touches:**
+SPEC-020 §2.1, §2.6, §4.2 (REQ-F020-14), §6, §7, `Notes`; SPEC-030 §2.1, §4.1 (R1), §4.2 (REQ-F030-24),
+§6, §7, `Notes`; SPEC-050 §2.5.5, §2.6, §5.3, §6, `Notes`; SPEC-090 §8, §11, `Notes`; SPEC-100 §2.6,
+§2.7, §4.3 (R21), §5.2, §6, §7, `Notes`
+
+**The rule.** A condition the corpus names gets exactly **one class**, that class carries exactly **one
+code**, and every table that publishes the condition names the class that raises it. Both edges of a
+verdict publish that code verbatim — `error.code is "database_not_found"`, `error.code is
+"corrupt_database"` — with no translation step between the exception and the envelope, so a reader cannot
+meet two spellings of one fact depending on which document they opened.
+
+**Why the classes had to be declared, not merely cited.** SPEC-000 §6, SPEC-010 §6, SPEC-050 §6 and
+SPEC-100 §6 all published `DatabaseNotFound` → `database_not_found` → exit `3` → HTTP `503`, and
+SPEC-000 §6, SPEC-010 §6, SPEC-050 §6 and SPEC-100 §6 published `CorruptDatabase` → `corrupt_database` →
+exit `6` → HTTP `500`. No document declared either class. The adapter, which is the layer that raises
+them, used two other names: `NotFound(resource='database')` — the *other* `3`, code `not_found`, HTTP
+`404`, and a constructor call SPEC-020 §2.4 cannot build without `key=` — and `HifaError(code=
+'DB_CORRUPT')`, an internal string with no row anywhere. SPEC-030 §7 and SPEC-100 §7 were therefore
+jointly unsatisfiable: no implementation could answer both, because one of the two names did not exist and
+the other was not the code the tests asserted. §2.6 of SPEC-020 now declares both, next to `NotFound`, and
+§6 of the same spec gives every edge its mapping — which is the section SPEC-020 §6 already called "the
+table `cli/errors.py` and `api/errors.py` **must** be exactly".
+
+**Why the two codes are the wire spelling while the other five are `SCREAMING_SNAKE_CASE`.** §2.6 said
+every `code` is `SCREAMING_SNAKE_CASE` and that the edge translates it (`NOT_FOUND` → `not_found`). That
+stays true of `NotFound`, `Conflict`, `Validation`, `InvalidTransition` and the base. The two new classes
+carry `database_not_found` and `corrupt_database` because four tables already published those spellings
+and because a translation step is exactly where one condition acquires a second name; `NotAHifaDatabase`
+(SPEC-100 §6) has carried its wire code the same way since D-066. The alternative — a `SCREAMING_SNAKE`
+code plus a table row in each edge — was rejected: it reproduces the defect this decision removes, and it
+makes `error.code` a function of the edge rather than of the exception.
+
+**Why `DatabaseNotFound` is not a `NotFound` subclass.** It was the tempting shape — same bucket `3`, and
+"the database was not found" reads like the domain's `NotFound`. But every edge's handler is ordered by
+class (`except NotFound` first), and both would then publish `not_found` and a `404` for a missing file
+whose published status is `503` and whose published code is `database_not_found`. A subclass would also
+make `except NotFound` a silent re-badging of the condition, which is the failure mode of §5.3 itself. The
+class is a sibling of `NotFound` under `HifaError`, with `key` (the path) and no `resource`/`field`: what
+does not exist is the file, and the remedy is `hifa init`, not a corrected reference.
+
+**Why the handler needed an arm and not a wider net.** SPEC-050 §5.3 printed four `except` arms, then
+`KeyboardInterrupt` and `Exception`. Every `HifaError` subclass outside those four — the two new ones,
+`Fts5Unavailable`, `NotAHifaDatabase`, `MissingWebExtra` and the five refusals of §6 — fell to the last arm
+and answered exit `6` `internal_error`, which is precisely the answer that made SPEC-100 §7's
+`error.code is "corrupt_database"` unimplementable as printed. §5.3 now has an arm that publishes the code
+the exception carries and takes the exit §6's row declares; the four arms above it stay (they are the
+classes that carry a `field`) and publish a carried code too, which is the rule §6's `Validation` row
+already stated and which `not_a_hifa_database` at `2` and `DB_READONLY` at `4` require.
+
+**Why the exit set is `0, 3, 4, 6` and not `0, 3, 6`.** SPEC-030 §2.1 and SPEC-100 R21 both said the
+probe "applies no pragma, so `DB_READONLY` is unreachable from it". The measurement says otherwise for one
+input, and it is the input a user can actually have: a database **already in WAL** — which every hifa
+database is — inside a directory the process cannot write. The reader cannot create its `-shm`, so
+`PROBE_SQL`'s read answers `attempt to write a readonly database` (measured, SQLite 3.53.1), which
+SPEC-030 §6 has always mapped to `Conflict(code='DB_READONLY')` at exit `4`. The previous answer was exit
+`6` `internal_error` by falling through the handler: a wrong cause for a condition the corpus already had a
+row for. D-068 saw the case and dismissed it as "a permission failure, not a mode, and the adapter's own
+directory is `0700`/`0600`" — true of the directory `init` creates, false of every file a user passes with
+`--db`, which is the surface this verb exists for. The set was published in four places and now says
+`0, 3, 4, 6` in all of them, with the row that produces the `4`: §2.7, §6 and §7 of SPEC-100, §2.5.5 and §6
+of SPEC-050, §11 of SPEC-090.
+
+**Why `Probe` carries two sets instead of one.** `PROBE_SQL` returned tables **and views**, and two
+different questions were asked of that one set: "does this file carry a `workspace` **table**?" (R14c,
+R21) and "does this file carry anything at all?" (R14a). Measured, a foreign file carrying `CREATE VIEW
+workspace` answered yes to the first and passed `init`'s step 5, after which the migrator died with `view
+workspace already exists` — an exit no table publishes. `PROBE_SQL` now returns `type` and `name`, still
+**one** statement, and `Probe` carries its two projections: `tables` (`type = 'table'`) and `objects`
+(`type IN ('table','view')`). The marker verdicts of both edges read `tables`; only the empty-file test
+reads `objects`. Two sets are not a second statement, and the statement count the round certified does not
+move.
+
+**Why the close is `finally` and not a last line.** R21's step (b) and `init`'s step 5 printed
+`probe.conn.close()` as their final statement, so every refusal taken *after* the probe returned —
+`not_a_hifa_database`, `fts5_unavailable` — skipped it, while the same paragraphs declared "the caller
+closes `conn`". Both flows are now `try/finally`; `open_probe` itself closes the connection it opened
+before raising a refusal from the read, so no handle outlives a failed probe either.
+
+**What it does not change.** SPEC-090's search contract in every part (the `like` blocks, the four-row
+state table, `TextPredicate`, the counts); the WAL matrix of D-068's table (four inputs, with the tuple
+and without it) — the fifth input is added here as a measurement, not as a revision of that matrix;
+`reindex(conn)`'s signature and the eight statements between `BEGIN IMMEDIATE` and `COMMIT`; `db vacuum`'s
+probe obligation (still declared for a verb that does not ship in v1, still nobody's work in this round);
+D-066's recorded call shape for `not_a_hifa_database` (same code, same two exits, same two carriers); and
+the `.feature` corpus, which stays at 17 files and 240 scenarios. No checkbox is ticked by this decision
+and no `src/`, `tests/` or `scripts/` file moves.
+
+**Verification.** SPEC-030 §7's `@REQ-F030-24` scenario (missing path ⇒ `DatabaseNotFound` with
+`code "database_not_found"`; unreadable bytes ⇒ `CorruptDatabase` with `code "corrupt_database"`; the
+migrated database's `tables` and `objects`; a `CREATE VIEW workspace` file in `objects` and not in
+`tables`) and its new exit-`4` scenario; SPEC-100 §7's exit-`4` scenario and the view case added to the
+foreign-file scenario; SPEC-050 §5.3's handler and §6's exit-4 row; and the probe run the round was
+measured with — `open_probe` against a missing path, a file of garbage, a WAL database in a `0500`
+directory and a file carrying `CREATE VIEW workspace`, with the connection count before and after each
+call — which is what the two classes and the two sets are asserted against.

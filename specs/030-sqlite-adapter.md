@@ -3,8 +3,8 @@ id: SPEC-030
 title: SQLite adapter
 component: persistence
 status: review
-version: 2
-spec_revision: 12
+version: 5
+spec_revision: 15
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -16,7 +16,7 @@ implements:
 acceptance: specs/acceptance/030-sqlite-adapter.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-17
+updated: 2026-11-20
 ---
 
 # SPEC-030 — SQLite adapter
@@ -57,7 +57,7 @@ that feed the CLI, the API and the dashboard (board, list, detail, agenda).
 |---|---|---|---|
 | `Clock`, `IdGen` | `ports` (`src/hifa/ports.py`) | Protocols | yes |
 | `SystemClock`, `UlidGen` | `adapters.clock` / `adapters.idgen` | classes | yes |
-| `connect`, `Database`, `PRAGMAS`, `is_migrated` | `connection` | functions / class | yes |
+| `connect`, `Database`, `PRAGMAS`, `is_migrated`, `PROBE_SQL`, `Probe`, `open_probe`, `FTS5_ENABLED_SQL`, `require_fts5` | `connection` | functions / class / constants / dataclass | yes |
 | `UnitOfWork`, `Repos`, `RetryPolicy`, `UNSET`, `Unset` | `uow` | classes / sentinel | yes |
 | `migrate`, `current_version`, `pending_migrations`, `backup_database`, `MigrationResult` | `migrate` | functions / dataclass | yes |
 | `TeamRepo`, `IssueRepo`, `LabelRepo`, `ProjectRepo`, `CycleRepo`, `CommentRepo`, `HistoryRepo` | `*_repo` | classes | yes |
@@ -66,6 +66,7 @@ that feed the CLI, the API and the dashboard (board, list, detail, agenda).
 ### 2.1 `connection.py`
 
 ```python
+from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
 
@@ -87,12 +88,69 @@ def connect(db_path: str | Path, *, readonly: bool = False) -> sqlite3.Connectio
     isolation_level = None  (explicit transactions; never Python's implicit autocommit).
     nonexistent path and readonly=False -> the file is created empty (the migrator decides whether it works).
     nonexistent path and readonly=True -> sqlite3.OperationalError('unable to open database file'),
-    which the caller translates to NotFound(resource='database').
+    which the caller translates to DatabaseNotFound(key=<path>) (§6).
     """
 
 
 def is_migrated(conn: sqlite3.Connection, *, expected: int) -> bool:
     """PRAGMA user_version == expected and the issue table exists."""
+
+
+PROBE_SQL: str = "SELECT type, name FROM sqlite_master WHERE type IN ('table','view')"
+
+
+@dataclass(frozen=True, slots=True)
+class Probe:
+    """A read-only identification of one file. `conn` is open and the caller closes it.
+
+    The two sets are two projections of the one row PROBE_SQL returns, and they are not
+    interchangeable: a **view** named `workspace` is in `objects` and not in `tables`.
+    `tables` is what a schema verdict asks about (`no workspace table`); `objects` is what
+    "this file carries nothing at all" asks about (the empty-file test of SPEC-100 R14a)."""
+
+    conn: sqlite3.Connection
+    tables: frozenset[str]  # names whose type = 'table', `sqlite_`'s internal tables included
+    objects: frozenset[str]  # names whose type IN ('table','view')
+
+
+def open_probe(path: str | Path) -> Probe:
+    """Opens `path` read-only, applies NO pragma, and reads PROBE_SQL once.
+
+    sqlite3.connect(f"file:{path}?mode=ro", uri=True); row_factory = sqlite3.Row;
+    isolation_level = None. Zero entries of PRAGMAS run — not even `journal_mode`, which is a write to
+    the file header, and which a `mode=ro` connection cannot honour on a file that is not already in WAL
+    (this is why the symbol exists: `connect(readonly=True)` applies the whole tuple, D-068).
+    The one row set PROBE_SQL returns is partitioned in Python: `tables` keeps type = 'table' and
+    `objects` keeps both types; no second statement is run.
+    path that does not exist -> DatabaseNotFound(key=<path>): `mode=ro` never creates a file, and
+    sqlite3 answers 'unable to open database file' (§6).
+    bytes SQLite refuses -> CorruptDatabase(detail=<message class>, key=<path>), raised by PROBE_SQL's
+    read and not by the open, because sqlite3.connect() is lazy: 'file is not a database',
+    'database disk image is malformed' (§6).
+    a read that SQLite refuses because the process cannot create the WAL sidecars next to a database
+    that is already in WAL -> the same read answers 'attempt to write a readonly database';
+    translate_sqlite_error maps that message to Conflict(rule='DB_READONLY', code='DB_READONLY') and the
+    verb's exit is 4 (§6, SPEC-100 §6).
+    An empty file is not an error: `objects == frozenset()` and nothing is created either.
+    The file is not modified by the probe: no pragma runs and no statement writes.
+    A refusal raised by the read closes the connection it opened before it raises, so no handle
+    outlives a failed probe; on the success path the caller closes `probe.conn`, in a `try/finally`,
+    on the way out and on every verdict it takes after the probe returned (§6, D-069).
+    """
+
+
+FTS5_ENABLED_SQL: str = "SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'"
+
+
+def require_fts5(conn: sqlite3.Connection) -> None:
+    """Raise Fts5Unavailable when this connection's SQLite has no FTS5 module.
+
+    One statement, `FTS5_ENABLED_SQL`, over the `pragma_compile_options` table-valued function
+    (SQLite ≥ 3.16, and the corpus requires ≥ 3.35 for RETURNING): no `PRAGMA` is executed whose
+    output a caller could read twice, no virtual table is created to find out, and the check works
+    on a read-only connection. `Fts5Unavailable(code='fts5_unavailable')` is the only error it
+    raises; exit 6 and HTTP 500 (§6).
+    """
 
 
 class Database:
@@ -116,6 +174,27 @@ class Database:
 | `temp_store` | `MEMORY` | the `ORDER BY`s of the read models do not touch disk. |
 | `cache_size` | `-8000` | 8 MiB of page cache per connection; it fits in the RSS budget of REQ-N001. |
 | `row_factory` | `sqlite3.Row` | column-name access, no magic indexes. |
+
+**`require_fts5` runs in exactly two places. `connect` is not one of them, and neither is `reindex`'s body.**
+The check is `FTS5_ENABLED_SQL`, one `SELECT` over `pragma_compile_options`, and it runs:
+
+1. in `migrate()`, **before the backup and before the first `BEGIN`** of a migration set, when
+   `pending_migrations()` is non-empty — `001_init.sql` creates the `issue_fts` virtual table, and a build
+   without the module would otherwise fail inside the transaction with `no such module: fts5`;
+2. in `hifa db reindex`, **on the probe's connection, immediately after `open_probe()` returns and before any
+   writable statement exists** (SPEC-100 R21 step (b)): the verb's first act is the probe, its second is the
+   verdict on `probe.tables`, its third is `require_fts5(probe.conn)`, and only then is a writable
+   connection opened. That order is what makes `fts5_unavailable` an answer that leaves the file untouched.
+
+`reindex(conn)` declares the check as a **precondition** of its own contract (SPEC-100 §2.6) and not as its
+first statement: the connection it is handed is already the writable one, so a statement there would report
+the missing module after the write-side open — the failure this placement exists to avoid. `require_fts5` is
+the single producer of `fts5_unavailable` (D-065), and no other module raises that code. It is deliberately
+**not** in `connect()`: a database whose index cannot be read is still searchable through the `like` path
+(SPEC-090 R14), so a connection that refused to open would take the rows away from the reader as well. A
+future `db vacuum` (SPEC-090 R19) holds its own writable connection and owes the same check on its own
+probe; that verb is not shipped in v1 (SPEC-050 §2.5.5), and this sentence is where its third call site will
+be declared.
 
 ### 2.2 `uow.py`
 
@@ -270,6 +349,11 @@ Migrator rules:
   table nor version remain.
 - `do_backup=True` and a non-empty `pending_migrations()` ⇒ the backup happens **before** the first
   `BEGIN`. If the backup fails, the database is not touched (fail closed).
+- `require_fts5(conn)` runs **before the backup and before the first `BEGIN`**, and only when
+  `pending_migrations()` is non-empty: the v1 schema creates the `issue_fts` virtual table (SPEC-010 §3.4),
+  so a build whose SQLite carries no `ENABLE_FTS5` cannot apply it. Failing there gives one named error
+  (`Fts5Unavailable`, `fts5_unavailable`, exit 6) instead of `no such module: fts5` escaping from inside a
+  transaction, and it leaves the database untouched.
 - Database already up to date ⇒ `MigrationResult(from=n, to=n, applied=(), backup_path=None)` and zero writes.
 - The migrator opens its own connection in write mode (`connect(path)`) and closes it in `finally`.
 - `migrate()` is not called on its own: `hifa db migrate` (SPEC-050) or `hifa init` (SPEC-100) invoke it.
@@ -1309,7 +1393,9 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
 
 - **R1 — PRAGMAs per connection.** Every `connect()` applies the 6 PRAGMAs of §2.1. `foreign_keys` and
   `busy_timeout` are **per connection** and are not inherited: a connection without them is a bug, not an
-  optimization.
+  optimization. `open_probe()` is **not** a `connect()` and applies **none** of them: it asks for
+  `mode=ro`, reads `PROBE_SQL` once and partitions that one row set into `tables`/`objects`, nothing
+  else (D-068, D-069).
 - **R2 — A single writer.** Every write happens inside `BEGIN IMMEDIATE`. Never `BEGIN
   DEFERRED` to write, never Python's implicit `isolation_level`, never autocommit.
 - **R3 — One transaction per use case.** The adapter opens and closes; it does not commit per statement.
@@ -1377,6 +1463,8 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
 | **REQ-F030-20** | `HistoryRepo.record` inserts all the changes of a use case with a single `executemany` |
 | **REQ-F030-21** | No adapter operation executes `DELETE FROM issue`; `trash`/`archive` are UPDATEs |
 | **REQ-F030-22** | The repos return validated domain entities (`Issue`, `Team`, …) and `None`, never `sqlite3.Row` nor tuples |
+| **REQ-F030-23** | `require_fts5(conn)` answers from `FTS5_ENABLED_SQL` alone — one `SELECT` over `pragma_compile_options` — raises `Fts5Unavailable(code='fts5_unavailable')` when the module is absent, is called by `migrate()` before the first `BEGIN` and by `hifa db reindex` on the probe's connection immediately after `open_probe()` (SPEC-100 R21 step (b)), is **not** called by `connect()` nor by `reindex(conn)`'s body (§2.1, D-065, D-068) |
+| **REQ-F030-24** | `open_probe(path)` opens with the URI `file:<path>?mode=ro` and `uri=True`, applies **no** pragma of `PRAGMAS`, runs exactly **one** statement (`PROBE_SQL`) and returns `Probe(conn, tables, objects)` — two projections of that one row set, `tables` keeping `type = 'table'` and `objects` keeping `type IN ('table','view')`, so a **view** named `workspace` is in `objects` and not in `tables`; it raises `DatabaseNotFound(key=<path>)` when the path does not exist (creating nothing), `CorruptDatabase(detail=<message class>, key=<path>)` when SQLite refuses the bytes (`file is not a database`, `database disk image is malformed`), and `Conflict(rule='DB_READONLY', code='DB_READONLY')` when the read cannot create its `-shm` beside a database already in WAL in a directory the process cannot write; an empty file answers `objects == frozenset()`; the file's bytes are the same after the probe as before it; a refusal raised by the read closes the connection before it raises, and the caller closes `conn` on every path that got a `Probe` back (`try/finally`, §6, D-068, D-069) |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -1473,6 +1561,7 @@ deadlock.
 1. conn = connect(db_path)                       # PRAGMAs, WAL
 2. v0 = current_version(conn)                    # PRAGMA user_version
 3. files = pending_migrations(conn)              # 0 if up to date -> return (no backup)
+3a. if files: require_fts5(conn)                 # no ENABLE_FTS5 -> Fts5Unavailable, nothing written
 4. backup_database(db_path, now=clock.now())     # sqlite3 backup API + verification
 5. for f in files:                               # numeric order
      BEGIN IMMEDIATE
@@ -1528,10 +1617,10 @@ a deferred `BEGIN` keeps the same snapshot across the 12 statements of the rende
 | `IntegrityError`, `CHECK constraint failed: <table>` | DDL CHECK | `Validation(rule='CHECK_CONSTRAINT', field=<table>)` | 2 | 422 |
 | `IntegrityError`, `NOT NULL constraint failed: <table>.<col>` | missing field | `Validation(rule='NOT_NULL', field=<col>)` | 2 | 422 |
 | `OperationalError`, `database is locked` / `database table is locked` | after 3 attempts | `Conflict(code='DB_BUSY')` | 4 | 409 |
-| `OperationalError`, `attempt to write a readonly database` | `mode=ro` connection | `Conflict(code='DB_READONLY')` | 4 | 409 |
+| `OperationalError`, `attempt to write a readonly database` | `mode=ro` connection, or a reader that cannot create its `-shm` | `Conflict(rule='DB_READONLY', code='DB_READONLY')` | 4 | 409 |
 | `OperationalError`, `no such table: <t>` | unmigrated database | `HifaError(code='DB_NOT_MIGRATED')` | 6 | 500 |
-| `DatabaseError`, `file is not a database` / `database disk image is malformed` | corrupt file | `HifaError(code='DB_CORRUPT')` | 6 | 500 |
-| `sqlite3.OperationalError` when opening in `ro` (`unable to open database file`) | nonexistent path | `NotFound(resource='database', key=<path>)` | 3 | 404 |
+| `DatabaseError`, `file is not a database` / `database disk image is malformed` | corrupt file | `CorruptDatabase(detail=<message class>, key=<path>)` | 6 | 500 |
+| `sqlite3.OperationalError` when opening in `ro` (`unable to open database file`) | nonexistent path | `DatabaseNotFound(key=<path>)` | 3 | 503 |
 | `sqlite3.sqlite_version_info < (3,35,0)` | `RETURNING` unavailable | `HifaError(code='SQLITE_TOO_OLD')` | 6 | 500 |
 
 Mapping rules:
@@ -1545,6 +1634,28 @@ Mapping rules:
   work; the CLI distinguishes it by `code`, not by class.
 - Domain errors that already come from the repos (`NotFound`, `Conflict`, `Validation`) are **not**
   re-wrapped.
+- **`open_probe()` decides three of these rows and no others**, and it decides them by raising the class
+  each row names, never a `HifaError` with an ad-hoc code: `DatabaseNotFound(key=<path>)` for a path that
+  `mode=ro` cannot open (nothing is created in the attempt, because `mode=ro` never creates), and, from
+  the `PROBE_SQL` read — the read and not the open, since `sqlite3.connect()` is lazy —
+  `CorruptDatabase(detail=…)` for the `DatabaseError` row and `Conflict(rule='DB_READONLY', code='DB_READONLY')`
+  for the `attempt to write a readonly database` row. (The `rule=` is not decoration: SPEC-020 §2.6's
+  `Conflict.__init__` requires it, and the adapter writes `Conflict("database is read-only",
+  rule="DB_READONLY", code="DB_READONLY")` today; the `DB_BUSY` row above reads the same way.) The third
+  one is the measured case the probe cannot
+  dodge: a database **already in WAL** sitting in a directory the process cannot write answers that
+  message on the read itself, because the reader cannot create the `-shm` it needs (measured, SQLite
+  3.53.1, `hifa db reindex` on such a file: exit `4`). The probe applies no pragma, so the *other*
+  path into that row — `journal_mode=WAL` failing on a file that is not in WAL — is still unreachable
+  from it; the permission one is not. It translates nothing else: an empty file is
+  `objects == frozenset()`, not an error (D-068, D-069).
+- **`Fts5Unavailable` is raised, not translated.** It is not a `sqlite3.Error` mapping: no message of the
+  driver produces it. Its one producer is `require_fts5` (§2.1), which reads `FTS5_ENABLED_SQL` and raises
+  `Fts5Unavailable(code='fts5_unavailable')` when the connection's SQLite carries no `ENABLE_FTS5`; exit
+  `6` and HTTP `500`, the internal class of D-014, because the binary is what is missing and nothing the
+  user typed caused it. The two call sites are declared where they run: `migrate()` (§2.3, §5.1 step 3a)
+  and the probe of `hifa db reindex` (SPEC-100 R21 step (b)). SPEC-050 §6 publishes the code and composes
+  no sentence for it; D-065 records the producer and D-068 the placement.
 
 ## 7. Acceptance Criteria
 
@@ -1562,6 +1673,40 @@ Feature: SQLite adapter
     And PRAGMA synchronous returns 1
     And connection.row_factory is sqlite3.Row
     And connection.isolation_level is None
+
+  @REQ-F030-23
+  Scenario: the FTS5 module check passes on a build that has the module
+    Given a connection to a migrated database
+    When require_fts5(conn) is run
+    Then no exception is raised
+    And connect() itself never runs the check
+
+  Scenario: a build without FTS5 is refused by name, before it writes anything
+    Given a connection whose FTS5_ENABLED_SQL returns no row
+    When require_fts5(conn) is run
+    Then Fts5Unavailable is raised with code "fts5_unavailable"
+
+  @REQ-F030-24
+  Scenario: the probe identifies a file with no pragma and without creating it
+    Given a missing path, an empty file, a file SQLite refuses and a migrated database
+    When open_probe(path) is called on each of them
+    Then the missing path raises DatabaseNotFound with code "database_not_found" and key equal to the path
+    And no file is created at the missing path
+    And the empty file answers objects == frozenset() and tables == frozenset()
+    And the file SQLite refuses raises CorruptDatabase with code "corrupt_database"
+    And the migrated database answers tables containing "workspace" and "issue"
+    And the migrated database answers objects containing "workspace", "issue", "v_issue" and "v_priority"
+    And a foreign file carrying "CREATE VIEW workspace" is in objects and not in tables
+    And PRAGMA foreign_keys on the probe's connection answers 0
+    And the sha256 of each existing file is the same after the probe as before it
+
+  @REQ-F030-24
+  Scenario: the probe of a WAL database in a directory it cannot write answers exit 4
+    Given a migrated database in WAL mode inside a directory with mode 0500
+    When open_probe(path) is called on it
+    Then Conflict is raised with code "DB_READONLY"
+    And the bytes of the database file are the same as before the probe
+    And open_probe closed the connection it had opened before raising
 
   @REQ-F030-02
   Scenario: a read-only connection rejects writes
@@ -1821,8 +1966,11 @@ Feature: SQLite adapter
 
 - The DDL contents, the indexes, the views and the version policy (SPEC-010).
 - Business rules and semantic validations (SPEC-020 / SPEC-040).
-- FTS5 search and its triggers (SPEC-090): the adapter only exposes the `issue_fts` table as
-  existing.
+- FTS5 **search** and its triggers (SPEC-090): the adapter only exposes the `issue_fts` table as
+  existing, and the query, the ranking and the snippet are not its business. The one FTS5 question this
+  layer does answer is whether the module is compiled into the binary (`require_fts5`, §2.1), and it
+  answers it for the two callers that cannot work without the module — the migration that creates the
+  virtual table and `hifa db reindex` (SPEC-100 R21).
 - CSV/JSON import/export (SPEC-080).
 - Replication, device synchronization, encryption at rest, scheduled backups.
 - Connection pool, ORM, query builder, "down" migrations.
@@ -1831,6 +1979,87 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 15 (2026-11-20): **the probe raises the two classes the corpus publishes, splits its one
+  read into two sets, and admits the third verdict it was measured to have (HIFA-7, fifth review round,
+  D-069).** `version` 4 → 5, because §2.1's `Probe` and `PROBE_SQL` change shape; §4.1, §4.2, §6 and §7
+  carry the consequences.
+  (1) **`DB_CORRUPT` was a fourth name for a condition three documents already named.** This file raised
+  `HifaError(code='DB_CORRUPT')` while SPEC-010 §6 and SPEC-000 §6 published the class
+  `CorruptDatabase` and SPEC-050 §6 and SPEC-100 §6 published the code `corrupt_database` — and no class
+  of that name existed anywhere, so the literal implementation answered `internal_error`. The class is
+  now declared in SPEC-020 §2.6 (`code = "corrupt_database"`, exit `6`, HTTP `500`) and `open_probe`
+  raises it; §6's row maps the same driver message to the same class, so the adapter's internal code and
+  the published code are one string and `DB_CORRUPT` stops existing.
+  (2) **`NotFound(resource='database')` was the wrong `3`.** It carried `not_found` and a `404`; the
+  missing database is `database_not_found`, exit `3`, HTTP `503` — the code SPEC-100 §6 and SPEC-050 §6
+  published for this exact input. `open_probe` and the `ro` branch of `connect` now raise
+  `DatabaseNotFound(key=<path>)` (SPEC-020 §2.6), which also satisfies SPEC-020 §2.4's keyword-only
+  `key=` instead of writing a constructor call the class cannot build.
+  (3) **The probe had one set where it needs two.** `PROBE_SQL` folded views into `tables`, so a foreign
+  file carrying `CREATE VIEW workspace` satisfied the marker verdicts of both edges; measured, the
+  migrator then died inside `init` with `view workspace already exists` — an exit nobody published.
+  `PROBE_SQL` now returns `type` and `name`, still **one** statement, and `Probe` carries its two
+  projections: `tables` (`type = 'table'`, what a schema verdict asks) and `objects` (both types, what
+  "this file carries nothing" asks). SPEC-100 R14a's empty-file test keeps `objects`; the marker verdicts
+  of `init` and R21 use `tables`.
+  (4) **`DB_READONLY` is reachable from the probe, and the previous note said it was not.** Revision 14
+  wrote that the probe "applies no pragma, so `DB_READONLY` is unreachable from it"; measured on SQLite
+  3.53.1, a database already in WAL inside a directory the process cannot write answers
+  `attempt to write a readonly database` on the `PROBE_SQL` **read**, because the reader cannot create
+  its `-shm`. The row stays (§6), the sentence now says which path into it survives, and SPEC-100
+  publishes exit `4` for the verb.
+  (5) **The close is on every path.** A refusal raised by the read closes the connection it opened before
+  raising; on the success path the caller closes `probe.conn` in a `try/finally`. §7 gains one inline
+  scenario for the exit-`4` input and rewrites `@REQ-F030-24`'s steps in place: 26 → **27** inline
+  scenarios, §4.2 unchanged at 24 rows. No other signature, statement or count moves.
+
+- spec_revision 14 (2026-11-20): **the probe is a symbol of this layer, and `require_fts5` runs on it and not
+  inside `reindex` (HIFA-7, fourth review round, D-068).** `version` 3 → 4, because §2 gains a public
+  symbol; §2.1, §4.1, §4.2, §6 and §7 carry the consequences.
+  (1) **The probe is declared, not improvised.** SPEC-100 R21 printed
+  `sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)` inside `cli/commands/db.py`, which `@REQ-F030-05`
+  forbids — no `sqlite3.connect` outside `connection.py` and `migrate.py` — and which this port could not
+  offer, because the only read-only opens it published (`connect(readonly=True)`,
+  `Database.ro_connection()`) apply the whole `PRAGMAS` tuple. §2.1 now declares **`PROBE_SQL`**,
+  **`Probe(conn, tables)`** (revision 15 adds the second projection, `objects`) and **`open_probe(path)`**: URI `mode=ro` with `uri=True`, no pragma at all, one
+  statement, `database_not_found` for a path that does not exist (nothing created) and `corrupt_database`
+  for bytes SQLite refuses. Both edges call it — SPEC-100 R21 step (b) and §5.2 step 5 — and R1 says in the
+  same breath that it is not a `connect()`.
+  (2) **`require_fts5`'s placement is restated where it was unsatisfiable.** Four places here said it was
+  "the first statement of `reindex(conn)`", and `reindex(conn)` is handed a connection it did not open, so
+  the check could never precede the probe that R21 orders before the writable open. The rule is now one
+  sentence: it runs in `migrate()` before the backup and the first `BEGIN`, and in `hifa db reindex` on the
+  probe's connection, **immediately after `open_probe()` and before any writable statement exists**;
+  `reindex(conn)` declares it as a precondition. Its signature does not move, because `db vacuum`
+  (SPEC-090 R19) rebuilds on a connection it already holds.
+  (3) **The claim about `connect(readonly=True)` is now the measured one.** §2.1 and SPEC-100 R21 said the
+  tuple failed "only on a file that is not already in WAL", which reads as "so it is fine for our files".
+  Whether it fails is a function of the **file's journal mode** — the one thing the probe was opened to find
+  out — so the probe cannot be that function: it asks for the mode and for nothing else. Measured on SQLite
+  3.53.1: a foreign file, a file made by hand with `sqlite3`, a 0-byte file and any database in `delete`
+  mode answer `attempt to write a readonly database` (`Conflict(DB_READONLY)`, exit `4`, outside R21's
+  exit set as revision 14 published it — `0/3/6`; revision 15 publishes `0/3/4/6` for the reason (4) of
+  its own note); a database already in WAL accepts the whole tuple, which is precisely the case where applying
+  it tells the caller nothing.
+  §7 goes 25 → **26** inline scenarios (one for `open_probe`, `@REQ-F030-24`) and §4.2 goes 23 → **24**
+  rows. No other signature, statement or count moves.
+- spec_revision 13 (2026-11-20): **`fts5_unavailable` gets the one producer it was missing (HIFA-7 review
+  round, D-065).** SPEC-050 §6 and SPEC-100 R21 published the code and sent the reader here for the check,
+  and this document declared neither the class nor the test — §10 said the adapter "only exposes the
+  `issue_fts` table as existing". `version` 2 → 3, because §2 gains a function: `require_fts5(conn)`, over
+  the constant `FTS5_ENABLED_SQL` — `SELECT 1 FROM pragma_compile_options WHERE compile_options =
+  'ENABLE_FTS5'`, one statement, no `PRAGMA` read twice and no virtual table created to find out — which
+  raises `Fts5Unavailable(code='fts5_unavailable')` (§6) when the connection's SQLite carries no FTS5.
+  §2.1 declares **where it runs and where it does not**: before the first `BEGIN` of a non-empty migration
+  set (the schema creates a virtual table, so a build without the module would fail inside the
+  transaction) and as `reindex(conn)`'s first statement, a placement revision 14 moved to the probe of
+  `hifa db reindex` (§2.1, D-068); **not** in `connect()`, because a database whose
+  index cannot be read is still searchable through the `like` path of SPEC-090 R14, and a connection that
+  refused to open would take the rows away too. §5.1 gains the step, §6 gains the paragraph that says the
+  error is *raised* and not translated (its cause is the binary, not a driver message), §10 stops denying
+  the layer knows anything about FTS5 while keeping the search itself out of it, and §7 gains two
+  scenarios and REQ-F030-23. No other signature, statement or count moves; §7 goes 23 → **25** inline
+  scenarios.
 - spec_revision 12 (2026-11-17): **the read carries the trash as a keyword, and the spec that owns the
   read says so (D-059).** `issue_detail` gains `include_trashed: bool = False` — keyword-only, defaulted,
   additive (§2.6) — and SQL-7 row 1's `WHERE` becomes `… AND (:include_trashed = 1 OR i.trashed = 0)`

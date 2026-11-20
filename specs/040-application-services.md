@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 5
-spec_revision: 30
+version: 6
+spec_revision: 32
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -42,7 +42,9 @@ invariants** live: the ones that need to combine a pure rule (SPEC-020) with a r
 - **It does not cache nor remember state between calls.** Every use case is a stateless function.
 - **It does not implement search nor import/export.** It declares the **signature** of `search_issues` (the port that
   060 and 070 consume) but its semantics, its envelope and its filters belong to SPEC-090 §2 (D-016); here they are neither
-  redefined nor given extra parameters. `app/transfer.py` (import/export) belongs to SPEC-080 and does not appear in
+  redefined nor given extra parameters. The one keyword this layer adds is `now` — the instant the edge's clock read —
+  because a read use case has no unit of work to carry one, and the alternative (a clock inside `app/`) is what A2
+  forbids; the timezone rule that consumes it is SPEC-090 R13. `app/transfer.py` (import/export) belongs to SPEC-080 and does not appear in
   this contract.
 
 ## 2. Public contract
@@ -898,10 +900,17 @@ def agenda(
 # raises: NotFound(team), Validation(DATE_RANGE_INVERTED)
 
 
-def search_issues(db: Database, query: SearchQuery) -> SearchPage: ...
+def search_issues(db: Database, query: SearchQuery, *, now: datetime) -> SearchPage: ...
 
 
-# raises: Validation(QUERY_EMPTY); semantics from SPEC-090 §2 (D-016), not redefined here
+# raises: SearchError — the four refusals of SPEC-090 §6 (`query_empty`, `query_too_long`,
+# `invalid_limit`, `invalid_filter`), with the codes and sentences that section declares; the
+# semantics, the filters and the envelope are SPEC-090 §2 (D-016), not redefined here.
+# `now` is **aware and in UTC** (the `Clock.now()` contract of SPEC-030 §2.7) and it is a required
+# parameter because this layer reads no clock: a read use case has no unit of work, so the edge that
+# owns the clock passes the instant down, and SPEC-090 R13 derives `today` from it in the query's
+# timezone (`team.timezone` of the team the query names, UTC otherwise) — never `datetime.now`, which
+# A2 forbids here.
 
 
 def list_comments(
@@ -1121,7 +1130,7 @@ it is fixed there, not here.
 | `add_labels` / `remove_labels` (plural) | `add_label` / `remove_label`, one call per label; the edge iterates (GAP-05) | rename in the edge |
 | `delete_issue` / `--hard` | does not exist: `trash_issue` (soft) and `archive_issue` (D-015) | remove from the edge |
 | `list_issues(uow, *, filters, sort, cursor) -> Page[Issue]` | **one form only:** `list_issues(db, filters: ListFilters) -> IssuePage`, with `limit`, `cursor`, `order` and `reverse` carried by `ListFilters` (D-011); the read path opens its own read-only connection, so it takes no unit of work | the edge adapts; the port does not grow a second shape |
-| `search_issues(q, ...)` | `search_issues(db, SearchQuery)`; the envelope belongs to SPEC-090 (D-016) | aligned |
+| `search_issues(q, ...)` | `search_issues(db, SearchQuery, *, now)`; the envelope and the timezone rule belong to SPEC-090 (D-016, R13) | aligned |
 | `bootstrap_workspace(...)` | not from this spec: `app/teams.py::bootstrap(...)` is from SPEC-100 §2.5 | no change |
 
 **Edge names that are NOT part of the port.** They appear as `fn(` in 050/060/070 and are not added to
@@ -1132,7 +1141,7 @@ Adding them here would be moving edge logic into the application layer.
 |---|---|---|
 | `base64url` | 050, 060 | cursor codec, not an operation: `encode_cursor`/`decode_cursor` live in the keyset of SPEC-030 (D-011); 040 only transports the opaque string |
 | `render`, `to_json`, `board_vm`, `snippet` | 050, 060, 070 | formatting and view models: `cli/output.py`, `api/schemas.py`, `web/readmodels.py` (D-028) |
-| `basename`, `parse_query`, `fetch` | 050, 070 | CLI/JS helpers (paths and query string), they do not touch the database |
+| `basename`, `fetch` | 050, 070 | CLI/JS helpers (paths and query string), they do not touch the database |
 | `create_app` | 060 | ASGI factory of SPEC-060 |
 | `bootstrap` | 050 | workspace startup, SPEC-100 §2.5 |
 | `doctor`, `migrate`, `reindex`, `resolve_config` | 050 | `doctor`/`reindex` are from SPEC-100 §2.6, `migrate` from SPEC-030 §2.3, `resolve_config` from SPEC-100 §2.1 |
@@ -1143,6 +1152,15 @@ Adding them here would be moving edge logic into the application layer.
 | `_one_anchor`, `model_validator`, `model_dump` | 060 | Pydantic internals in the input schema |
 | `issue_history` | 050 | **table** name quoted in prose (`issue_history(field="state_id")`), not a function |
 | `use_case` | 050 | generic marker in an example (`result = use_case(...)`), not a real symbol |
+
+**`parse_query` is not an edge helper, and this table listed it that way for nine revisions.**
+It is `app/search.py::parse_query(raw) -> ParsedQuery`, the public parser of **SPEC-090 §2.3** and the
+first half of the one search entry point this port declares (`search_issues`, above): every
+parser-touching edge calls it and then composes its `SearchQuery` from the `ParsedQuery` (D-064). It
+touches no database and returns no page, so it is not an operation of §2.2 either — its signature, its
+`ParsedQuery` and its five fields belong to the section that owns the search contract, and a second
+declaration here would be the second spelling of one function. An edge that needs it reads SPEC-090 §2.3,
+not this table.
 
 Closing rule: `scripts/spec_contract_check.py` (SPEC-000 §6) compares the `def`s of §2.2 against the
 names invoked by the three edges and fails if a port name does not exist here or if an edge
@@ -2117,7 +2135,8 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `create_cycle` | team | `DATE_RANGE_INVERTED` | `DUPLICATE_CYCLE_NUMBER` | — |
 | `complete_cycle` | cycle | — | `CYCLE_ALREADY_COMPLETED` | — |
 | `add_issues_to_cycle` | cycle, issue | `CYCLE_COMPLETED`, `CYCLE_TEAM_MISMATCH` | — | — |
-| `issue_detail` / `list_*` / `agenda` / `search_issues` | issue, team, project, cycle, label, member | `INVALID_CURSOR`, `LIMIT_RANGE`, `ORDER_INVALID`, `INCLUDE_INVALID`, `DATE_RANGE_INVERTED`, `QUERY_EMPTY` | — | — |
+| `issue_detail` / `list_*` / `agenda` | issue, team, project, cycle, label, member | `INVALID_CURSOR`, `LIMIT_RANGE`, `ORDER_INVALID`, `INCLUDE_INVALID`, `DATE_RANGE_INVERTED` | — | — |
+| `search_issues` | team (through `SearchFilters.team`) | the four of SPEC-090 §6 — `query_empty`, `query_too_long`, `invalid_limit`, `invalid_filter` — which are that section's codes and sentences, not rules of this table | — | — |
 | `list_labels` | team | — | — | — |
 | `label_detail` | label | `LABEL_AMBIGUOUS` | — | — |
 | `list_blocked` | team | — | — | — |
@@ -2666,6 +2685,28 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 32 (2026-11-20): **`parse_query` is the application layer's, and the table of edge names
+  said otherwise (HIFA-7, second review round).** `version` stays 6: §2.2 declares the same `def`s it
+  declared, and the only change is to a classification of §4's reference table. `parse_query` sat in the
+  list of "edge names that are NOT part of the port" as a "CLI/JS helper" while SPEC-090 §2.3 puts it in
+  `app/search.py` and SPEC-070's route table calls `app.search.parse_query(q)` — an application symbol
+  filed as edge code, which is the one direction A3 forbids the edges to move in. It is out of that table;
+  a paragraph under it says where the function lives and why it gets no §2.2 row of its own; and the
+  older bullet of this Notes section that repeated the mistake (the presentation-helper inventory) is
+  corrected in place, because it is a claim about the contract and not a record of an event. The three
+  edges' calls are unchanged, and so is the `search_issues` row of the same table.
+- spec_revision 31 (2026-11-20): **`search_issues` takes the instant, and this is the only port of the
+  read family that does** (HIFA-7 review round). `version` 5 → 6: §2.2's declaration gains
+  `*, now: datetime`, `now` aware and in UTC, and the paragraph of §1 says why — a read use case has no
+  unit of work to carry a clock, and a clock inside `app/` is what A2 forbids, so the edge that owns the
+  clock passes the instant down and SPEC-090 R13 derives `today` from it in the query's timezone. The
+  signature is the one SPEC-090 §2.3 declares, character for character, because a port two specs spell
+  differently is two ports. Two smaller alignments in the same round: the `search_issues` row of §6's
+  raise table now names the four codes SPEC-090 §6 owns (`query_empty`, `query_too_long`,
+  `invalid_limit`, `invalid_filter`) instead of the `QUERY_EMPTY` this table would have spelled in its
+  own vocabulary — one refusal, one code, and the owner is the section that publishes the sentences — and
+  the row is split from the `issue_detail`/`list_*` one, which has no search refusal in it. No other
+  signature, behaviour or envelope moves, and every other edge still calls the same functions it called.
 - spec_revision 30 (2026-11-20): **one spelling for the noun a move cannot find, and one statement of the
   set (HIFA-14, D-062).** §5.2's declared raise for a `--state` that resolves to nothing spelled its noun
   after the SQL table, and the two `raises:` lines of §2 (`move_issue`, `rebalance_board`) spelled it the
@@ -3040,6 +3081,7 @@ Feature: Application use cases
   - `create_relation`/`delete_relation` are not added as aliases of `relate_issues`/`unrelate_issues`:
     two write functions for the same table would duplicate validations (R1). If an edge insists
     on those names, the adapter goes in the edge.
-  - The presentation helpers (`base64url`, `render`, `to_json`, `basename`, `parse_query`, `fetch`,
-    `board_vm`, `snippet`) are **not** part of the port: §2.3 documents why and where they live.
+  - The presentation helpers (`base64url`, `render`, `to_json`, `basename`, `fetch`, `board_vm`,
+    `snippet`) are **not** part of the port: §2.3 documents why and where they live. (`parse_query` was
+    listed here in error and is removed: it is the application-layer parser of SPEC-090 §2.3, rev 32.)
 
