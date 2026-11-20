@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 5
-spec_revision: 15
+spec_revision: 17
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -425,7 +425,7 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 | Method | Signature | Notes |
 |---|---|---|
 | `get` | `(label_id: str) -> Label \| None` | |
-| `get_by_name` | `(workspace_id: str, team_id: str \| None, name: str) -> Label \| None` | two lookups: team and workspace (`team_id IS NULL`) |
+| `get_by_name` | `(workspace_id: str, team_id: str \| None, name: str) -> Label \| None` | **exact** `name` match — `name = ?`, not `casefold` — with two lookups: team and workspace (`team_id IS NULL`). No flow of this corpus resolves a name with it: every resolution of a **user-supplied** name reads the level's rows with `list(..., include_retired=True)` and compares them with `casefold` (SPEC-040 R22, whose refusal needs the **rows** and not one of them), `init`'s seed resolves its four names the same way at its own level (SPEC-100 R11bis), and `hifa import` has no implementation yet — its rule (SPEC-080 R10) reads the level's rows too, so it will not consume this method either (SPEC-080 §2.1.1). It stays on the port as the exact lookup a caller **holding a stored key** needs (a fixture, an audit, a migration script), and a name that arrives from a user must never be resolved with it: it returns one row and so cannot report that a level held two. No signature change. |
 | `list` | `(workspace_id: str, *, team_id: str \| None \| Unset = UNSET, include_retired: bool = False) -> list[Label]` | `UNSET` = no team filter; `None` = workspace labels only |
 | `insert` | `(label: Label) -> Label` | `uq_label_team` / `uq_label_ws` → `Conflict(rule='DUPLICATE_LABEL')` |
 | `update` | `(label: Label) -> Label` | `RETURNING *` |
@@ -1978,6 +1978,26 @@ Feature: SQLite adapter
   shows a `SCAN`, the solution is a new index in a migration, not a change in the adapter.
 
 ## Notes
+
+- spec_revision 17 (2026-11-20): **the two callers that justified `get_by_name` do not exist, and
+  the note now names none (HIFA-14, round three, D-070's third amendment).** `version` stays 5: the
+  signature and the SQL are the ones §2.4 already declared.
+  Rev 16 justified keeping the method as the read "for internal keys (a seed's or an import's own
+  strings)", and both halves are false in the implementation tree (`feat/labels-impl`): `hifa import`
+  has **no implementation** (`src/hifa/app/transfer.py` is absent, and SPEC-080 §2.1.1 stops prescribing
+  this method for the name it resolves), and the seed resolves its four names through the
+  case-insensitive step of SPEC-100 R11bis — it calls `case_variant_at_level`, not this method — which
+  leaves `LabelRepo.get_by_name` with **no caller** in that tree.
+  The note now says that, says why a user-supplied name must never reach it (one row cannot report
+  two), and says what it is still for: the exact lookup of a stored key. No row of §7 moves.
+
+- spec_revision 16 (2026-11-20): **`LabelRepo.get_by_name` is an exact read, and the table now says so
+  (HIFA-14, round two of the label review, D-070's amendment).** `version` stays 5: the signature is the
+  one §2.4 already declared. The method matches `name = ?` (no `casefold`) and returns **one** row, so a
+  user-supplied name resolved with it picks a spelling silently — the failure SPEC-040 R22 closes. Its
+  note is now explicit: exact match for internal keys (a seed's or an import's own strings), and a
+  user-supplied name goes through `list(..., include_retired=True)` plus the `casefold` compare and the
+  `LABEL_AMBIGUOUS` refusal. No row of §7 moves.
 
 - spec_revision 15 (2026-11-20): **the probe raises the two classes the corpus publishes, splits its one
   read into two sets, and admits the third verdict it was measured to have (HIFA-7, fifth review round,

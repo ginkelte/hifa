@@ -3,8 +3,8 @@ id: SPEC-080
 title: CSV and JSON transfer
 component: application
 status: review
-version: 1
-spec_revision: 6
+version: 2
+spec_revision: 8
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/transfer.py
@@ -209,7 +209,7 @@ re-raise on exception) and reads with `db.ro_connection()` or `db.connect()`.
 | `tx.teams` | workspace | `ensure_workspace(*, name, url_key) -> Workspace`; `workspace() -> Workspace \| None` |
 | `tx.teams` | team | `get_by_key(workspace_id, key) -> Team \| None` |
 | `tx.teams` | states | `states(team_id, include_archived=False)`; `get_state_by_name(team_id, name)`; `default_state(team_id)`; `insert_state(state)` |
-| `tx.labels` | labels | `get_by_name(workspace_id, team_id, name)`; `insert(label)` |
+| `tx.labels` | labels | `list(workspace_id, *, team_id: str \| None = None, include_retired: bool = False) -> list[Label]` — the **level's rows**, compared with `casefold` and refused when a step matches twice (R10, SPEC-040 R22); `insert(label)`. `get_by_name` is **not** consumed: it returns one row and so cannot report that a level held two spellings (SPEC-030 §2.4) |
 | `tx.projects` | projects | `list(team_id=…)`; `insert(project)` |
 | `tx.cycles` | cycles | `list(team_id)` |
 | `tx.issues` | issues | `next_number(team_id)`; `get_by_identifier(identifier)`; `get(issue_id)`; `insert(issue)`; `update(issue)`; `set_labels(issue_id, label_ids)`; `label_ids(issue_id)` |
@@ -453,12 +453,18 @@ Invariants this component **must** hold when any import finishes:
   instead of picking one arbitrarily.
 - **R10 — Labels (REQ-F080-10).** The value is split on `,`, trimmed, empty items dropped and
   deduplicated by `casefold` keeping the first text. Maximum 32 labels per issue; more ⇒
-  `too_many_labels`. Each name is resolved by `name` (`casefold`) among `(workspace-wide)
-  OR (target team)`, preferring the one with a non-null `team_id`. No match: with
-  `create_labels=True` it is created workspace-wide (`team_id = NULL`) with a deterministic color
-  `PALETTE[sum(ord(c) for c in casefold(name)) % 12]` (a 12-hex palette fixed in the module),
-  otherwise ⇒ `unknown_label`. On an update, the set replaces the previous one (delete + insert of
-  `issue_label`).
+  `too_many_labels`. Each name is resolved by `name` (`casefold`) **one level at a time**: the target
+  team's rows first, and the workspace's (`team_id IS NULL`) only when the team held no match — the
+  order `add_label` declares (SPEC-040 R22, §5.6), so the team is the tie-breaker between **levels** and
+  never between two rows of one. A level that matches **more than one row** is refused instead of
+  answered: the row is rejected with `ambiguous_label` (§6.2), because `Bug` and `bug` at one level are
+  two rows the binary indexes accept and one name to a reader, which SPEC-040 R22 refuses and this
+  component must not resolve by picking. The message names both spellings — `label BUG is ambiguous:
+  'Bug', 'bug'`, the reference as typed and the rows found, the shape SPEC-040 R22 gives every producer
+  of the refusal. No match: with `create_labels=True` it is created workspace-wide
+  (`team_id = NULL`) with a deterministic color `PALETTE[sum(ord(c) for c in casefold(name)) % 12]` (a
+  12-hex palette fixed in the module), otherwise ⇒ `unknown_label`. On an update, the set replaces the
+  previous one (delete + insert of `issue_label`).
 - **R11 — Input identifier (REQ-F080-11).** If present, it must match
   `^[A-Z][A-Z0-9]{1,9}-[0-9]{1,9}$` **after** `strip().upper()`. The prefix must be the target
   team's `key`; otherwise ⇒ `identifier_team_mismatch`. The input `identifier` is used only as a
@@ -574,6 +580,7 @@ Invariants this component **must** hold when any import finishes:
 | B18 | Export destination is a symlink to `/etc/passwd` | `path_not_allowed`, exit 2, the target is not touched |
 | B19 | `Estimate = "1e309"` | `invalid_estimate` (not `inf`) |
 | B20 | Title `=HYPERLINK("http://x")` exported | the cell comes out as `'=HYPERLINK("http://x")`; on re-import, the title comes back with the apostrophe (documented in R21) |
+| B21 | `Labels = "BUG"` with the ENG team carrying `Bug` and `bug` | `ambiguous_label`, message with both spellings (`label BUG is ambiguous: 'Bug', 'bug'`); no label of the row is associated and the row is not written; exit 2 |
 
 ### 4.2 Non-functional and security requirements
 
@@ -706,6 +713,7 @@ whole batch. This component exposes no HTTP endpoints in v1 (SPEC-060 may wrap i
 | `invalid_estimate` | not numeric, negative, `NaN`/`inf` | row rejected |
 | `unknown_state` | nonexistent `Status` and `create_states=False` | row rejected |
 | `unknown_label` | nonexistent label and `create_labels=False` | row rejected, no partial association |
+| `ambiguous_label` | a name one level carries in more than one spelling (`Bug` and `bug`), the state SPEC-040 R22 refuses | row rejected, no partial association |
 | `too_many_labels` | > 32 labels in one row | row rejected |
 | `unknown_assignee` | nonexistent assignee and `create_members=False` | row rejected |
 | `ambiguous_assignee` | ≥ 2 equal `display_name` | row rejected |
@@ -765,6 +773,15 @@ Feature: Issue import and export in CSV and JSON
     And the report contains a RowError with code "unknown_label" on line 2
     And the issue is not created
     And the label "bug" is not associated with any issue
+
+  Scenario: a name one level spells twice rejects the row instead of picking a spelling
+    Given the workspace labels "Bug" and "bug"
+    And a CSV with Labels "BUG"
+    When "hifa import issues.csv --team ENG" is executed
+    Then the exit code is 2
+    And the report contains a RowError with code "ambiguous_label" on line 2
+    And the issue is not created
+    And neither label is associated with any issue
 
   Scenario: impossible date rejected per row without aborting the file
     Given a 3-row CSV where the second row has Due Date "2026-02-30"
@@ -933,6 +950,40 @@ Feature: Issue import and export in CSV and JSON
 - Formats other than CSV/JSON: no XLSX, no JSONL, no NDJSON, no ZIP.
 
 ## 11. Notes
+
+- spec_revision 8 (2026-11-20): **round three: the consumed contract stops prescribing `get_by_name`,
+  the new code gets its case-catalog row and its message, and the bump it earned is taken (HIFA-14,
+  D-070's third amendment).** `version` 1 → 2: `RowError.code` gains `ambiguous_label`, a value a client
+  branches on, and R10's resolution order changes with it — the precedent is SPEC-060's `version` 3 → 4
+  (revs 11-12): "a code a client branches on is §2 contract — that is the bump this entry owed and did
+  not take". Rev 7's
+  "`version` stays 1" argued from the `str` type of the field, which is the type of every code and not a
+  reason one may be added quietly.
+  (1) **§2.1.1 told the implementer to resolve a name with the read R22 forbids.** Its `tx.labels` row
+  consumed `get_by_name(workspace_id, team_id, name)` — the exact one-row read that cannot satisfy R10
+  (a level's rows must be **read and counted**, and two spellings refused) — while the same row is what
+  SPEC-030 §2.4 now says no flow may use for a user-supplied name. The row consumes
+  `list(…, include_retired=True)` plus the `casefold` compare and the refusal, which is R22's rule and
+  what R10 states, and says in its own cell why `get_by_name` is not consumed.
+  (2) **`ambiguous_label` had no case and no message.** It had a §6.2 row, an R10 rule and a §7
+  scenario, but no §4.1 row — the two precedents, `ambiguous_assignee` (B4) and `ambiguous_cycle` (B5),
+  each carry one with the message that names the candidates. B21 is that row, `Labels = "BUG"` against a
+  team carrying `Bug` and `bug`, and R10 now publishes the message it asserts:
+  `label BUG is ambiguous: 'Bug', 'bug'` — the reference as typed and the spellings found, the shape
+  SPEC-040 R22 gives every producer of the refusal.
+  §7 stays at 19 inline scenarios (the scenario of rev 7 already asserts the code, which is what B21
+  adds a message to); the `.feature` corpus does not move — 17 files and 240 scenarios.
+
+- spec_revision 7 (2026-11-20): **R10 silently preferred the team's row, which is the pick the name rule
+  forbids (HIFA-14, round two of the label review, D-070's amendment).** `version` stays 1: no signature,
+  no `ImportReport`/`ImportRow`/`RowError` field and no command changes — `RowError.code` is a `str`, so
+  the new value is not a type move.
+  R10 matched a label across `(workspace-wide) OR (target team)` and took the non-null `team_id`; with
+  `Bug` and `bug` at one level (two rows the binary `uq_label_team`/`uq_label_ws` accept), that is the
+  silent pick SPEC-040 R22 now refuses on every reference. The rule reads one level at a time — the
+  target team, then the workspace — and rejects the row with `ambiguous_label` when a level matches
+  twice; §6.2 declares the code and §7 gains its scenario (18 → **19** inline scenarios). The team is
+  still the tie-breaker **between** levels, which is the one preference the rule keeps.
 
 - spec_revision 6 (2026-11-16): **the fixture's team carries seven `workflow_state`s, not six (D-058).**
   §7's `Background` counted the fixture team's states as six, which stopped being the seed when
