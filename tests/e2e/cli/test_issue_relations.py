@@ -138,7 +138,11 @@ def test_undo_of_an_edge_that_does_not_exist_is_not_found(workspace: Path) -> No
 
 
 def test_relations_reads_the_type_from_each_end(workspace: Path) -> None:
-    """One row, two readings: `blocks` from the blocker and `blocked_by` from the blocked."""
+    """One row, two readings: `blocks` from the blocker, `blocked by` from the blocked issue.
+
+    The human surface renders the stored name with its underscore as a space, and `--json` keeps
+    the stored token, so the table says `blocked by` while the envelope says `blocks`.
+    """
     assert run("issue", "relate", "ENG-1", "blocks", "ENG-2").exit_code == 0
 
     from_blocker = run("issue", "relations", "ENG-1")
@@ -155,8 +159,8 @@ def test_relations_reads_the_type_from_each_end(workspace: Path) -> None:
     ]
     assert from_blocker.stdout.splitlines()[1].split()[0] == "blocks"
     assert from_blocker.stdout.splitlines()[1].split()[1] == "ENG-2"
-    assert from_blocked.stdout.splitlines()[1].split()[0] == "blocked_by"
-    assert from_blocked.stdout.splitlines()[1].split()[1] == "ENG-1"
+    assert from_blocked.stdout.splitlines()[1].split()[:2] == ["blocked", "by"]
+    assert from_blocked.stdout.splitlines()[1].split()[2] == "ENG-1"
 
 
 def test_relations_json_carries_the_stored_row_only(workspace: Path) -> None:

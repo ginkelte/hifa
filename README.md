@@ -153,7 +153,7 @@ gap-free and never reused — not even after an issue is trashed.
 | **Optional dashboard** | board, list, issue detail, quick add, draggable columns. FastAPI + Jinja2 + htmx + Alpine, all vendored: offline, no Node, strict CSP |
 | **One-command bootstrap** | `hifa init` seeds workspace, team, states, labels and your local user. Idempotent |
 | **Yours to move** | one file. `cp`, `rsync`, `git`, or drop it on a USB stick. WAL mode so a read never blocks a write |
-| **Tested like a product** | 1776 collected tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
+| **Tested like a product** | 1815 collected tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
 
 ## CLI surface
 
@@ -389,7 +389,7 @@ git clone https://github.com/ginkelte/hifa && cd hifa
 uv sync --extra web --extra test
 
 ruff check . && ruff format --check .   # style
-pytest                                  # 1776 tests collected: unit, integration, e2e (CLI and web), perf
+pytest                                  # 1815 tests collected: unit, integration, e2e (CLI and web), perf
 lint-imports                            # the A1/A2 contracts
 python scripts/spec_contract_check.py --all   # spec ↔ code drift
 python scripts/check_edge_parity.py     # CLI vs web capability parity
@@ -514,10 +514,10 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 
 | | |
 |---|---|
-| Tests | **1776** collected by `pytest` (1776 passing, 0 skipped): unit, integration, e2e CLI and web, plus one perf budget over 10 000 rows |
-| Code | ~18.5k lines in `src/` (18 502), ~25.4k in `tests/` (25 449), Python only |
-| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 72 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
-| Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `search`, `db reindex`, `serve` (board, list, detail, search, quick add, drag) |
+| Tests | **1815** collected by `pytest` (1815 passing, 0 skipped): unit, integration, e2e CLI and web, plus one perf budget over 10 000 rows |
+| Code | ~18.9k lines in `src/` (18 919), ~26.4k in `tests/` (26 419), Python only |
+| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 73 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
+| Shipped | `init`, `issue create`, `issue show` (`--with`), `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `search`, `db reindex`, `serve` (board, list, detail, search, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |
 

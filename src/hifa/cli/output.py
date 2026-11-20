@@ -198,6 +198,22 @@ def _is_numeric_row_value(value: str) -> bool:
     return value.replace(",", "").replace(".", "", 1).isdigit()
 
 
+# --- key-value block -------------------------------------------------------------------
+
+#: What separates a label from its value in a key-value block: two cells, as a table does.
+KEY_VALUE_SEPARATOR = "  "
+
+
+def key_value_lines(fields: Sequence[tuple[str, Any]]) -> list[str]:
+    """One `label  value` line per field, every value starting in the same column.
+
+    The label column is the widest label plus the separator, so no command counts cells by hand and
+    a block whose labels grow cannot drift away from the ones `emit` prints.
+    """
+    width = max(len(str(label)) for label, _ in fields) + len(KEY_VALUE_SEPARATOR)
+    return [f"{label:<{width}}{_cell(value)}" for label, value in fields]
+
+
 # --- init ------------------------------------------------------------------------------
 
 
@@ -306,11 +322,10 @@ def emit(
         return
     columns = list(table_cols or list(payload))
     if table_cols is None and len(columns) > 4:
-        # Key-value block for wide entities (`issue show`). The column is
-        # sized from the keys so a 10-character key (`visibility`) is not glued to its value.
-        width = max(len(str(key)) for key in columns) + 2
-        for key in columns:
-            write_line(f"{key:<{width}}{_cell(payload.get(key))}")
+        # Key-value block for wide entities. The column is sized from the keys, so a long key
+        # (`visibility`) is not glued to its value.
+        for line in key_value_lines([(key, payload.get(key)) for key in columns]):
+            write_line(line)
         return
     write_line(render_table([payload], columns, formats=table_formats))
 
@@ -358,6 +373,7 @@ __all__ = [
     "OutputOptions",
     "configure",
     "emit",
+    "key_value_lines",
     "options",
     "render_table",
     "write_json",

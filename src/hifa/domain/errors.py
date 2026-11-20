@@ -74,7 +74,12 @@ class HifaError(Exception):
 
 
 class NotFound(HifaError):
-    """Resource that does not exist by id or identifier. CLI exit 3, HTTP 404."""
+    """Resource that does not exist by id or identifier. CLI exit 3, HTTP 404.
+
+    The sentence is the catalogue's — `<resource> '<key>' does not exist` — and it is built here so
+    that every edge renders one wording: `hifa: issue 'ENG-999' does not exist`. A raise site that
+    knows better passes `message` and keeps the two accessors.
+    """
 
     code = "NOT_FOUND"
     exit_code = EXIT_NOT_FOUND
@@ -93,7 +98,7 @@ class NotFound(HifaError):
         merged["resource"] = resource
         merged["key"] = key
         super().__init__(
-            f"{resource} not found: {key}" if message is None else message,
+            f"{resource} '{key}' does not exist" if message is None else message,
             details=merged,
         )
 

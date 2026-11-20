@@ -129,7 +129,7 @@ def read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespac
 
 @pytest.fixture
 def hostile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """One issue whose description and attachments try every scheme the spec forbids."""
+    """One issue whose description tries the schemes the spec forbids."""
     project = tmp_path / "proj-xss"
     project.mkdir()
     monkeypatch.chdir(project)
@@ -143,19 +143,6 @@ def hostile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "<script>alert(1)</script> and [x](javascript:alert(1))",
     )
     db = tmp_path / "xss.db"
-    with sqlite3.connect(db) as conn:
-        issue_id = conn.execute("SELECT id FROM issue WHERE identifier = 'ENG-1'").fetchone()[0]
-        rows = [
-            ("a1", "Evil js", "javascript:alert(1)"),
-            ("a2", "Evil data", "data:text/html,<script>alert(1)</script>"),
-            ("a3", "Evil host", "//evil.com/x"),
-            ("a4", "Good file", "https://example.com/report.pdf"),
-        ]
-        conn.executemany(
-            "INSERT INTO attachment (id, issue_id, title, url, created_at)"
-            " VALUES (?, ?, ?, ?, '2026-11-08T12:00:00Z')",
-            [(key, issue_id, title, url) for key, title, url in rows],
-        )
     return SimpleNamespace(db=db, client=TestClient(create_app(db, default_team="ENG")))
 
 
@@ -678,17 +665,6 @@ def test_the_description_is_escaped_and_carries_no_javascript_link(
     assert 'href="javascript:' not in body
 
 
-def test_attachment_urls_outside_the_allowlist_are_not_links(hostile: SimpleNamespace) -> None:
-    """REQ-S070-05: `javascript:`, `data:` and `//evil.com` are shown as text."""
-    body = hostile.client.get("/ENG/issue/ENG-1").text
-    assert 'href="javascript:' not in body
-    assert 'href="data:' not in body
-    assert 'href="//evil.com' not in body
-    # the titles are still visible, just without an <a>
-    assert "Evil js" in body and "Evil data" in body and "Evil host" in body
-    assert '<a href="https://example.com/report.pdf">Good file</a>' in body
-
-
 def test_an_unhandled_exception_is_a_clean_500(seeded: SimpleNamespace) -> None:
     """SPEC-070 §6: the 500 page never leaks the traceback nor the internal message."""
 
@@ -819,3 +795,34 @@ def test_the_core_cli_does_not_import_fastapi() -> None:
     )
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_the_detail_page_asks_for_comments_and_history_only(
+    seeded: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read's third gate has no key in this layer, so the page does not ask for it.
+
+    Passing the whole set would run the statement of a collection this edge drops: the request is
+    the two names whose payload the read model carries, and nothing else.
+    """
+    asked: list[frozenset[str]] = []
+    original = web_app.boards.issue_detail
+
+    def capturing(*args: object, **kwargs: object):
+        asked.append(frozenset(kwargs["include"]))  # type: ignore[arg-type]
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(web_app.boards, "issue_detail", capturing)
+    response = seeded.client.get("/ENG/issue/ENG-1")
+
+    assert response.status_code == 200
+    assert asked == [frozenset({"comments", "history"})]
+
+
+def test_the_detail_page_renders_no_attachment_section(seeded: SimpleNamespace) -> None:
+    """No key, no section: the page composes the collections the read model carries."""
+    body = seeded.client.get("/ENG/issue/ENG-1").text
+
+    assert 'class="attachments"' not in body
+    assert "<h2>Attachments</h2>" not in body
+    assert "<h2>Comments</h2>" in body

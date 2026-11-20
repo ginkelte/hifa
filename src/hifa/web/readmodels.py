@@ -48,7 +48,6 @@ MONTHS: tuple[str, ...] = (
     "Nov",
     "Dec",
 )
-ATTACHMENT_SCHEMES: frozenset[str] = frozenset({"http", "https", "file"})
 #: Fallback for a state without a stored colour (`workflow_state.color` is nullable).
 DEFAULT_STATE_COLOR = "#6B6F76"
 #: The fields the edit form and the `PATCH` of an issue accept, in the order they are rendered.
@@ -354,12 +353,6 @@ def build_board_vm(
 # --- detail ---------------------------------------------------------------------------
 
 
-def _attachment_url(url: str) -> str | None:
-    """`http`, `https` and `file` only; any other scheme is shown as text."""
-    scheme = url.split(":", 1)[0].lower() if ":" in url else ""
-    return url if scheme in ATTACHMENT_SCHEMES else None
-
-
 def author_name(members: Mapping[str, str], author_id: str | None) -> str | None:
     """The member who wrote a comment or performed a history entry (never the assignee).
 
@@ -447,16 +440,6 @@ def build_issue_vm(
                 "url": f"/{other.team_key}/issue/{other.identifier}",
             }
         )
-    attachments = [
-        {
-            "id": attachment.id,
-            "title": attachment.title,
-            "subtitle": attachment.subtitle,
-            "url": _attachment_url(attachment.url),
-            "host_label": attachment.source_type or "local file",
-        }
-        for attachment in detail.attachments
-    ]
     history = [
         {
             "field": entry.field,
@@ -510,7 +493,6 @@ def build_issue_vm(
             "assignees": [],
             "comments": comments,
             "relations": relations,
-            "attachments": attachments,
             "history": history,
             "estimate_label": "\u2013" if item.estimate is None else f"{item.estimate:g} pts",
             "project_label": "\u2013" if detail.project is None else detail.project.name,
@@ -723,7 +705,6 @@ def build_search_vm(
 
 
 __all__ = [
-    "ATTACHMENT_SCHEMES",
     "DEFAULT_STATE_COLOR",
     "EDIT_FORM_FIELDS",
     "FILTER_KEYS",

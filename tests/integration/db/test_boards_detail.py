@@ -1,0 +1,164 @@
+"""`app.boards.issue_detail`: the order and the shape of the collections it publishes.
+
+Two facts are produced by this layer and by no statement below it. The first is the order of
+`relations`: the rows come back as a set from both ends of the edge, and how one reads is a
+function of the asking issue, so the sort lives here, on the reading and then the far end's
+identifier. The fixture is inserted in an order that is neither the answer nor its reverse, so a
+read that handed over the fetch order could not pass.
+
+The second is the order of the four collections themselves, which every edge formats from this
+one place.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from helpers_world import World, make_issue
+from hifa.adapters.sqlite.connection import Database
+from hifa.adapters.sqlite.reads import IssueDetail
+from hifa.app import boards
+from hifa.domain.entities import IssueRelation
+from hifa.domain.enums import RelationType
+
+
+@pytest.fixture
+def fan(world: World) -> World:
+    """`ENG-7` with six edges, inserted in an order that is neither the answer nor its reverse.
+
+    Insertion: `related` to ENG-30, `blocks` to ENG-20, `blocks` to ENG-9, `blocks` to ENG-3,
+    `duplicate` to ENG-5, and `ENG-8 blocks ENG-7` last — which reads as `blocked_by` from ENG-7.
+    The declaration is `blocks`, `blocked_by`, `duplicate`, `related`, `similar`, then the far
+    end's identifier as text.
+
+    The three `blocks` far ends are the point of the fixture: the text order is `ENG-20`,
+    `ENG-3`, `ENG-9`, the insertion order is `ENG-20`, `ENG-9`, `ENG-3` and the reverse is
+    `ENG-3`, `ENG-9`, `ENG-20` — the middle one of the text order is not the middle one the rows
+    arrive in, so the insertion order, its reverse and the fetch order all differ from the
+    published trio, and only the comparison on the identifier produces it.
+    """
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        asking = make_issue(tx, world, identifier="ENG-7", number=7)
+        others = {
+            identifier: make_issue(tx, world, identifier=identifier, number=number)
+            for identifier, number in (
+                ("ENG-30", 30),
+                ("ENG-20", 20),
+                ("ENG-5", 5),
+                ("ENG-9", 9),
+                ("ENG-3", 3),
+                ("ENG-8", 8),
+            )
+        }
+        for identifier, relation_type in (
+            ("ENG-30", RelationType.RELATED),
+            ("ENG-20", RelationType.BLOCKS),
+            ("ENG-9", RelationType.BLOCKS),
+            ("ENG-3", RelationType.BLOCKS),
+            ("ENG-5", RelationType.DUPLICATE),
+        ):
+            tx.issues.add_relation(
+                IssueRelation(
+                    id=world.idgen.new(),  # type: ignore[attr-defined]
+                    issue_id=asking.id,
+                    related_issue_id=others[identifier].id,
+                    type=relation_type,
+                    created_at=now,
+                )
+            )
+        tx.issues.add_relation(
+            IssueRelation(
+                id=world.idgen.new(),  # type: ignore[attr-defined]
+                issue_id=others["ENG-8"].id,
+                related_issue_id=asking.id,
+                type=RelationType.BLOCKS,
+                created_at=now,
+            )
+        )
+    return world
+
+
+def readings(detail: IssueDetail) -> list[tuple[str, str]]:
+    """`(what the row reads as from the asking issue, the far end's identifier)`, in order."""
+    pairs: list[tuple[str, str]] = []
+    for relation, far in detail.relations:
+        direction = "out" if relation.issue_id == detail.issue.id else "in"
+        pairs.append((relation.type.name_as_seen(direction), far.identifier))
+    return pairs
+
+
+def test_the_relations_come_out_in_the_declared_reading_then_identifier_order(
+    fan: World,
+) -> None:
+    """Reading first, then the far end's identifier compared as text — never the arrival order.
+
+    The three `blocks` rows arrive `ENG-20, ENG-9, ENG-3` and are published `ENG-20, ENG-3,
+    ENG-9`, which is neither that order nor its reverse: it is the lexicographic comparison of
+    the identifiers, where `ENG-3` precedes `ENG-9` because the characters after `ENG-` are
+    compared one by one.
+    """
+    detail = boards.issue_detail(Database(fan.path), "ENG-7")
+
+    assert readings(detail) == [
+        ("blocks", "ENG-20"),
+        ("blocks", "ENG-3"),
+        ("blocks", "ENG-9"),
+        ("blocked_by", "ENG-8"),
+        ("duplicate", "ENG-5"),
+        ("related", "ENG-30"),
+    ]
+
+
+def test_the_published_order_is_neither_the_insertion_order_nor_its_reverse(fan: World) -> None:
+    """The fixture's guard: an implementation that echoed the fetch order could not pass above.
+
+    The rows are inserted `related/ENG-30, blocks/ENG-20, blocks/ENG-9, blocks/ENG-3,
+    duplicate/ENG-5`, and the edge read from the other end last, so the insertion order and its
+    reverse both differ from the published one. Within `blocks` the three orders are all distinct
+    — fetched `ENG-20, ENG-9, ENG-3`, reversed `ENG-3, ENG-9, ENG-20`, published `ENG-20,
+    ENG-3, ENG-9` — so a sort on the reading alone, which is stable and would echo the fetch
+    order, cannot produce the answer. A fixture that happened to be inserted in the answer's
+    order would pass without testing the tie-break at all.
+    """
+    inserted = ["ENG-30", "ENG-20", "ENG-9", "ENG-3", "ENG-5", "ENG-8"]
+    with fan.uow.read() as tx:
+        identifiers = {
+            str(row["id"]): str(row["identifier"])
+            for row in tx.issues.connection.execute("SELECT id, identifier FROM issue").fetchall()
+        }
+        rows = tx.issues.connection.execute(
+            "SELECT issue_id, related_issue_id FROM issue_relation ORDER BY rowid"
+        ).fetchall()
+    detail = boards.issue_detail(Database(fan.path), "ENG-7")
+
+    asking_id = detail.issue.id
+    fetched = [identifiers[str(row[1] if str(row[0]) == asking_id else row[0])] for row in rows]
+    published = readings(detail)
+
+    assert fetched == inserted
+    assert [far for _reading, far in published] != fetched
+    assert [far for _reading, far in published] != list(reversed(fetched))
+    assert sorted(far for _reading, far in published) == sorted(fetched)
+
+    trio = {"ENG-20", "ENG-9", "ENG-3"}
+    fetched_blocks = [far for far in fetched if far in trio]
+    published_blocks = [far for reading, far in published if reading == "blocks"]
+
+    assert fetched_blocks == ["ENG-20", "ENG-9", "ENG-3"]
+    assert published_blocks == ["ENG-20", "ENG-3", "ENG-9"]
+    assert published_blocks != fetched_blocks
+    assert published_blocks != list(reversed(fetched_blocks))
+
+
+def test_the_collections_are_keyed_in_the_order_the_object_carries(fan: World) -> None:
+    """`comments`, `relations`, `history`, `children`, each one the tuple the model carries."""
+    detail = boards.issue_detail(Database(fan.path), "ENG-7")
+
+    collections = boards.detail_collections(detail)
+
+    assert tuple(collections) == ("comments", "relations", "history", "children")
+    assert collections["comments"] == detail.comments
+    assert collections["relations"] == detail.relations
+    assert collections["history"] == detail.history
+    assert collections["children"] == detail.children

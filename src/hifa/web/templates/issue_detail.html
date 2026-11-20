@@ -79,17 +79,6 @@
         </ul>
       </section>
       {% endif %}
-      {% if vm.attachments %}
-      <section class="attachments">
-        <h2>Attachments</h2>
-        <ul>
-          {% for attachment in vm.attachments %}
-          <li>{% if attachment.url %}<a href="{{ attachment.url }}">{{ attachment.title }}</a>{% else %}<span>{{ attachment.title }}</span>{% endif %}
-            <span class="dim">{{ attachment.host_label }}</span></li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endif %}
       <section id="comments">
         <h2>Comments</h2>
         {% include "partials/comments.html" %}

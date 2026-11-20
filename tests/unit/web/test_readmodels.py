@@ -193,3 +193,33 @@ def test_author_of_a_comment_is_not_the_assignee() -> None:
     assert vm["comments"][0]["author_name"] != vm["assignee_name"]
     assert vm["history"][0]["actor_name"] == "Bob"
     assert vm["history"][0]["old_label"] == "Todo"
+
+
+def test_the_issue_vm_carries_no_attachments_key() -> None:
+    """The key left with the collection: nothing writes an attachment row in this version.
+
+    A list that can only ever be `[]` cannot be told from "this issue has none", so the read model
+    does not publish it and the page has no section to render for it.
+    """
+    item = make_item()
+    detail = SimpleNamespace(
+        issue=item,
+        description="hello",
+        team=SimpleNamespace(key="ENG"),
+        state=None,
+        assignee=None,
+        creator=None,
+        project=None,
+        cycle=None,
+        parent=None,
+        children=(),
+        relations=(),
+        comments=(),
+        history=(),
+        members={},
+    )
+
+    vm = build_issue_vm(detail, today=TODAY, now=NOW)  # type: ignore[arg-type]
+
+    assert "attachments" not in vm
+    assert {"comments", "relations", "history"} <= set(vm)

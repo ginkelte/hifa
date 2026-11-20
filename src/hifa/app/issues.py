@@ -239,7 +239,7 @@ def _resolve_parent(tx: Repos, ref: str | None, team: Team, child_id: str) -> Is
         return None
     parent = tx.issues.get_by_identifier(ref) or tx.issues.get(ref)
     if parent is None:
-        raise NotFound(resource="parent", key=ref)
+        raise NotFound(f"the parent issue '{ref}' does not exist", resource="parent", key=ref)
     _validate_parent(tx, parent, child_id=child_id, child_team_id=team.id)
     return parent
 
@@ -611,7 +611,11 @@ def _unrelate_once(uow: UnitOfWork, cmd: UnrelateIssues, actor: Actor) -> None:
         existing = tx.issues.relations(issue.id)
         edge = next((row for row in existing if _matches_edge(row, issue, related, wanted)), None)
         if edge is None:
-            raise NotFound(resource="relation", key=cmd.related)
+            raise NotFound(
+                f"the relation to '{cmd.related}' does not exist",
+                resource="relation",
+                key=cmd.related,
+            )
 
         now = uow.clock.now()
         tx.issues.remove_relation(edge.id)
@@ -834,7 +838,7 @@ def _resolve_parent_id(tx: Repos, ref: str | None, issue: Issue) -> str | None:
         return None
     parent = tx.issues.get_by_identifier(ref) or tx.issues.get(ref)
     if parent is None:
-        raise NotFound(resource="parent", key=ref)
+        raise NotFound(f"the parent issue '{ref}' does not exist", resource="parent", key=ref)
     _validate_parent(
         tx,
         parent,
@@ -894,7 +898,7 @@ def _anchor(tx: Repos, cmd: MoveIssue, issue: Issue, target: WorkflowState) -> I
         return None
     neighbor = tx.issues.get(ref) or tx.issues.get_by_identifier(ref)
     if neighbor is None:
-        raise NotFound(resource="neighbor", key=ref)
+        raise NotFound(f"the neighbor issue '{ref}' does not exist", resource="neighbor", key=ref)
     if neighbor.id == issue.id or neighbor.team_id != issue.team_id or neighbor.trashed:
         raise _position_neighbor(ref)
     if neighbor.state_id != target.id:

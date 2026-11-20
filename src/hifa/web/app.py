@@ -515,7 +515,7 @@ def issue_page(request: Request, team: str, ref: str) -> Response:
     """
     db = _database(request)
     entity = boards.require_team(db, team)
-    detail = boards.issue_detail(db, ref, include=boards.DETAIL_INCLUDE, include_trashed=True)
+    detail = boards.issue_detail(db, ref, include=boards.RENDERED_INCLUDE, include_trashed=True)
     canonical = detail.issue.identifier
     if ref != canonical or detail.team.key != entity.key:
         return RedirectResponse(f"/{detail.team.key}/issue/{canonical}", status_code=303)
@@ -773,7 +773,7 @@ def issue_panel_fragment(request: Request, identifier: str) -> Response:
     archived issue kept a form every write of which is refused.
     """
     detail = boards.issue_detail(
-        _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
+        _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
     )
     vm = _issue_detail_vm(request, detail, surface="panel")
     response = _render(
@@ -1047,7 +1047,7 @@ def comments_fragment(request: Request, identifier: str) -> HTMLResponse:
     trash keeps its two surfaces — the page and the panel — so this read answers `404` for a
     trashed reference like the row and the card fragments do.
     """
-    detail = boards.issue_detail(_database(request), identifier, include=boards.DETAIL_INCLUDE)
+    detail = boards.issue_detail(_database(request), identifier, include=boards.RENDERED_INCLUDE)
     vm = _issue_detail_vm(request, detail)
     return _render(
         request,
@@ -1092,7 +1092,7 @@ def comment_fragment(
             draft=fields.get("body", ""),
         )
     detail = boards.issue_detail(
-        _database(request), comment.issue_id, include=boards.DETAIL_INCLUDE
+        _database(request), comment.issue_id, include=boards.RENDERED_INCLUDE
     )
     vm = _issue_detail_vm(request, detail)
     response = _render(
@@ -1559,7 +1559,7 @@ def _layer_refusal(
     box is a paragraph they have to type again.
     """
     detail = boards.issue_detail(
-        _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
+        _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
     )
     control, message = (
         _refusal(exc, identifier=detail.issue.identifier, verb=verb, controls=controls)
@@ -1653,7 +1653,7 @@ def _issue_page_error(
     message §6 composes for it and, for the confirmation, the block the reader has to reopen.
     """
     detail = boards.issue_detail(
-        _database(request), identifier, include=boards.DETAIL_INCLUDE, include_trashed=True
+        _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
     )
     if exc is None:
         control, message = (
@@ -1700,7 +1700,7 @@ def _issue_edit_fragment(
     detail = boards.issue_detail(
         _database(request),
         identifier,
-        include=boards.DETAIL_INCLUDE if view == "panel" else frozenset(),
+        include=boards.RENDERED_INCLUDE if view == "panel" else frozenset(),
         include_trashed=view == "panel",
     )
     message = form_error or next((text for text in (form_errors or {}).values() if text), None)

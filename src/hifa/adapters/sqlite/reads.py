@@ -207,6 +207,12 @@ class IssueListItem:
     sort_order: float = 0.0
     board_order: float = 0.0
     created_at: datetime | None = None
+    #: `issue.milestone_id` and `project_milestone.name` of the same row, loaded by the join
+    #: every projection of this module carries. No v1 write stores an id, so both are `None`
+    #: on every row the product produces today; they are read anyway, so a row written by
+    #: hand answers what it holds instead of a key that can only ever be `None`.
+    milestone_id: str | None = None
+    milestone_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +229,8 @@ SELECT i.id, i.identifier, i.title, i.priority, i.priority_label,
        i.state_id, s.name AS state_name, s.type AS state_type, s.color AS state_color,
        i.team_id, t.key AS team_key,
        i.assignee_id, m.display_name AS assignee_name,
-       i.project_id, i.cycle_id, i.due_date, i.estimate, i.parent_id,
+       i.project_id, i.cycle_id, i.milestone_id, pm.name AS milestone_name,
+       i.due_date, i.estimate, i.parent_id,
        i.sort_order, i.board_order, i.created_at,
        i.updated_at, i.is_open, i.visible,
        COALESCE((
@@ -239,6 +246,7 @@ FROM v_issue i
 JOIN workflow_state s ON s.id = i.state_id
 JOIN team t          ON t.id = i.team_id
 LEFT JOIN member m   ON m.id = i.assignee_id
+LEFT JOIN project_milestone pm ON pm.id = i.milestone_id
 WHERE {where}
 ORDER BY {order_by}
 LIMIT :limit_plus_one OFFSET :offset
@@ -324,6 +332,8 @@ def _item(row: sqlite3.Row) -> IssueListItem:
         sort_order=float(row["sort_order"] or 0.0),
         board_order=float(row["board_order"] or 0.0),
         created_at=to_dt(row["created_at"]),
+        milestone_id=row["milestone_id"],
+        milestone_name=row["milestone_name"],
     )
 
 
@@ -561,7 +571,8 @@ _ITEM_COLUMNS = """
        i.state_id, s.name AS state_name, s.type AS state_type, s.color AS state_color,
        i.team_id, t.key AS team_key,
        i.assignee_id, m.display_name AS assignee_name,
-       i.project_id, i.cycle_id, i.due_date, i.estimate, i.parent_id,
+       i.project_id, i.cycle_id, i.milestone_id, pm.name AS milestone_name,
+       i.due_date, i.estimate, i.parent_id,
        i.sort_order, i.board_order, i.created_at,
        i.updated_at, i.is_open, i.visible,
        COALESCE((
@@ -574,14 +585,23 @@ _ITEM_COLUMNS = """
        ), '[]') AS labels_json
 """
 
-_BOARD_SQL = (
-    "SELECT "
-    + _ITEM_COLUMNS
-    + """
-FROM v_issue i
+#: The four joins every projection above needs: the state, the team, the assignee and the
+#: milestone of the row, so that one row of `IssueListItem` is one statement.
+_ITEM_JOINS = """
 JOIN workflow_state s ON s.id = i.state_id
 JOIN team t          ON t.id = i.team_id
 LEFT JOIN member m   ON m.id = i.assignee_id
+LEFT JOIN project_milestone pm ON pm.id = i.milestone_id
+"""
+
+_ITEM_QUERY = "SELECT " + _ITEM_COLUMNS + "FROM v_issue i" + _ITEM_JOINS + "WHERE {where}\n"
+
+_BOARD_SQL = (
+    "SELECT "
+    + _ITEM_COLUMNS
+    + "FROM v_issue i"
+    + _ITEM_JOINS
+    + """
 WHERE i.team_id = :team_id
   AND i.archived_at IS NULL
   AND i.trashed = 0
@@ -593,18 +613,6 @@ WHERE i.team_id = :team_id
         SELECT 1 FROM issue_label ilx WHERE ilx.issue_id = i.id AND ilx.label_id = :label_id))
   AND (:q IS NULL OR i.title LIKE :q ESCAPE '\\')
 ORDER BY s.position, i.board_order, i.id
-"""
-)
-
-_ITEM_QUERY = (
-    "SELECT "
-    + _ITEM_COLUMNS
-    + """
-FROM v_issue i
-JOIN workflow_state s ON s.id = i.state_id
-JOIN team t          ON t.id = i.team_id
-LEFT JOIN member m   ON m.id = i.assignee_id
-WHERE {where}
 """
 )
 
@@ -761,11 +769,9 @@ def board_view(
 _BLOCKED_SQL = (
     "SELECT "
     + _ITEM_COLUMNS
+    + "FROM v_issue i"
+    + _ITEM_JOINS
     + """
-FROM v_issue i
-JOIN workflow_state s ON s.id = i.state_id
-JOIN team t          ON t.id = i.team_id
-LEFT JOIN member m   ON m.id = i.assignee_id
 WHERE (:team_id IS NULL OR i.team_id = :team_id)
   AND i.visible = 1
   AND EXISTS (
@@ -830,6 +836,13 @@ def issue_detail(
     `include` gates the heavy collections (`comments`, `history`, `attachments`). A name outside
     `DETAIL_INCLUDE` is a `Validation(rule="INCLUDE_INVALID")`, not a silent no-op.
 
+    A neighbour the trash layer holds is not part of the answer: a trashed child is absent from
+    `children`, a trashed far end from `relations`, and a pointer to a trashed parent answers
+    `None`. Those three predicates are unconditional — they describe the neighbours, not the issue
+    the caller asked about — while the issue itself is excluded only on a default read. The
+    `relations` tuple comes back unordered: how a row reads is a function of the asking end, so
+    its order belongs to the caller that holds the far end.
+
     `include_trashed` is the one declared way to read an issue the trash layer holds (D-059,
     SQL-7 row 1): `False` — the default — binds `:include_trashed = 0`, which reduces the
     header's predicate to `i.trashed = 0`, so a trashed reference answers `None`; `True` binds
@@ -888,13 +901,13 @@ def issue_detail(
         cycle = None if found is None else Cycle.model_validate(dict(found))
 
     parent = (
-        _one_item(conn, "i.id = :parent", {"parent": row["parent_id"]})
+        _one_item(conn, "i.id = :parent AND i.trashed = 0", {"parent": row["parent_id"]})
         if row["parent_id"]
         else None
     )
     children = _items(
         conn.execute(
-            _ITEM_QUERY.format(where="i.parent_id = :parent")
+            _ITEM_QUERY.format(where="i.parent_id = :parent AND i.trashed = 0")
             + "ORDER BY i.sub_issue_sort_order, i.number",
             {"parent": row["id"]},
         ).fetchall()
@@ -910,7 +923,7 @@ def issue_detail(
             if relation_row["issue_id"] == row["id"]
             else relation_row["issue_id"]
         )
-        other = _one_item(conn, "i.id = :other", {"other": other_id})
+        other = _one_item(conn, "i.id = :other AND i.trashed = 0", {"other": other_id})
         if other is None:
             continue
         relations.append((IssueRelation.model_validate(dict(relation_row)), other))
