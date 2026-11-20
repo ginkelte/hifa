@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from helpers_world import World, make_issue
 from hifa.adapters.sqlite.history_repo import HistoryRepo
+from hifa.adapters.sqlite.reads import issue_detail
+from hifa.app.commands import Actor, MoveIssue
+from hifa.app.issues import move_issue
+
+ACTOR = Actor(source="cli", label="cli")
 
 
 def _move(tx: object, issue_id: str, *, old: str, new: str, actor: str) -> None:
@@ -77,6 +82,60 @@ def test_the_preceding_row_is_read_within_the_same_issue(world: World) -> None:
         rows = tx.history.list_for_issue(issue.id)
 
     assert [row.field for row in rows] == ["board_order"]
+
+
+def test_a_drag_after_a_move_into_an_empty_column_is_an_event_of_its_own(world: World) -> None:
+    """The state-only row of a move does not swallow the rank the next drag writes.
+
+    `_move_once` records a rank only when it differs from the stored one, so a move into an empty
+    column writes the `state_id` row alone. The next genuine drag is a second `record` call at a
+    second instant, and its `board_order` row is adjacent to a `state_id` row of the same issue: the
+    predicate names the batch by the shared `created_at`, so nothing but the batch is dropped. Both
+    edges read this window — `HistoryRepo.list_for_issue` and `issue_detail`'s `include={"history"}`
+    — so the assertion is about the statement and not about one caller's filter.
+    """
+    with world.uow.write() as tx:
+        # `1024.0` is the rank an empty column hands the first issue, so the move below changes the
+        # state and not the rank: `_move_once` then records the `state_id` row alone.
+        dragged = make_issue(tx, world, board_order=1024.0)
+        neighbour = make_issue(tx, world, board_order=1024.0)
+        dragged_id, dragged_ref = dragged.id, dragged.identifier
+        neighbour_ref = neighbour.identifier
+
+    # The empty column: the state row, and no rank, because the rank did not change.
+    move_issue(world.uow, MoveIssue(issue=dragged_ref, target_state="Backlog"), ACTOR)
+    world.clock.advance(seconds=18)  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        stamp = world.clock.now()  # type: ignore[attr-defined]
+        tx.issues.set_state(neighbour.id, world.states["Backlog"].id, now=stamp)
+    world.clock.advance(seconds=18)  # type: ignore[attr-defined]
+    # The drag: a second write, a second instant, a rank that really moves this time.
+    move_issue(
+        world.uow,
+        MoveIssue(
+            issue=dragged_ref,
+            target_state="Backlog",
+            position="before",
+            before_id=neighbour_ref,
+        ),
+        ACTOR,
+    )
+
+    with world.uow.read() as tx:
+        raw = [
+            item[0]
+            for item in tx.history.connection.execute(
+                "SELECT field FROM issue_history WHERE issue_id = ? ORDER BY id", (dragged_id,)
+            ).fetchall()
+        ]
+        kept = [row.field for row in tx.history.list_for_issue(dragged_id)]
+        detail = issue_detail(tx.issues.connection, dragged_ref, include=frozenset({"history"}))
+
+    assert raw == ["state_id", "board_order"]
+    # Newest-first as the repo answers it; nothing of the two writes is missing.
+    assert kept == ["board_order", "state_id"]
+    assert detail is not None
+    assert [row.field for row in detail.history] == ["board_order", "state_id"]
 
 
 def test_a_rank_written_before_the_state_row_is_not_dropped(world: World) -> None:
@@ -182,7 +241,6 @@ def test_the_repo_is_the_one_that_reads_an_issue(world: World) -> None:
 
 def test_the_read_and_the_formatter_answer_one_story(world: World) -> None:
     """The window the read returns and the sentences it resolves: one story, oldest-first."""
-    from hifa.adapters.sqlite.reads import issue_detail
     from hifa.app.history import history_rows
 
     now = world.clock.now()  # type: ignore[attr-defined]

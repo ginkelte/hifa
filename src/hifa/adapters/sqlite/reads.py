@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from hifa.adapters.sqlite import state_repo
 from hifa.adapters.sqlite._base import to_date, to_dt
+from hifa.adapters.sqlite.history_repo import HISTORY_ROW_VISIBLE
 from hifa.domain.entities import (
     Attachment,
     Comment,
@@ -947,11 +948,7 @@ def issue_detail(
             IssueHistory.model_validate(dict(item))
             for item in conn.execute(
                 "SELECT h.* FROM issue_history h WHERE h.issue_id = ?"
-                " AND NOT (h.field = 'board_order' AND COALESCE(("
-                "   SELECT p.field FROM issue_history p"
-                "   WHERE p.issue_id = h.issue_id AND p.id < h.id"
-                "   ORDER BY p.id DESC LIMIT 1"
-                " ), '') = 'state_id')"
+                f" AND {HISTORY_ROW_VISIBLE}"
                 " ORDER BY h.created_at DESC, h.id DESC LIMIT 100",
                 (row["id"],),
             ).fetchall()

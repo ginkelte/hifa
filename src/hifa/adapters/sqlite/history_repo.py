@@ -5,12 +5,30 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Final
 
 from hifa.adapters.sqlite._base import BaseRepo, dt_text, to_dt
 from hifa.domain.entities import IssueHistory
 
 COLUMNS = "id, issue_id, actor_id, field, old_value, new_value, created_at"
+
+#: SQL predicate over an `issue_history h` row: false for the rank a move wrote, true otherwise.
+#:
+#: A move writes `state_id` and `board_order` in one `record` call, so the two rows of that batch
+#: are consecutive `id`s of the issue **and** share their instant: the rank is the consequence of
+#: the move and not a second event. Adjacency alone does not name the batch — `_move_once` records
+#: a rank only when it differs from the stored one, so a move into an empty column writes the
+#: `state_id` row alone and the rank of the *next* drag then sits right after it, an event of its
+#: own. Requiring the shared `created_at` is what separates the batch from two events that merely
+#: happen to be neighbours.
+HISTORY_ROW_VISIBLE: Final[str] = (
+    "NOT (h.field = 'board_order' AND COALESCE(("
+    "  SELECT p.field = 'state_id' AND p.created_at = h.created_at"
+    "  FROM issue_history p"
+    "  WHERE p.issue_id = h.issue_id AND p.id < h.id"
+    "  ORDER BY p.id DESC LIMIT 1"
+    "), 0))"
+)
 
 
 def _serialize(value: Any) -> str | None:
@@ -68,18 +86,15 @@ class HistoryRepo(BaseRepo):
     def list_for_issue(self, issue_id: str, *, limit: int = 100) -> list[IssueHistory]:
         """The issue's newest rows, oldest-of-the-window last, with the rank a move wrote removed.
 
-        A `board_order` row is dropped when the history row immediately before it, by `id`, is a
-        `state_id` row: the two are one record batch, so the move already names the event and the
-        rank is its consequence and not a second one.
+        `HISTORY_ROW_VISIBLE` is the one statement of that exclusion: a `board_order` row is dropped
+        when the row the same issue wrote immediately before it, by `id`, is a `state_id` row of the
+        same instant — the one `record` batch of a move — so the move already names the event and
+        the rank is its consequence and not a second one.
         """
         rows = self._all(
             f"SELECT {COLUMNS} FROM issue_history h"
             " WHERE h.issue_id = ?"
-            " AND NOT (h.field = 'board_order' AND COALESCE(("
-            "   SELECT p.field FROM issue_history p"
-            "   WHERE p.issue_id = h.issue_id AND p.id < h.id"
-            "   ORDER BY p.id DESC LIMIT 1"
-            " ), '') = 'state_id')"
+            f" AND {HISTORY_ROW_VISIBLE}"
             " ORDER BY h.created_at DESC, h.id DESC LIMIT ?",
             (issue_id, limit),
         )
@@ -97,4 +112,4 @@ class HistoryRepo(BaseRepo):
         ]
 
 
-__all__ = ["COLUMNS", "HistoryRepo"]
+__all__ = ["COLUMNS", "HISTORY_ROW_VISIBLE", "HistoryRepo"]
