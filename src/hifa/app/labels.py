@@ -185,10 +185,11 @@ def create_label(uow: UnitOfWork, cmd: CreateLabel, actor: Actor) -> Label:
     A blank name, a color outside `#RRGGBB` and a parent that is not a group of the label's own
     level are refused before the insert. A name the level already carries is refused whether it is
     spelled the same or only the same case: the first is the uniqueness of the table, translated to
-    `UNIQUE_LABEL_NAME`, and the second is judged here because the index is case-sensitive.
+    `UNIQUE_LABEL_NAME`, and the second is judged here because the index is case-sensitive. A
+    parent name the level spells twice is `LABEL_AMBIGUOUS`, not a pick of one of the two rows.
 
-    raises: `NotFound(team|label)`,
-    `Validation(TEAM_ARCHIVED|LABEL_NAME_EMPTY|LABEL_GROUP_INVALID|COLOR_FORMAT)`,
+    raises: `NotFound(team)`,
+    `Validation(TEAM_ARCHIVED|LABEL_NAME_EMPTY|LABEL_GROUP_INVALID|LABEL_AMBIGUOUS|COLOR_FORMAT)`,
     `Conflict(UNIQUE_LABEL_NAME)`
     """
     return with_write_retry(lambda: _create_label_once(uow, cmd, actor))
@@ -305,7 +306,14 @@ def _retire_label_once(uow: UnitOfWork, cmd: RetireLabel, actor: Actor) -> Label
 def restore_label(uow: UnitOfWork, cmd: RestoreLabel, actor: Actor) -> Label:
     """Clear `retired_at` of one label; a label that is not retired is a conflict.
 
-    raises: `NotFound(label)`, `Validation(LABEL_AMBIGUOUS)`, `Conflict(LABEL_NOT_RETIRED)`
+    Clearing the stamp puts the row back among the live ones, which is the set a name is resolved
+    against, so the write is judged by the catalogue's one-spelling rule from the other side: a
+    label whose own level holds a **live** case variant is `UNIQUE_LABEL_NAME`, because a restore
+    would create the pair the creation refuses. A retired sibling is not that pair, and a variant
+    at another level is a second label.
+
+    raises: `NotFound(label)`, `Validation(LABEL_AMBIGUOUS)`,
+    `Conflict(LABEL_NOT_RETIRED|UNIQUE_LABEL_NAME)`
     """
     return with_write_retry(lambda: _restore_label_once(uow, cmd, actor))
 
@@ -324,6 +332,7 @@ def _restore_label_once(uow: UnitOfWork, cmd: RestoreLabel, actor: Actor) -> Lab
                 details={"label_id": label.id},
                 code="LABEL_NOT_RETIRED",
             )
+        _refuse_live_case_variant(tx.labels, workspace_id, label)
         tx.labels.retire(label.id, None)
         return tx.labels.require(label.id)
 
@@ -458,14 +467,30 @@ def _resolve_catalogue_label(
 def _resolve_parent(
     tx: Repos, workspace_id: str, team_id: str | None, ref: str | None
 ) -> Label | None:
-    """The group a new child hangs from, resolved at the new label's own level."""
+    """The group a new child hangs from, resolved at the new label's own level.
+
+    A parent names a group of the level the new label belongs to, and the level answers with two
+    verdicts that stay apart. A **ULID** resolves directly; a **name** is matched
+    case-insensitively against the rows of that level, and a name the level spells twice
+    (`Severity` and `severity`) is `LABEL_AMBIGUOUS` with `field='ref'` — the rule every
+    resolution of a label name shares, and never a silent pick of one of the two rows (SPEC-040
+    R22, D-070). A parent that is absent at that level, or that is not a group, is
+    `LABEL_GROUP_INVALID` with `field='parent'`: the two refusals are different questions, one
+    about which row the name fits and one about the row being at the wrong level or the wrong
+    kind.
+    """
     if ref is None:
         return None
-    wanted = ref.casefold()
-    candidates = tx.labels.list(workspace_id, team_id=team_id, include_retired=True)
-    parent = next((row for row in candidates if row.id == ref), None) or next(
-        (row for row in candidates if row.name.casefold() == wanted), None
-    )
+    rows = tx.labels.list(workspace_id, team_id=team_id, include_retired=True)
+    named = [row for row in rows if row.id == ref]
+    if named:
+        parent = named[0]
+    else:
+        wanted = ref.casefold()
+        matches = [row for row in rows if row.name.casefold() == wanted]
+        if len(matches) > 1:
+            raise _ambiguous_spellings(ref, matches, tx.teams)
+        parent = matches[0] if matches else None
     if parent is None or not parent.is_group:
         raise _group_invalid(f"parent {ref} is not a group at this level", "parent", ref)
     return parent
@@ -616,17 +641,20 @@ def case_variant_at_level(
     name: str,
     *,
     exclude_id: str | None = None,
+    include_retired: bool = True,
 ) -> Label | None:
     """The row a level already carries under another spelling of this name, if there is one.
 
     `bug` and `Bug` are two rows to a case-sensitive unique index and one name to a reader, and a
     reference to that name would have to pick one of them. Creation and rename refuse the second
     one (`_refuse_case_variant`) and the seed skips it (`bootstrap`), so both read the same
-    predicate instead of restating it. Retired rows count, exactly as the partial unique indexes
-    count them.
+    predicate instead of restating it. Retired rows count by default, exactly as the partial
+    unique indexes count them, because a spelling freed by a retire is not free; `restore_label`
+    passes `include_retired=False`, because the pair it must not create is the one a name is
+    resolved against and that set is the **live** rows (SPEC-040 R22).
     """
     wanted = name.casefold()
-    for row in labels.list(workspace_id, team_id=team_id, include_retired=True):
+    for row in labels.list(workspace_id, team_id=team_id, include_retired=include_retired):
         if row.id != exclude_id and row.name.casefold() == wanted:
             return row
     return None
@@ -644,6 +672,33 @@ def _refuse_case_variant(
     existing = case_variant_at_level(labels, workspace_id, team_id, name, exclude_id=exclude_id)
     if existing is not None:
         raise _label_name_conflict(name, existing.name)
+
+
+def _refuse_live_case_variant(labels: LabelRepo, workspace_id: str, label: Label) -> None:
+    """`restore_label`'s half of the rule: the sibling it would meet among the **live** rows.
+
+    The restored row does not collide with itself (`exclude_id`), and a retired sibling does not
+    count: clearing `retired_at` recreates the pair only when the level's other spelling is live,
+    because the live rows are the ones a name resolves against (SPEC-040 R22).
+    """
+    existing = case_variant_at_level(
+        labels,
+        workspace_id,
+        label.team_id,
+        label.name,
+        exclude_id=label.id,
+        include_retired=False,
+    )
+    if existing is None:
+        return
+    raise Conflict(
+        f"label {label.name} cannot be restored: '{existing.name}' is live at this level",
+        rule="UNIQUE_LABEL_NAME",
+        field="name",
+        value=label.name,
+        details={"existing_id": existing.id},
+        code="UNIQUE_LABEL_NAME",
+    )
 
 
 def _unique_label_name(name: str, cause: Conflict) -> Conflict:

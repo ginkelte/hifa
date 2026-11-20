@@ -182,7 +182,15 @@ def _label_named(seed: Seed, name: str, team_id: str | None = None) -> sqlite3.R
     return rows[0]
 
 
-def _insert_second_spelling(seed: Seed, name: str, *, team_id: str | None = None) -> str:
+def _insert_second_spelling(
+    seed: Seed,
+    name: str,
+    *,
+    team_id: str | None = None,
+    is_group: bool = False,
+    group_type: str | None = None,
+    retired_at: str | None = None,
+) -> str:
     """A second spelling of a name of one level, which the catalogue itself refuses to write.
 
     The unique indexes of `label` are case-sensitive, so the database accepts `Bug` and `bug` side
@@ -193,8 +201,8 @@ def _insert_second_spelling(seed: Seed, name: str, *, team_id: str | None = None
         seed,
         "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
         " is_group, group_type, retired_at)"
-        " VALUES (?, ?, ?, NULL, ?, '#6B6F76', NULL, 0, NULL, NULL)",
-        (label_id, seed.workspace.id, team_id, name),
+        " VALUES (?, ?, ?, NULL, ?, '#6B6F76', NULL, ?, ?, ?)",
+        (label_id, seed.workspace.id, team_id, name, int(is_group), group_type, retired_at),
     )
     return label_id
 
@@ -461,6 +469,40 @@ def test_a_parent_that_is_not_a_group_is_invalid(seed: Seed) -> None:
     assert (caught.value.rule, caught.value.field) == ("LABEL_GROUP_INVALID", "parent")
 
 
+def test_a_parent_name_the_level_spells_twice_is_ambiguous(seed: Seed) -> None:
+    """One name, two groups of one level: `LABEL_AMBIGUOUS` with `field='ref'`, never a pick."""
+    _make(seed, "Severity", is_group=True, group_type="multiSelect")
+    _insert_second_spelling(seed, "severity", is_group=True, group_type="multiSelect")
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Validation) as caught:
+            create_label(uow, CreateLabel(name="High", parent="severity"), seed.actor)
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field) == ("LABEL_AMBIGUOUS", "ref")
+    assert caught.value.details["labels"] == ["Severity", "severity"]
+    assert "teams" not in caught.value.details
+    assert caught.value.message == "label severity is ambiguous: 'Severity', 'severity'"
+    assert _rows(seed, "SELECT * FROM label WHERE name = 'High'") == []
+
+
+def test_a_parent_ulid_resolves_one_row_of_a_level_that_spells_it_twice(seed: Seed) -> None:
+    """A ULID names exactly one row, so it never meets the ambiguity rule (SPEC-040 R22)."""
+    chosen = _make(seed, "Severity", is_group=True, group_type="multiSelect")
+    _insert_second_spelling(seed, "severity", is_group=True, group_type="multiSelect")
+
+    uow = _uow(seed)
+    try:
+        child = create_label(uow, CreateLabel(name="High", parent=chosen), seed.actor)
+    finally:
+        uow.close()
+
+    assert child.parent_id == chosen
+    assert _label_named(seed, "High")["parent_id"] == chosen
+
+
 # --- update_label --------------------------------------------------------------------------
 
 
@@ -712,6 +754,43 @@ def test_the_undo_of_a_retire_that_never_happened_is_a_conflict(seed: Seed) -> N
 
     assert caught.value.rule == "LABEL_NOT_RETIRED"
     assert _label_named(seed, "Bug")["retired_at"] is None
+
+
+def test_the_undo_beside_a_live_spelling_is_a_conflict(seed: Seed) -> None:
+    """R22 from the other side: clearing `retired_at` must not create the pair creation refuses."""
+    bug_id = _make(seed, "Bug")
+    _retire(seed, bug_id)
+    live_id = _insert_second_spelling(seed, "bug")
+
+    uow = _uow(seed)
+    try:
+        with pytest.raises(Conflict) as caught:
+            restore_label(uow, RestoreLabel(label=bug_id), seed.actor)
+    finally:
+        uow.close()
+
+    assert (caught.value.rule, caught.value.field) == ("UNIQUE_LABEL_NAME", "name")
+    assert caught.value.details["existing_id"] == live_id
+    assert _label_named(seed, "Bug")["retired_at"] is not None
+    assert _label_named(seed, "bug")["retired_at"] is None
+
+
+def test_the_undo_beside_a_retired_spelling_is_allowed(seed: Seed) -> None:
+    """A retired sibling is not the pair the rule refuses: only the live set is resolved against."""
+    bug_id = _make(seed, "Bug")
+    _retire(seed, bug_id)
+    _insert_second_spelling(seed, "bug", retired_at=RETIRED_AT)
+
+    uow = _uow(seed)
+    try:
+        restored = restore_label(uow, RestoreLabel(label=bug_id), seed.actor)
+    finally:
+        uow.close()
+
+    assert restored.id == bug_id
+    assert _label_named(seed, "Bug")["retired_at"] is None
+    assert _label_named(seed, "bug")["retired_at"] == RETIRED_AT
+    assert len(_rows(seed, "SELECT id FROM label")) == 2
 
 
 def test_a_name_two_teams_share_is_ambiguous_on_the_catalogue_writes(seed: Seed) -> None:
