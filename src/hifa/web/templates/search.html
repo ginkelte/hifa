@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ page.title }}{% endblock %}
+{% block content %}
+<section class="search-block">
+  <form method="get" action="/search" class="search-form" role="search">
+    <label class="visually-hidden" for="search-q">Search</label>
+    <input id="search-q" type="search" name="q" value="{{ vm.q }}" placeholder="search the workspace"
+      {% if vm.autofocus %}autofocus{% endif %}>
+    <button type="submit">Search</button>
+  </form>
+  {% if vm.team_filter %}
+  <p class="search-team-chip">
+    <span class="chip">{{ vm.team_filter.key }} — {{ vm.team_filter.name }}</span>
+    <a href="/search?q={{ vm.q | urlencode }}">remove</a>
+  </p>
+  {% endif %}
+</section>
+{% if message %}
+<section class="search-message">
+  {% include "partials/empty_state.html" %}
+</section>
+{% endif %}
+{% if vm.hits %}
+<h2 class="search-heading" tabindex="-1" data-count="{{ vm.count }}">{{ vm.count }} results</h2>
+<ul class="search-results">
+  {% for hit in vm.hits %}
+  <li class="hit">
+    <a href="{{ hit.url }}" class="hit-link">
+      <span class="hit-meta"><span class="hit-id">{{ hit.identifier }}</span>
+        <span class="hit-state" data-state-type="{{ hit.state_type }}">{{ hit.state_name }}</span>
+        <span class="hit-priority">{{ hit.priority_glyph }}</span>
+        <span class="hit-updated">{{ hit.updated_label }}</span></span>
+      <span class="hit-title">{{ hit.title }}</span>
+      {% if hit.snippet_html %}<span class="hit-snippet">{{ hit.snippet_html | safe }}</span>{% endif %}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
