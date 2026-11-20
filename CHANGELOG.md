@@ -1,3 +1,10 @@
+# [0.11.0](https://github.com/ginkelte/hifa/compare/v0.10.0...v0.11.0) (2026-11-20)
+
+
+### Features
+
+* **labels:** the label surface, the two issue verbs and a 404 that names what it missed (HIFA-14) ([#33](https://github.com/ginkelte/hifa/issues/33)) ([0a4c393](https://github.com/ginkelte/hifa/commit/0a4c3939a86cf0c1f92244a32d2cb188b8357bfb))
+
 # [0.10.0](https://github.com/ginkelte/hifa/compare/v0.9.1...v0.10.0) (2026-11-18)
 
 
