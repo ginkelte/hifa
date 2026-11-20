@@ -179,9 +179,9 @@ def test_init_seeds_member_and_membership(sandbox: SimpleNamespace) -> None:
     assert membership[0]["is_owner"] == 1
 
 
-def test_init_leaves_user_version_at_three(sandbox: SimpleNamespace) -> None:
+def test_init_leaves_user_version_at_four(sandbox: SimpleNamespace) -> None:
     run("init")
-    assert scalar(sandbox.db, "PRAGMA user_version") == 3
+    assert scalar(sandbox.db, "PRAGMA user_version") == 4
 
 
 def test_init_seeds_exactly_one_workspace_and_team(sandbox: SimpleNamespace) -> None:

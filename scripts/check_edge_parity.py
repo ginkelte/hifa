@@ -240,6 +240,13 @@ CAPABILITIES: tuple[Capability, ...] = (
     # `hifa issue show` and the detail page are one read model on two edges: the block and its
     # collections on the CLI, the rendered page on the web.
     Capability(name="issue.show", cli="issue show", web=("GET", "/{team}/issue/{ref}")),
+    # One capability with two transports: the verb is the reference surface and the fragment is
+    # the dashboard's second transport of the same rows, so the row carries both edges.
+    Capability(
+        name="issue.history",
+        cli="issue history",
+        web=("GET", "/_/issues/{identifier}/history"),
+    ),
     # HIFA-2 (T-07) ships the verb that exposes both reads; the board read MODEL
     # (`app/boards.columns`, counts and wip) is T-08 / HIFA-4, so this line closes
     # only when both are done -- the ticket named below is the later of the two.
@@ -293,6 +300,9 @@ FRAGMENT_ALLOWLIST: Mapping[Route, str] = {
     ("GET", "/_/issues/{identifier}/row"): "htmx partial of one list row",
     ("GET", "/_/issues/{identifier}/card"): "htmx partial of one board card",
     ("GET", "/_/issues/{identifier}/panel"): "htmx partial of the issue panel",
+    ("GET", "/_/issues/{identifier}/history"): (
+        "htmx partial: the whole `<ol>` of an issue's history"
+    ),
     ("GET", "/_/counts"): "htmx partial of the dashboard counters",
     ("GET", "/_/revision"): "htmx read of the change signal: one number, no HTML to swap",
     ("POST", "/_/issues/{identifier}/archive"): "htmx bodyless write of the panel's archive",

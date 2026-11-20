@@ -42,6 +42,7 @@ FRAGMENT_ROUTES = (
     "/_/issues/ENG-1/row",
     "/_/issues/ENG-1/card",
     "/_/issues/ENG-1/panel",
+    "/_/issues/ENG-1/history",
     "/_/counts?team=ENG",
 )
 ON_ATTRIBUTE = re.compile(r"<[^>]+\son[a-z]+\s*=", re.IGNORECASE)
@@ -87,15 +88,17 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setenv("HIFA_ME_EMAIL", "ginkelte@example.com")
     _seed(project)
     db = tmp_path / "hifa.db"
-    # There is no `issue move` command yet, so the history entry of the detail page is seeded
-    # directly: the read model must render what the table holds.
+    # A state change is seeded directly, with the real ULIDs of the two columns: the read model
+    # must resolve what the table holds, and the page must print the names and never the keys.
     with sqlite3.connect(db) as conn:
         member_id = conn.execute("SELECT id FROM member LIMIT 1").fetchone()[0]
         issue_id = conn.execute("SELECT id FROM issue WHERE identifier = 'ENG-1'").fetchone()[0]
+        backlog = conn.execute("SELECT id FROM workflow_state WHERE name = 'Backlog'").fetchone()[0]
+        todo = conn.execute("SELECT id FROM workflow_state WHERE name = 'Todo'").fetchone()[0]
         conn.execute(
             "INSERT INTO issue_history (issue_id, actor_id, field, old_value, new_value,"
-            " created_at) VALUES (?, ?, 'state', 'Todo', 'In Progress', '2026-11-08T12:00:00Z')",
-            (issue_id, member_id),
+            " created_at) VALUES (?, ?, 'state_id', ?, ?, '2026-11-08T12:00:00Z')",
+            (issue_id, member_id, backlog, todo),
         )
     return SimpleNamespace(db=db, client=TestClient(create_app(db, default_team="ENG")))
 
@@ -239,12 +242,16 @@ def test_detail_renders_the_issue(seeded: SimpleNamespace) -> None:
     assert "Nov 20" in response.text
     assert '<span class="chip chip-label"' in response.text
     assert "Bug" in response.text
-    # history: the seeded state change is rendered with its actor
+    # history: the seeded state change reads as a sentence, with its actor and no ULID
     history = re.search(r'<section class="history">(.*?)</section>', response.text, re.S)
     assert history is not None, "the history section is missing"
-    assert "state" in history.group(1)
-    assert "In Progress" in history.group(1)
+    assert "moved from Backlog to Todo" in history.group(1)
+    assert "state_id" not in history.group(1)
     assert member_name in history.group(1)
+    # The two ULIDs are on the row as `data-old`/`data-new` and are never text, so the assertion
+    # about what a reader sees is made over the markup stripped of its tags.
+    assert 'data-old="' in history.group(1)
+    assert "01M" not in re.sub(r"<[^>]+>", " ", history.group(1))
 
 
 def test_detail_by_ulid_redirects_to_the_identifier(seeded: SimpleNamespace) -> None:

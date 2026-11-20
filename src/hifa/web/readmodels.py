@@ -13,18 +13,21 @@ from typing import Any
 from urllib.parse import urlencode
 
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage
+from hifa.app.history import (
+    MONTHS,
+    PRIORITY_LABELS,
+    SOMEONE,
+    WINDOW_SIZE,
+    HistoryPage,
+    history_rows,
+    relative_time,
+    wire_instant,
+)
 from hifa.domain.entities import WorkflowState
 from hifa.domain.identifier import parse as parse_identifier
 from hifa.web.markdown import render_markdown
 
 PRIORITY_GLYPHS: dict[int, str] = {0: "\u2013", 1: "U", 2: "H", 3: "M", 4: "L"}
-PRIORITY_LABELS: dict[int, str] = {
-    0: "No priority",
-    1: "Urgent",
-    2: "High",
-    3: "Medium",
-    4: "Low",
-}
 SORT_LABELS: dict[str, str] = {
     "manual": "Manual",
     "created": "Created",
@@ -34,20 +37,6 @@ SORT_LABELS: dict[str, str] = {
 }
 SORT_OPTIONS: tuple[str, ...] = ("manual", "created", "updated", "priority", "due")
 FILTER_KEYS: tuple[str, ...] = ("state", "assignee", "label", "cycle", "project", "q")
-MONTHS: tuple[str, ...] = (
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-)
 #: Fallback for a state without a stored colour (`workflow_state.color` is nullable).
 DEFAULT_STATE_COLOR = "#6B6F76"
 #: The fields the edit form and the `PATCH` of an issue accept, in the order they are rendered.
@@ -106,22 +95,23 @@ def _stamp(moment: datetime | None) -> str:
     return f"{MONTHS[moment.month - 1]} {moment.day} {moment.hour:02d}:{moment.minute:02d}"
 
 
+def _day_stamp(day: date) -> str:
+    """`11 Nov 2026`: the label of the day a run of events opens."""
+    return f"{day.day} {MONTHS[day.month - 1]} {day.year}"
+
+
 def _relative(moment: datetime | None, now: datetime | None) -> str:
-    """`2 h ago` / `3 d ago`, falling back to an absolute stamp."""
+    """`2 h ago` / `3 d ago` from `relative_time`, and the absolute stamp when a side is missing.
+
+    The grammar is `app/history.py`'s; what this function owns is the edge's answer to an absent
+    instant: nothing to say for a moment that does not exist, and the stamp rather than an interval
+    when the caller brought no clock.
+    """
     if moment is None:
         return ""
     if now is None:
         return _stamp(moment)
-    seconds = int((now - moment).total_seconds())
-    if seconds < 60:
-        return "just now"
-    if seconds < 3600:
-        return f"{seconds // 60} m ago"
-    if seconds < 86400:
-        return f"{seconds // 3600} h ago"
-    if seconds < 86400 * 30:
-        return f"{seconds // 86400} d ago"
-    return _stamp(moment)
+    return relative_time(moment, now)
 
 
 def _query(**params: object) -> str:
@@ -353,6 +343,10 @@ def build_board_vm(
 # --- detail ---------------------------------------------------------------------------
 
 
+#: How many rows the panel shows before offering the rest of the window.
+PANEL_HISTORY_ROWS = 8
+
+
 def author_name(members: Mapping[str, str], author_id: str | None) -> str | None:
     """The member who wrote a comment or performed a history entry (never the assignee).
 
@@ -362,6 +356,26 @@ def author_name(members: Mapping[str, str], author_id: str | None) -> str | None
     if not author_id:
         return None
     return members.get(author_id)
+
+
+def _history_page(
+    detail: IssueDetail, *, states: Sequence[WorkflowState] = (), now: datetime | None = None
+) -> HistoryPage:
+    """The one formatter's page for the history window of one detail read.
+
+    The state map resolves a move and carries the colour of its dot; the member and parent maps
+    are the read's. `now` only feeds the one-line summary under the title, so a caller without a
+    clock still gets the rows.
+    """
+    rows = tuple(states) or tuple(getattr(detail, "states", ()))
+    return history_rows(
+        detail.history,
+        states={state.id: state.name for state in rows},
+        members=detail.members,
+        parents=getattr(detail, "history_parents", None),
+        state_colors={state.id: state.color for state in rows},
+        now=now,
+    )
 
 
 def build_issue_vm(
@@ -440,17 +454,42 @@ def build_issue_vm(
                 "url": f"/{other.team_key}/issue/{other.identifier}",
             }
         )
-    history = [
-        {
-            "field": entry.field,
-            "actor_name": author_name(detail.members, entry.actor_id),
-            "old_label": entry.old_value or "",
-            "new_label": entry.new_value or "",
-            "created_label": _relative(entry.created_at, now),
-        }
-        for entry in detail.history
-    ]
+    page = _history_page(detail, states=states, now=now)
+    history: list[dict[str, object]] = []
+    previous_day: date | None = None
+    for entry in page.rows:
+        day = entry.created_at.date()
+        history.append(
+            {
+                "id": entry.id,
+                "field": entry.field,
+                "actor_id": entry.actor_id,
+                "actor_label": entry.actor_label,
+                "actor_initials": (
+                    SOMEONE if entry.actor_label == SOMEONE else initials(entry.actor_label)
+                ),
+                "sentence": entry.sentence,
+                "old_value": entry.old_value,
+                "new_value": entry.new_value,
+                # The two `data-*` attributes and the hover title are decided here, not in Jinja: a
+                # side the row does not have is the empty attribute (never the string `None`), and
+                # only a replaced title has an old value worth hovering.
+                "data_old": entry.old_value if entry.old_value is not None else "",
+                "data_new": entry.new_value if entry.new_value is not None else "",
+                "title_attr": (
+                    entry.old_value if entry.field == "title" and entry.old_value else None
+                ),
+                "old_label": entry.old_label,
+                "new_label": entry.new_label,
+                "dot_color": entry.dot_color,
+                "created_at": wire_instant(entry.created_at),
+                "created_label": _relative(entry.created_at, now),
+                "day_label": None if day == previous_day else _day_stamp(day),
+            }
+        )
+        previous_day = day
 
+    panel_rows = history[:PANEL_HISTORY_ROWS]
     errors = {
         name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS + COMMENT_FORM_FIELDS
     }
@@ -494,6 +533,20 @@ def build_issue_vm(
             "comments": comments,
             "relations": relations,
             "history": history,
+            # The panel's cut and the count of what it hides are one subtraction: `history_hidden`
+            # is measured against the rows the panel really renders, so the two cannot disagree.
+            "history_panel": panel_rows,
+            "history_window": page.window_size,
+            "history_hidden": max(0, page.window_size - len(panel_rows)),
+            # One key, one fact: the sentence the dim line prints when the window came back full.
+            # `page.truncated` is a floor and never a total, so the string says "the last N events"
+            # and no second boolean publishes the same thing for nobody to read.
+            "history_floor": f"the last {WINDOW_SIZE} events" if page.truncated else None,
+            "last_activity": (
+                None
+                if page.last_activity is None
+                else {"text": page.last_activity.text, "row_id": page.last_activity.row_id}
+            ),
             "estimate_label": "\u2013" if item.estimate is None else f"{item.estimate:g} pts",
             "project_label": "\u2013" if detail.project is None else detail.project.name,
             "cycle_label": (

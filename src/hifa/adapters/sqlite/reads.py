@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from hifa.adapters.sqlite import state_repo
 from hifa.adapters.sqlite._base import to_date, to_dt
+from hifa.adapters.sqlite.history_repo import HISTORY_ROW_VISIBLE
 from hifa.domain.entities import (
     Attachment,
     Comment,
@@ -560,6 +561,10 @@ class IssueDetail:
     history: tuple[IssueHistory, ...]
     attachments: tuple[Attachment, ...]
     members: Mapping[str, str] = field(default_factory=dict)
+    #: `issue.id` → `issue.identifier` for the rows of `history` whose `field` is `parent_id`: the
+    #: one kind of history value neither `members` nor `states` resolves. Empty when the window
+    #: names no parent, which is why the lookup is one statement for the kind and never one per row.
+    history_parents: Mapping[str, str] = field(default_factory=dict)
     archived_at: datetime | None = None
     trashed: bool = False
     states: tuple[WorkflowState, ...] = ()
@@ -942,11 +947,31 @@ def issue_detail(
         history = tuple(
             IssueHistory.model_validate(dict(item))
             for item in conn.execute(
-                "SELECT * FROM issue_history WHERE issue_id = ?"
-                " ORDER BY created_at DESC, id DESC LIMIT 100",
+                "SELECT h.* FROM issue_history h WHERE h.issue_id = ?"
+                f" AND {HISTORY_ROW_VISIBLE}"
+                " ORDER BY h.created_at DESC, h.id DESC LIMIT 100",
                 (row["id"],),
             ).fetchall()
         )
+
+    history_parents: Mapping[str, str] = {}
+    if history:
+        parent_ids = {
+            side
+            for entry in history
+            if entry.field == "parent_id"
+            for side in (entry.old_value, entry.new_value)
+            if side
+        }
+        if parent_ids:
+            placeholders = ", ".join("?" for _ in parent_ids)
+            history_parents = {
+                item["id"]: item["identifier"]
+                for item in conn.execute(
+                    f"SELECT id, identifier FROM issue WHERE id IN ({placeholders})",
+                    tuple(sorted(parent_ids)),
+                ).fetchall()
+            }
     attachments: tuple[Attachment, ...] = ()
     if "attachments" in include:
         attachments = tuple(
@@ -993,6 +1018,7 @@ def issue_detail(
         history=history,
         attachments=attachments,
         members=members,
+        history_parents=history_parents,
         archived_at=to_dt(row["archived_at"]),
         trashed=bool(row["trashed"]),
         states=states,

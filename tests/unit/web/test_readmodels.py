@@ -177,10 +177,11 @@ def test_author_of_a_comment_is_not_the_assignee() -> None:
         ),
         history=(
             SimpleNamespace(
-                field="state",
+                id=7,
+                field="state_id",
                 actor_id="u-author",
-                old_value="Todo",
-                new_value="Done",
+                old_value="s-todo",
+                new_value="s-done",
                 created_at=NOW - timedelta(hours=1),
             ),
         ),
@@ -191,8 +192,8 @@ def test_author_of_a_comment_is_not_the_assignee() -> None:
     assert vm["assignee_name"] == "Alice"
     assert vm["comments"][0]["author_name"] == "Bob"
     assert vm["comments"][0]["author_name"] != vm["assignee_name"]
-    assert vm["history"][0]["actor_name"] == "Bob"
-    assert vm["history"][0]["old_label"] == "Todo"
+    assert vm["history"][0]["actor_label"] == "Bob"
+    assert vm["history"][0]["sentence"] == "moved from state (deleted) to state (deleted)"
 
 
 def test_the_issue_vm_carries_no_attachments_key() -> None:
@@ -223,3 +224,17 @@ def test_the_issue_vm_carries_no_attachments_key() -> None:
 
     assert "attachments" not in vm
     assert {"comments", "relations", "history"} <= set(vm)
+
+
+def test_the_labels_and_the_month_names_are_the_application_layers_constants() -> None:
+    """One home: this module reads the maps, it does not keep a copy that can drift.
+
+    The panel renders a history row's label and a stamp's month on the same line, so a second copy
+    is not a style question — it is the two halves of one row disagreeing after a one-sided edit.
+    `is` and not `==`: a copy with the same values is exactly the thing this forbids.
+    """
+    from hifa.app import history
+    from hifa.web import readmodels
+
+    assert readmodels.PRIORITY_LABELS is history.PRIORITY_LABELS
+    assert readmodels.MONTHS is history.MONTHS

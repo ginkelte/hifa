@@ -1,0 +1,4 @@
+<ol id="history-list" class="history-list">
+  {% for entry in vm.history_entries %}{% include "partials/history_item.html" %}{% endfor %}
+  {% if vm.history_floor %}<li class="dim history-floor" role="note">{{ vm.history_floor }}</li>{% endif %}
+</ol>

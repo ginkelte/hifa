@@ -277,7 +277,7 @@ def test_create_issue_writes_labels_and_history() -> None:
     issue = create_issue(uow, label_spec, Actor(member_id="M1"))
 
     assert repos.issues.labels == [(issue.id, ["L1", "L2"])]
-    assert repos.history.rows == [(issue.id, [("created", None, "ENG-1")], "M1")]
+    assert repos.history.rows == [(issue.id, [("created", None, None)], "M1")]
 
 
 def test_create_issue_uses_explicit_state_and_milestones() -> None:

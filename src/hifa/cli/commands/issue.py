@@ -60,6 +60,7 @@ from hifa.app.commands import (
     UnrelateIssues,
     UpdateIssue,
 )
+from hifa.app.history import HistoryPage, HistoryRow, history_rows, wire_instant
 from hifa.app.issues import (
     archive_issue,
     comment_on_issue,
@@ -80,13 +81,12 @@ from hifa.domain.entities import (
     Comment,
     Cycle,
     Issue,
-    IssueHistory,
     Label,
     Member,
     Project,
     Team,
 )
-from hifa.domain.errors import HifaError, NotFound
+from hifa.domain.errors import HifaError, NotFound, Validation
 
 issue_app = typer.Typer(
     name="issue",
@@ -115,11 +115,26 @@ RELATION_EDGE_COLUMNS: tuple[str, ...] = ("id", "type", "issue_id", "related_iss
 #: Columns of the row `issue comment` prints.
 COMMENT_TABLE_COLUMNS: tuple[str, ...] = ("id", "issue", "author", "created", "body")
 
+#: Columns of `issue history` and of the `HISTORY` section of `issue show --with`: the sentence
+#: a row reads as, never the stored pair.
+HISTORY_TABLE_COLUMNS: tuple[str, ...] = ("when", "actor", "event")
+
+#: How the two text columns of a history row are narrowed: 20 + 2 + 20 + 2 + 76 = 120 cells, the
+#: table budget. `WHEN` is fixed at 20 and gives nothing away.
+HISTORY_COLUMN_FORMATS: Mapping[str, output.ColumnFormat] = {
+    "actor": output.ColumnFormat(max_cells=20),
+    "event": output.ColumnFormat(max_cells=76),
+}
+
+#: The read's window, as the one flag of `issue history` may name it.
+HISTORY_LIMIT_DEFAULT = 50
+HISTORY_LIMIT_MAX = 100
+
 #: Section title of each collection and the columns of its table.
 SHOW_SECTIONS: dict[str, tuple[str, ...]] = {
     "comments": ("id", "author", "created", "body"),
     "relations": RELATION_TABLE_COLUMNS,
-    "history": ("when", "actor", "field", "from", "to"),
+    "history": HISTORY_TABLE_COLUMNS,
     "children": ("identifier", "title"),
 }
 
@@ -473,6 +488,52 @@ def show_command(
         raise fail(exc) from exc
 
     _emit_show(payload, detail, requested)
+
+
+@issue_app.command("history")
+def history_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    limit: int = typer.Option(
+        HISTORY_LIMIT_DEFAULT, "--limit", help="Newest rows to keep, 1-100 (default 50)."
+    ),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Event id, one per line."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """The story of one issue, one sentence per event, oldest first."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+    json_mode = output.options().json
+    quiet_mode = output.options().quiet
+
+    try:
+        _check_history_limit(limit)
+        page, issue_id = _run_history(db_flag=db if db is not None else root.db, ref=ref)
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    # `--limit` keeps the newest rows of the window and never reorders them: the cut is a log's,
+    # not the panel's, and the answer stays forward.
+    shown = page.rows[-limit:] if limit < len(page.rows) else page.rows
+    output.emit(
+        [_history_table_row(row) for row in shown],
+        table_cols=HISTORY_TABLE_COLUMNS,
+        table_formats=HISTORY_COLUMN_FORMATS,
+        json_obj={"items": [_history_element(row, issue_id) for row in shown]},
+        quiet_obj=[row.id for row in shown],
+    )
+    if not shown and not json_mode and not quiet_mode:
+        output.write_note("0 events")
+    elif len(shown) < page.window_size and not quiet_mode:
+        # The second number is the window the read returned, so on a full one it is a floor and
+        # this sentence never pretends to know how many events the issue has.
+        output.write_note(f"showing {len(shown)} of {page.window_size} events")
 
 
 @issue_app.command("edit")
@@ -938,25 +999,29 @@ def _collections_payload(
     could fill it — `relations` and `children` are read on every call — because the object answers
     what the caller asked for and nothing else.
     """
-    return {
-        name: [_collection_item(name, value) for value in values] if name in requested else []
-        for name, values in detail_collections(detail).items()
-    }
+    payload: dict[str, list[dict[str, Any]]] = {}
+    for name, values in detail_collections(detail).items():
+        if name not in requested:
+            payload[name] = []
+        elif name == "history":
+            payload[name] = _history_elements(detail)
+        else:
+            payload[name] = [_collection_item(name, value) for value in values]
+    return payload
 
 
 def _collection_item(name: str, value: Any) -> dict[str, Any]:
     """One element of one collection, in the shape its object has everywhere else.
 
     The four names are the closed set the command formats; `children` is the one whose element is
-    the identifier reference a parent already carries.
+    the identifier reference a parent already carries. `history` is assembled in the read's order
+    by `_history_elements`, because its element is resolved and a row costs a lookup.
     """
     if name == "comments":
         return _comment_canonical(value)
     if name == "relations":
         relation, _far = value
         return _relation_item(relation)
-    if name == "history":
-        return _history_item(value)
     return _identifier_ref(value)
 
 
@@ -1012,17 +1077,81 @@ def _relation_item(relation: Any) -> dict[str, Any]:
     }
 
 
-def _history_item(entry: IssueHistory) -> dict[str, Any]:
-    """The stored history row: the writer's field name and the two values as they were written."""
+def _history_page(detail: IssueDetail) -> HistoryPage:
+    """The one formatter's answer for the history window of one detail read.
+
+    The maps are the read's: `detail.states` resolves a state change (and carries the colour of
+    its dot), `detail.members` names an actor and `detail.history_parents` names a parent. The
+    function resolves nothing itself and costs no statement.
+    """
+    return history_rows(
+        detail.history,
+        states={state.id: state.name for state in detail.states},
+        members=detail.members,
+        parents=detail.history_parents,
+        state_colors={state.id: state.color for state in detail.states},
+    )
+
+
+def _history_table_row(row: HistoryRow) -> dict[str, Any]:
+    """One printed line of the story: the instant, the actor and the sentence."""
+    return {"when": wire_instant(row.created_at), "actor": row.actor_label, "event": row.sentence}
+
+
+def _history_element(row: HistoryRow, issue_id: str) -> dict[str, Any]:
+    """One `HistoryEntry`: the stored pair plus the three labels, ten keys in a fixed order.
+
+    `issue_id` is added here because a payload of one issue's page does not carry it and the
+    element does; the stored pair stays untouched so a caller that wants the raw key reads it.
+    """
     return {
-        "id": entry.id,
-        "issue_id": entry.issue_id,
-        "actor_id": entry.actor_id,
-        "field": entry.field,
-        "old_value": entry.old_value,
-        "new_value": entry.new_value,
-        "created_at": _iso(entry.created_at),
+        "id": row.id,
+        "issue_id": issue_id,
+        "actor_id": row.actor_id,
+        "field": row.field,
+        "old_value": row.old_value,
+        "new_value": row.new_value,
+        "created_at": wire_instant(row.created_at),
+        "old_label": row.old_label,
+        "new_label": row.new_label,
+        "actor_label": row.actor_label,
     }
+
+
+def _history_elements(detail: IssueDetail) -> list[dict[str, Any]]:
+    """Every row of the read's window as a `HistoryEntry`, in the read's own order.
+
+    The envelope of `issue show --json` publishes the read's order (newest first) because that
+    payload is the envelope; only the printed section and the standalone verb are forward.
+    """
+    by_id = {row.id: row for row in _history_page(detail).rows}
+    return [_history_element(by_id[entry.id], detail.issue.id) for entry in detail.history]
+
+
+def _check_history_limit(limit: int) -> None:
+    """`--limit` outside 1-100 is refused before any read, with the flag's own sentence.
+
+    The bound is the read's window, and the bucket is `issue list --limit`'s: one flag name with
+    two codes would be one flag name a caller has to read twice.
+    """
+    if not 1 <= limit <= HISTORY_LIMIT_MAX:
+        raise Validation(
+            f"--limit must be between 1 and {HISTORY_LIMIT_MAX}",
+            rule="LIMIT_RANGE",
+            field="limit",
+            value=limit,
+        )
+
+
+def _run_history(*, db_flag: str | None, ref: str) -> tuple[HistoryPage, str]:
+    """The history window of one issue, and the id its elements travel with.
+
+    The reference is resolved by the detail read, so the trash layer answers for it once: a
+    trashed identifier is not found, exactly as it is for `issue show --with history`.
+    """
+    db_path = _existing_db(db_flag)
+    detail = issue_detail(Database(db_path), ref, include=frozenset({"history"}))
+    return _history_page(detail), detail.issue.id
 
 
 def _relation_section_row(relation: Any, far: IssueListItem, *, asking_id: str) -> dict[str, Any]:
@@ -1479,7 +1608,13 @@ def _emit_show(payload: dict[str, Any], detail: IssueDetail, requested: tuple[st
             continue
         output.write_line("")
         output.write_line(name.upper())
-        output.write_line(output.render_table(rows, SHOW_SECTIONS[name]))
+        output.write_line(
+            output.render_table(
+                rows,
+                SHOW_SECTIONS[name],
+                formats=HISTORY_COLUMN_FORMATS if name == "history" else None,
+            )
+        )
 
 
 def _show_block(payload: dict[str, Any]) -> list[str]:
@@ -1539,16 +1674,7 @@ def _section_rows(name: str, detail: IssueDetail) -> list[dict[str, Any]]:
             for relation, far in detail.relations
         ]
     if name == "history":
-        return [
-            {
-                "when": _iso(entry.created_at),
-                "actor": _member_name(detail.members, entry.actor_id),
-                "field": entry.field,
-                "from": entry.old_value,
-                "to": entry.new_value,
-            }
-            for entry in detail.history
-        ]
+        return [_history_table_row(row) for row in _history_page(detail).rows]
     return [{"identifier": child.identifier, "title": child.title} for child in detail.children]
 
 

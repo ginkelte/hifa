@@ -346,10 +346,63 @@ tr.row-empty td { color: var(--text-muted); }
 }
 .comment-composer .btn { align-self: flex-start; }
 .stamp { color: var(--text-muted); font-size: 11px; }
-.history ul, .children ul, .relations ul { list-style: none; margin: 0; padding: 0; font-size: 12px; }
-.history li, .children li, .relations li { padding: 3px 0; border-bottom: 1px solid var(--border); }
-.history li:last-child, .children li:last-child, .relations li:last-child { border-bottom: 0; }
-.relation-type, .history-field { color: var(--text-muted); margin-right: 6px; }
+.children ul, .relations ul { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.children li, .relations li { padding: 3px 0; border-bottom: 1px solid var(--border); }
+.children li:last-child, .relations li:last-child { border-bottom: 0; }
+.relation-type { color: var(--text-muted); margin-right: 6px; }
+
+/* --- activity timeline -------------------------------------------------------------- */
+.history-list { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.history-item {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  min-height: 44px;
+  padding: 8px 0 8px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.history-item:last-child { border-bottom: 0; }
+.history-rail { position: absolute; left: 7px; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.history-dot {
+  position: absolute;
+  left: 4px;
+  top: 14px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.history-avatar {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 18px;
+  text-align: center;
+  overflow: hidden;
+}
+.history-sentence { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }
+.history-actor { font-weight: 600; }
+.history-time { flex: 0 0 auto; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.history-day {
+  position: sticky;
+  top: 0;
+  flex: 0 0 100%;
+  padding: 2px 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  background: var(--surface);
+}
+.history-floor { margin: 8px 0 0; font-size: 11px; }
+.history-all { margin-top: 8px; }
+.last-activity { margin: 4px 0 0; font-size: 12px; }
+.last-activity a { color: inherit; }
+
 
 /* --- quick add --------------------------------------------------------------------- */
 .quick-add { display: flex; gap: 8px; align-items: center; margin: 0 0 12px; }

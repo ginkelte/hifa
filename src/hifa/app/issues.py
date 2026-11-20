@@ -164,7 +164,7 @@ def _create_once(uow: UnitOfWork, cmd: CreateIssue, actor: Actor) -> Issue:
         tx.issues.set_labels(saved.id, [label.id for label in labels])
         tx.history.record(
             saved.id,
-            [("created", None, saved.identifier)],
+            [("created", None, None)],
             actor_id=actor.member_id,
             now=now,
         )
