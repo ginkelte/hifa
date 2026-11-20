@@ -94,9 +94,10 @@ SENTENCES: tuple[tuple[str, str | None, str | None, str], ...] = (
 )
 
 
-def test_the_grammar_covers_the_twenty_one_values_a_writer_stores() -> None:
-    covered = {field for field, _, _, _ in SENTENCES}
-    assert covered | {"project_id", "milestone_id", "cycle_id"} == {
+#: Every field `issue_history` can hold a row for, as SPEC-030 §2.4 names them. The three link
+#: columns are absent because nothing writes them yet (GAP-08, HIFA-90): they render the fallback.
+WRITER_FIELDS: frozenset[str] = frozenset(
+    {
         "created",
         "state_id",
         "title",
@@ -115,11 +116,28 @@ def test_the_grammar_covers_the_twenty_one_values_a_writer_stores() -> None:
         "canceled_at",
         "archived_at",
         "trashed",
-        "project_id",
-        "milestone_id",
-        "cycle_id",
     }
-    assert len(covered) == 18
+)
+
+
+def test_every_field_a_writer_stores_is_answered_by_the_grammar() -> None:
+    """The table lists the fields; the grammar has to answer each one with wording of its own.
+
+    This is the coverage assertion, and it asks `history_rows` — the code — for every sentence
+    instead of comparing the table to itself: a branch deleted from `_sentence` leaves its field
+    with no shape of its own and the row falls back to `changed <field>`, which fails here.
+    """
+    assert {field for field, _, _, _ in SENTENCES} == WRITER_FIELDS
+
+    for field in sorted(WRITER_FIELDS):
+        wordings = [
+            _page(_row(1, candidate, old, new)).rows[0].sentence
+            for candidate, old, new, _ in SENTENCES
+            if candidate == field
+        ]
+
+        assert wordings, f"{field} has no documented shape"
+        assert f"changed {field}" not in wordings, (field, wordings)
 
 
 @pytest.mark.parametrize(("field", "old", "new", "sentence"), SENTENCES)
@@ -137,10 +155,10 @@ def test_an_unknown_field_falls_back_to_its_own_name() -> None:
     assert page.rows[0].sentence == "changed mystery"
 
 
-def test_the_three_link_fields_have_no_value_a_writer_produces() -> None:
-    """A clear of an already empty column writes no row, so the value branch has no map."""
+def test_the_three_link_fields_fall_back_until_their_writers_land() -> None:
+    """No writer produces a value for these three (GAP-08, HIFA-90), so no sentence claims one."""
     for field in ("project_id", "milestone_id", "cycle_id"):
-        assert _page(_row(1, field, "X", None)).rows[0].sentence == f"changed {field}"
+        assert _page(_row(1, field, "X", "Y")).rows[0].sentence == f"changed {field}"
 
 
 def test_a_state_that_is_gone_renders_its_kind_and_not_the_key() -> None:
