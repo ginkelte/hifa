@@ -458,9 +458,11 @@ textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
 }
 
 /* --- search, error, toasts --------------------------------------------------------- */
-.search-page { display: flex; gap: 8px; padding: 16px; }
-.search-page input {
+.search-block { padding: 16px; }
+.search-form { display: flex; gap: 8px; }
+.search-form input {
   flex: 1;
+  min-width: 0;
   height: 30px;
   padding: 0 8px;
   background: var(--surface-2);
@@ -468,10 +470,26 @@ textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
   border-radius: 4px;
   color: var(--text);
 }
-.hits { list-style: none; margin: 0; padding: 0 16px; }
-.hits li { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
-.hit-title { color: var(--text); }
-.snippet { color: var(--text-muted); }
+.search-team-chip { display: flex; gap: 8px; align-items: center; padding: 8px 0 0; margin: 0; font-size: 12px; }
+.search-message, .search-heading { padding: 0 16px; }
+.search-heading { font-size: 12px; color: var(--text-muted); margin: 12px 0 4px; }
+.search-results { list-style: none; margin: 0; padding: 0 16px; }
+.search-results .hit { border-bottom: 1px solid var(--border); }
+/* A hit is a block, never a row of columns: at 320 px there is no width to share. */
+.hit-link { display: block; min-width: 0; padding: 6px 0; color: inherit; text-decoration: none; }
+.hit-link:hover .hit-title { color: var(--accent); }
+.hit-meta { display: flex; gap: 8px; font: 11px var(--mono); color: var(--text-muted); }
+.hit-title { display: block; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.hit-snippet {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.hit-snippet mark { background: transparent; color: var(--accent); }
 .error-page { padding: 48px 24px; }
 .error-status { font: 32px var(--mono); color: var(--text-muted); margin: 0; }
 .error-message { font-size: 15px; margin: 8px 0 16px; }

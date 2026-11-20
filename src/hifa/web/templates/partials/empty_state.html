@@ -1,1 +1,1 @@
-<span class="empty">Nothing here yet</span>
+<span class="empty{% if message_class is defined and message_class %} {{ message_class }}{% endif %}">{{ message if message is defined and message else "Nothing here yet" }}</span>

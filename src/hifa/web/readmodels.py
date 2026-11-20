@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
+from html import escape
+from typing import Any
 from urllib.parse import urlencode
 
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage
@@ -607,12 +609,127 @@ def team_nav_vm(team: object, *, issues_count: int, active: bool) -> dict[str, o
     return entry
 
 
+# --- search ---------------------------------------------------------------------------
+
+#: The two markers the snippet arrives with. They are the only markup this layer keeps.
+SEARCH_MARK_START = "<mark>"
+SEARCH_MARK_END = "</mark>"
+
+#: The sentence of the page's empty state, and the class each state's block carries.
+SEARCH_EMPTY_MESSAGE = "search the workspace"
+EMPTY_CLASS = "empty"
+ERROR_CLASS = "error"
+
+
+def _stamp_value(value: str) -> datetime | None:
+    """One ISO-8601 instant as a `datetime`, or `None` when it does not parse."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _snippet_html(snippet: str) -> str:
+    """Escapes every piece of a snippet and keeps the marker pair as the only markup.
+
+    The snippet arrives with the literal `<mark>`/`</mark>` around the terms and unescaped.
+    Splitting on the opening marker and escaping each piece is what makes the page print the
+    text once: escaping the whole string first would show `&lt;mark&gt;`, and inserting the raw
+    string would let a title carry its own markup into the document.
+    """
+    pieces = snippet.split(SEARCH_MARK_START)
+    rendered = escape(pieces[0])
+    for piece in pieces[1:]:
+        marked, _, rest = piece.partition(SEARCH_MARK_END)
+        rendered += f"{SEARCH_MARK_START}{escape(marked)}{SEARCH_MARK_END}{escape(rest)}"
+    return rendered
+
+
+def _search_hit_vm(hit: Any, now: datetime | None) -> dict[str, object]:
+    """One hit of the list: the six fields the CLI prints plus the keys the template needs."""
+    identifier = str(hit.identifier)
+    updated = _stamp_value(str(hit.updated_at))
+    state_type = str(hit.state_type)
+    priority = int(hit.priority)
+    try:
+        team_key = parse_identifier(identifier)[0]
+    except ValueError:
+        team_key = ""
+    url = f"/{team_key}/issue/{identifier}" if team_key else f"/{identifier}"
+    return {
+        "identifier": identifier,
+        "title": str(hit.title),
+        "snippet_html": _snippet_html(str(hit.snippet)),
+        "state_name": str(hit.state_name),
+        "state_type": state_type,
+        "priority": priority,
+        "priority_glyph": priority_glyph(priority),
+        "updated_label": _relative(updated, now),
+        "url": url,
+    }
+
+
+def build_search_vm(
+    *,
+    q: str,
+    page: Any = None,
+    refusal: Any = None,
+    teams: Sequence[Mapping[str, Any]] = (),
+    team_filter: dict[str, str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Template model of the search page: exactly one of its four states and all its keys.
+
+    `refusal` is the error the route caught; its sentence is composed by the edge's one
+    builder and stored here, so the template prints it like any other value. `page` is the
+    answer of the use case, or `None` when the request carried no query at all — which is the
+    empty state, not an error.
+    """
+    hits: list[dict[str, object]] = []
+    message: str | None = None
+    message_class: str | None = None
+    state = "empty"
+    autofocus = False
+
+    if refusal is not None:
+        from hifa.web.app import refusal_sentence
+
+        state = "error"
+        message = refusal_sentence(refusal)
+        message_class = ERROR_CLASS
+    elif not q.strip():
+        message = SEARCH_EMPTY_MESSAGE
+        message_class = EMPTY_CLASS
+        autofocus = True
+    elif page is not None and page.hits:
+        state = "results"
+        hits = [_search_hit_vm(hit, now) for hit in page.hits]
+    else:
+        state = "no_results"
+        message = f"nothing matches '{q}'"
+        message_class = EMPTY_CLASS
+
+    return {
+        "q": q,
+        "state": state,
+        "message": message,
+        "message_class": message_class,
+        "autofocus": autofocus,
+        "hits": hits,
+        "count": len(hits),
+        "teams": [{"key": str(team.get("key")), "name": str(team.get("name"))} for team in teams],
+        "team_filter": team_filter,
+    }
+
+
 __all__ = [
     "ATTACHMENT_SCHEMES",
     "DEFAULT_STATE_COLOR",
     "EDIT_FORM_FIELDS",
     "FILTER_KEYS",
     "PRIORITY_GLYPHS",
+    "SEARCH_EMPTY_MESSAGE",
+    "build_search_vm",
     "PRIORITY_LABELS",
     "SORT_LABELS",
     "SORT_OPTIONS",

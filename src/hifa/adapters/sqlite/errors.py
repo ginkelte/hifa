@@ -9,14 +9,33 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from hifa.domain.errors import Conflict, CorruptDatabase, HifaError, NotFound, Validation
+from hifa.domain.errors import (
+    Conflict,
+    CorruptDatabase,
+    DatabaseNotFound,
+    HifaError,
+    Validation,
+)
 
 logger = logging.getLogger(__name__)
 
 _NOT_MIGRATED_MARKERS = ("no such table", "no such view")
 _CORRUPT_MARKERS = ("file is not a database", "database disk image is malformed")
+_CORRUPT_DETAILS: tuple[str, ...] = (
+    "file is not a database",
+    "database disk image is malformed",
+)
 _BUSY_MARKERS = ("database is locked", "database table is locked", "database is busy")
 _READONLY_MARKERS = ("attempt to write a readonly database", "readonly database")
+
+
+def _detail_of(message: str) -> str:
+    """The message class of a corrupt-file error, never the raw driver text."""
+    low = message.lower()
+    for marker in _CORRUPT_DETAILS:
+        if marker in low:
+            return marker
+    return "file is not a database"
 
 
 def _integrity(exc: sqlite3.IntegrityError) -> HifaError:
@@ -72,12 +91,12 @@ def translate_sqlite_error(exc: sqlite3.Error) -> HifaError:
                 "database is not migrated", code="DB_NOT_MIGRATED", hint="hifa db migrate"
             )
         if "unable to open database file" in low:
-            return NotFound("database not found", resource="database", key=message)
+            return DatabaseNotFound("database not found", key=message)
         if any(marker in low for marker in _CORRUPT_MARKERS):
-            return CorruptDatabase("database is corrupt", code="DB_CORRUPT")
+            return CorruptDatabase(detail=_detail_of(message))
 
     if isinstance(exc, sqlite3.DatabaseError) and any(marker in low for marker in _CORRUPT_MARKERS):
-        return CorruptDatabase("database is corrupt", code="DB_CORRUPT")
+        return CorruptDatabase(detail=_detail_of(message))
 
     return HifaError("sqlite error", code="DB_ERROR", details={"sqlite": type(exc).__name__})
 

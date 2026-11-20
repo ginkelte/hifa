@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -58,6 +59,12 @@ from hifa.app.issues import (
     trash_issue,
     update_issue,
 )
+from hifa.app.search import (
+    SearchError,
+    SearchQuery,
+    parse_query,
+    search_issues,
+)
 from hifa.app.teams import list_states, update_state
 from hifa.domain.entities import Comment, Issue, Team, WorkflowState
 from hifa.domain.errors import Conflict, HifaError, InvalidTransition, NotFound, Validation
@@ -76,7 +83,6 @@ CSP = (
 IMMUTABLE = "public, max-age=31536000, immutable"
 SHORT_CACHE = "public, max-age=60"
 SHORT_CACHE_PATHS = frozenset({"/static/js/app.js", "/static/css/app.css"})
-SEARCH_UNAVAILABLE = "search is not implemented yet"
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 #: The only place the revision poll interval is written: the template prints it as
@@ -521,19 +527,62 @@ def issue_page(request: Request, team: str, ref: str) -> Response:
 
 
 @router.get("/search")
-def search_page(request: Request, q: str = "") -> HTMLResponse:
-    """`SearchService` does not exist yet: report it instead of faking a search."""
+def search_page(request: Request, q: str = "", team: str = "") -> HTMLResponse:
+    """The workspace search: four states and no fragment.
+
+    A page with no query is its empty state and the use case is not called; a valid query with
+    no hit is a `200` with the no-results block; a query the component refuses is a `422` with
+    the sentence of the refusal and the query kept in the box. The `team` parameter is the one
+    filter the page exposes and a key it does not know is not an error.
+    """
+    db = _database(request)
+    now = datetime.now(UTC)
+    teams = _teams_vm(request)
+    team_filter = _search_team_filter(teams, team)
+    page_vm = _page(request, title="Search \u00b7 hifa", nav="search")
+
     if not q.strip():
-        return _error_page(
-            request,
-            status_code=400,
-            message="type something to search",
-            back_url="/",
-            title="Search",
+        vm = readmodels.build_search_vm(q=q, teams=teams, team_filter=team_filter)
+        return _render(request, "search.html", _search_context(page_vm, vm))
+
+    try:
+        parsed = parse_query(q)
+        query = SearchQuery(
+            text=parsed.text,
+            filters=replace(parsed.filters, team=team or None),
+            count=False,
         )
-    return _error_page(
-        request, status_code=501, message=SEARCH_UNAVAILABLE, back_url="/", title="Search"
-    )
+        page = search_issues(db, query, now=now)
+    except SearchError as exc:
+        vm = readmodels.build_search_vm(
+            q=q, refusal=exc, teams=teams, team_filter=team_filter, now=now
+        )
+        return _render(request, "search.html", _search_context(page_vm, vm), status_code=422)
+
+    vm = readmodels.build_search_vm(q=q, page=page, teams=teams, team_filter=team_filter, now=now)
+    return _render(request, "search.html", _search_context(page_vm, vm))
+
+
+def _search_context(page: dict[str, object], vm: dict[str, object]) -> dict[str, object]:
+    """The template's context: the page, the model and the two keys of the empty-state block.
+
+    The block is one partial (`partials/empty_state.html`) shared with the list's empty row,
+    and it reads `message`/`message_class` from the context it is included in, so the two keys
+    travel next to `vm` instead of being reached through it.
+    """
+    return {"page": page, "vm": vm, "message": vm["message"], "message_class": vm["message_class"]}
+
+
+def _search_team_filter(teams: list[dict[str, object]], team: str) -> dict[str, str] | None:
+    """The chip above the results: the team's key and name, or the key alone when unknown."""
+    wanted = team.strip()
+    if not wanted:
+        return None
+    for entry in teams:
+        key = str(entry.get("key", ""))
+        if key.casefold() == wanted.casefold():
+            return {"key": key, "name": str(entry.get("name", key))}
+    return {"key": wanted.upper(), "name": wanted.upper()}
 
 
 # --- fragments -------------------------------------------------------------------------
@@ -1261,8 +1310,13 @@ CLOSE_VERBS = frozenset({"move", "archive"})
 #: quotes it instead of keeping the second copy that could drift from the first.
 COMMENT_RULES = frozenset({"BODY_EMPTY", "COMMENT_PARENT_MISMATCH", "COMMENT_DEPTH_EXCEEDED"})
 
+#: The rules whose sentence names an issue, and therefore cannot be built without one.
+_ISSUE_NAMED_RULES = frozenset({"ISSUE_ARCHIVED", "ISSUE_TRASHED", "CLOSE_WITH_OPEN_CHILDREN"})
 
-def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | None) -> str:
+
+def refusal_sentence(
+    refusal: HifaError | None, *, verb: str | None = None, identifier: str | None = None
+) -> str:
     """Compose the one line a refused write shows the reader.
 
     `refusal` is the error a route caught, or `None` for the one refusal no use case produces:
@@ -1284,10 +1338,16 @@ def refusal_sentence(refusal: HifaError | None, *, verb: str, identifier: str | 
     error's own message. Two sentences of this layer quote the domain rather than restate it,
     because the number they carry is not this edge's to format: the fallback, and
     `COMMENT_DEPTH_EXCEEDED`, whose bound the rule builds from `MAX_COMMENT_DEPTH`.
+
+    Called with no keyword at all it is the **request arm**: a refusal about the query itself
+    and not about a row — `GET /search` hands it the `SearchError` it caught — and it answers
+    the fallback sentence, because no rule of the write catalogue applies to a query.
     """
     if refusal is None:
         return f"confirm the {verb} of {identifier}"
     rule = getattr(refusal, "rule", None)
+    if rule in _ISSUE_NAMED_RULES and identifier is None:
+        raise ValueError(f"{rule} names an issue and no identifier was given")
     if rule == "ISSUE_ARCHIVED":
         return f"{identifier} is archived; restore it first"
     if rule == "ISSUE_TRASHED":

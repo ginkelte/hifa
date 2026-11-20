@@ -267,8 +267,18 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(name="label.update", cli="label update", web=None, debt="HIFA-62"),
     Capability(name="label.archive", cli="label archive", web=None, debt="HIFA-62"),
     # --- search ---------------------------------------------------------------------------
-    # `GET /search` is a 501 placeholder until T-11, which also lands `hifa search`.
-    Capability(name="search.issues", cli=None, web=("GET", "/search"), debt="HIFA-7"),
+    # Both edges exist: `hifa search` and the page. The ticket that closes a gap is not the
+    # ticket that is the gap, so this row carries neither `debt=` nor `reason=`.
+    Capability(name="search.issues", cli="search", web=("GET", "/search")),
+    # --- database maintenance -------------------------------------------------------------
+    # A rebuild has no dashboard meaning: it repairs the index of the local file and the
+    # search page then reads the same rows it always read.
+    Capability(
+        name="db.reindex",
+        cli="db reindex",
+        reason="rebuilds the FTS index of the local database: an operational command with "
+        "no dashboard meaning",
+    ),
 )
 
 
