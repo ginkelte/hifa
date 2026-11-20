@@ -315,8 +315,8 @@ tr.row-empty td { color: var(--text-muted); }
 .meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
 .meta dt { color: var(--text-muted); }
 .meta dd { margin: 0; color: var(--text); }
-.comments, .children, .relations, .attachments, .history { margin-top: 24px; }
-.comments h2, .children h2, .relations h2, .attachments h2, .history h2 {
+.comments, .children, .relations, .history { margin-top: 24px; }
+.comments h2, .children h2, .relations h2, .history h2 {
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 500;
@@ -346,9 +346,9 @@ tr.row-empty td { color: var(--text-muted); }
 }
 .comment-composer .btn { align-self: flex-start; }
 .stamp { color: var(--text-muted); font-size: 11px; }
-.history ul, .children ul, .relations ul, .attachments ul { list-style: none; margin: 0; padding: 0; font-size: 12px; }
-.history li, .children li, .relations li, .attachments li { padding: 3px 0; border-bottom: 1px solid var(--border); }
-.history li:last-child, .children li:last-child, .relations li:last-child, .attachments li:last-child { border-bottom: 0; }
+.history ul, .children ul, .relations ul { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.history li, .children li, .relations li { padding: 3px 0; border-bottom: 1px solid var(--border); }
+.history li:last-child, .children li:last-child, .relations li:last-child { border-bottom: 0; }
 .relation-type, .history-field { color: var(--text-muted); margin-right: 6px; }
 
 /* --- quick add --------------------------------------------------------------------- */
