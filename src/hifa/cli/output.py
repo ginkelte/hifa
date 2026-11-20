@@ -140,14 +140,23 @@ def _terminal_width() -> int:
     return min(width, MAX_TABLE_WIDTH)
 
 
-def render_table(rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> str:
-    """Text table: UPPERCASE header, two spaces, numerics right-aligned."""
+def render_table(
+    rows: Sequence[Mapping[str, Any]],
+    columns: Sequence[str],
+    *,
+    formats: Mapping[str, ColumnFormat] | None = None,
+) -> str:
+    """Text table: UPPERCASE header, two spaces, numerics right-aligned.
+
+    `formats` adds or overrides the rule of a column by its header name; a table that narrows
+    a column no other table narrows (`search`'s `STATE`) declares it here and nowhere else.
+    """
+    rules: dict[str, ColumnFormat] = dict(_TRUNCATED_COLUMNS)
+    if formats:
+        rules.update({name.upper(): rule for name, rule in formats.items()})
     headers = [column.upper() for column in columns]
     body = [
-        [
-            _fit_cell(_cell(row.get(column)), _TRUNCATED_COLUMNS.get(column.upper(), _PLAIN))
-            for column in columns
-        ]
+        [_fit_cell(_cell(row.get(column)), rules.get(column.upper(), _PLAIN)) for column in columns]
         for row in rows
     ]
 
@@ -156,11 +165,9 @@ def render_table(rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> s
         for index, value in enumerate(line):
             widths[index] = max(widths[index], len(value))
 
-    # Maximum width: only the columns of `_TRUNCATED_COLUMNS` give way, with `…` (U+2026).
+    # Maximum width: only the narrowed columns give way, with `…` (U+2026).
     while sum(widths) + 2 * (len(widths) - 1) > _terminal_width():
-        candidates = [
-            index for index, column in enumerate(columns) if column.upper() in _TRUNCATED_COLUMNS
-        ]
+        candidates = [index for index, column in enumerate(columns) if column.upper() in rules]
         if not candidates:
             break
         index = max(candidates, key=lambda candidate: widths[candidate])
@@ -254,6 +261,7 @@ def emit(
     obj: Any,
     *,
     table_cols: Sequence[str] | None = None,
+    table_formats: Mapping[str, ColumnFormat] | None = None,
     meta: Mapping[str, Any] | None = None,
     json_obj: Any = None,
     quiet_obj: Any = None,
@@ -286,7 +294,7 @@ def emit(
             return
         columns = list(table_cols or _columns_for(items[0]))
         rows = [_row_dict(item) for item in items]
-        write_line(render_table(rows, columns))
+        write_line(render_table(rows, columns, formats=table_formats))
         return
 
     payload = _row_dict(obj)
@@ -304,7 +312,7 @@ def emit(
         for key in columns:
             write_line(f"{key:<{width}}{_cell(payload.get(key))}")
         return
-    write_line(render_table([payload], columns))
+    write_line(render_table([payload], columns, formats=table_formats))
 
 
 def _row_dict(obj: Any) -> dict[str, Any]:

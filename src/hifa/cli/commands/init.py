@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
-import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -19,8 +18,8 @@ import typer
 
 from hifa.adapters.clock import SystemClock
 from hifa.adapters.idgen import UlidGen
-from hifa.adapters.sqlite.connection import open_db
-from hifa.adapters.sqlite.migrate import MAX_VERSION, apply_migrations
+from hifa.adapters.sqlite.connection import open_db, open_probe
+from hifa.adapters.sqlite.migrate import apply_migrations
 from hifa.adapters.sqlite.uow import UnitOfWork
 from hifa.app.teams import (
     DEFAULT_LABELS,
@@ -48,7 +47,7 @@ from hifa.config import (
     slugify,
     write_config_file,
 )
-from hifa.domain.errors import HifaError, SchemaTooNew, Validation
+from hifa.domain.errors import HifaError, Validation
 
 
 def init_command(
@@ -152,7 +151,7 @@ def _run_init(
         )
 
     created_dir = _ensure_db_dir(db_path.parent)
-    is_new = _inspect_existing(db_path)
+    is_new = _inspect_existing(db_path, force=force)
     work_path = _work_path(db_path, is_new)
 
     _migrate(work_path, backup=not is_new)
@@ -219,8 +218,15 @@ def _ensure_db_dir(directory: Path) -> bool:
     return True
 
 
-def _inspect_existing(db_path: Path) -> bool:
-    """`True` when the database is new; validates an existing one before writing."""
+def _inspect_existing(db_path: Path, *, force: bool) -> bool:
+    """`True` when the database is new; refuses a file that is not a hifa database.
+
+    The file is identified on the read-only probe and **before** the migrator runs: the schema
+    of the migration would create `workspace` on any `user_version`-0 file, so a probe after it
+    could never fire and a foreign file would be given the whole hifa schema. An empty file is
+    not an error: it carries no object at all and is seeded like a missing one. `--force` skips
+    the marker verdict and seeds whatever the file is.
+    """
     if not db_path.exists():
         return True
     if db_path.is_dir():
@@ -229,41 +235,20 @@ def _inspect_existing(db_path: Path) -> bool:
             code="config_invalid_value",
             field="db",
         )
-    if db_path.stat().st_size == 0:
-        return True
 
-    conn = open_db(db_path, readonly=True)
+    probe = open_probe(db_path)
     try:
-        has_workspace = (
-            conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace'"
-            ).fetchone()
-            is not None
-        )
-        (version,) = conn.execute("PRAGMA user_version").fetchone()
-    except sqlite3.DatabaseError as exc:
-        raise Validation(
-            f"cannot read the database {db_path}: {exc}",
-            rule="DATABASE_UNREADABLE",
-            code="corrupt_database",
-            field="db",
-        ) from exc
+        if not probe.objects:
+            return True
+        if "workspace" not in probe.tables and not force:
+            raise Validation(
+                f"the file is not a hifa database (the workspace table is missing): {db_path}",
+                rule="NOT_A_HIFA_DATABASE",
+                code="not_a_hifa_database",
+                field="db",
+            )
     finally:
-        conn.close()
-
-    if not has_workspace:
-        raise Validation(
-            f"the file is not a hifa database (the workspace table is missing): {db_path}",
-            rule="NOT_A_HIFA_DATABASE",
-            code="not_a_hifa_database",
-            field="db",
-        )
-    if int(version) > MAX_VERSION:
-        raise SchemaTooNew(
-            f"the database is at version {version} while this binary reaches {MAX_VERSION}",
-            hint="upgrade hifa",
-            details={"user_version": int(version), "max_version": MAX_VERSION},
-        )
+        probe.conn.close()
     return False
 
 

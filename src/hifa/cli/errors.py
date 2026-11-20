@@ -16,7 +16,13 @@ import typer
 
 from hifa.cli import output
 from hifa.config import ConfigError
-from hifa.domain.errors import HifaError
+from hifa.domain.errors import (
+    CorruptDatabase,
+    DatabaseNotFound,
+    Fts5Unavailable,
+    HifaError,
+    NotAHifaDatabase,
+)
 
 EXIT_OK = 0
 EXIT_VALIDATION = 2
@@ -34,6 +40,8 @@ _JSON_CODES: dict[str, str] = {
     "INVALID_TRANSITION": "invalid_transition",
     "HIFA_ERROR": "internal_error",
     "READ_ONLY_UOW": "conflict",
+    "DB_READONLY": "DB_READONLY",
+    "DB_BUSY": "DB_BUSY",
     "KEY_INVALID": "validation_error",
     "TEAM_KEY_INVALID": "validation_error",
     "TEAM_NAME_INVALID": "validation_error",
@@ -58,8 +66,17 @@ _JSON_CODES: dict[str, str] = {
 
 #: CLI codes whose message is already the whole sentence: the code is not repeated on
 #: `stderr` (it stays in the `--json` envelope and in the exit code).
-# Codes whose sentence already names what is missing, so no `(field: …)` suffix is added.
+#: Codes whose message already names what is missing, so no `(field: …)` suffix is added.
 _NO_FIELD_SUFFIX_CODES: frozenset[str] = frozenset({"missing_context"})
+
+#: The classes whose message *is* the sentence of the catalog: the code is not appended to it.
+#: They are the verdicts of the database layer, where the code and the sentence say one thing.
+_SELF_SPELLED_CLASSES: tuple[type[HifaError], ...] = (
+    DatabaseNotFound,
+    CorruptDatabase,
+    NotAHifaDatabase,
+    Fts5Unavailable,
+)
 
 
 _UNPREFIXED_CLI_CODES: frozenset[str] = frozenset(
@@ -140,7 +157,7 @@ def error_message_for(exc: BaseException) -> str:
     if isinstance(exc, HifaError):
         message = exc.message
         code = getattr(exc, "code", "")
-        if code and code != code.upper():
+        if code and code != code.upper() and not isinstance(exc, _SELF_SPELLED_CLASSES):
             message = f"{message} [{code}]"
         return message
     return f"internal error: {type(exc).__name__}: {exc}"
