@@ -15,7 +15,7 @@ import typer
 
 from hifa.cli import output
 from hifa.config import ConfigError
-from hifa.domain.errors import HifaError
+from hifa.domain.errors import HifaError, NotFound
 
 EXIT_OK = 0
 EXIT_VALIDATION = 2
@@ -149,7 +149,16 @@ def error_field_for(exc: BaseException) -> str | None:
     return getattr(exc, "field", None)
 
 
-def error_details_for(exc: BaseException) -> dict[str, object]:
+def error_details_for(exc: BaseException) -> dict[str, object] | None:
+    """`details` of the envelope: `null` for a 404, the mapping otherwise.
+
+    A 404 publishes the noun of what is missing in `field` and the key in `message`, so the
+    `resource`/`key` mapping the exception carries stays an accessor and is never forwarded: one
+    fact, one place. A refusal keeps its rule/field/value mapping, which is where the rule the
+    user has to fix travels.
+    """
+    if isinstance(exc, NotFound):
+        return None
     details = getattr(exc, "details", None)
     if isinstance(details, dict):
         return dict(details)
@@ -157,7 +166,7 @@ def error_details_for(exc: BaseException) -> dict[str, object]:
 
 
 def error_payload(exc: BaseException) -> dict[str, object]:
-    """`--json` error object."""
+    """`--json` error object: the four keys of the envelope, none of them optional."""
     payload: dict[str, object] = {
         "code": error_code_for(exc),
         "message": error_message_for(exc),

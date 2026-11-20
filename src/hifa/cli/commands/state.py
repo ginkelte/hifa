@@ -250,7 +250,7 @@ def _neighbor_id(uow: UnitOfWork, team_ref: str, name: str | None) -> str | None
     for summary in list_states(uow, team_ref):
         if summary.state.name.casefold() == wanted.casefold() or summary.state.id == wanted:
             return summary.state.id
-    raise NotFound(resource="workflow_state", key=wanted)
+    raise NotFound(resource="state", key=wanted)
 
 
 def _anchor_position(
@@ -285,7 +285,7 @@ def _anchor_position(
         None,
     )
     if anchor is None:
-        raise NotFound(resource="workflow_state", key=wanted)
+        raise NotFound(resource="state", key=wanted)
     field_name = "before" if before is not None else "after"
     if anchor.id == moving_id:
         raise Validation(

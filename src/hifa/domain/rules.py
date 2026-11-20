@@ -331,20 +331,26 @@ def validate_relation_scope(source: Issue, target: Issue) -> None:
 
 
 def validate_label_scope(issue_team_id: str, label: Label) -> None:
-    """Rejects retired labels (`LABEL_RETIRED`) and cross-team labels (`LABEL_TEAM_MISMATCH`)."""
+    """Rejects retired labels (`LABEL_RETIRED`) and cross-team labels (`LABEL_TEAM_MISMATCH`).
+
+    The two refusals are different kinds: a cross-team label is a bad argument (a `Validation`),
+    while a retired one exists and is well referenced — the state of the row contradicts the
+    write, so it is a `Conflict`.
+    """
     if label.retired_at is not None:
-        raise _reject(
-            "label is retired",
-            "LABEL_RETIRED",
-            "label_id",
-            label.id,
-            retired_at=label.retired_at.isoformat(),
+        raise Conflict(
+            f"label {label.name} is retired",
+            rule="LABEL_RETIRED",
+            field="label",
+            value=label.name,
+            details={"label_id": label.id, "retired_at": label.retired_at.isoformat()},
+            code="LABEL_RETIRED",
         )
     if label.team_id not in (None, issue_team_id):
         raise _reject(
             "label belongs to another team",
             "LABEL_TEAM_MISMATCH",
-            "label_id",
+            "label",
             label.id,
             issue_team_id=issue_team_id,
             label_team_id=label.team_id,

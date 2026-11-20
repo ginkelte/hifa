@@ -105,6 +105,16 @@ class NotFound(HifaError):
     def key(self) -> str:
         return self._key
 
+    @property
+    def field(self) -> str | None:
+        """The noun of what does not exist: the `field` every edge publishes for a 404.
+
+        It is derived from `resource` and no raise site passes it, so a missing label answers
+        `label`, a label the issue does not wear answers `label_link`, and the two edges cannot
+        disagree about one input.
+        """
+        return self._resource
+
 
 class Conflict(HifaError):
     """Uniqueness violation or logical duplicate. CLI exit 4, HTTP 409."""

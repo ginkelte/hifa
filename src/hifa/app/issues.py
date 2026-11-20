@@ -391,7 +391,7 @@ def move_issue(uow: UnitOfWork, cmd: MoveIssue, actor: Actor) -> Issue:
     reorders inside the current column. The position comes from the neighbors of the target
     column, and a column whose float gap is gone is rebalanced once in the same transaction.
 
-    raises: `NotFound(issue|workflow_state|neighbor)`,
+    raises: `NotFound(issue|state|neighbor)`,
     `Validation(STATE_TEAM_MISMATCH|STATE_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|POSITION_NEIGHBOR`
     `|POSITION_OUT_OF_ORDER|RANKING_EXHAUSTED|ISSUE_TRASHED)`, `InvalidTransition(ISSUE_ARCHIVED)`
     """
@@ -408,7 +408,7 @@ def _move_once(uow: UnitOfWork, cmd: MoveIssue, actor: Actor) -> Issue:
         target = (
             current
             if cmd.target_state is None
-            else _target_state(tx, issue, cmd.target_state, resource="workflow_state")
+            else _target_state(tx, issue, cmd.target_state, resource="state")
         )
         rules.validate_transition(current, target, _open_children(tx, issue, target))
 

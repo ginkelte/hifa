@@ -54,7 +54,7 @@ class StateRepo(BaseRepo):
     def require(self, state_id: str) -> WorkflowState:
         state = self.get(state_id)
         if state is None:
-            raise NotFound(resource="workflow_state", key=state_id)
+            raise NotFound(resource="state", key=state_id)
         return state
 
     def get_by_name(self, team_id: str, name: str) -> WorkflowState | None:
@@ -135,7 +135,7 @@ class StateRepo(BaseRepo):
             ),
         )
         if row is None:
-            raise NotFound(resource="workflow_state", key=state.id)
+            raise NotFound(resource="state", key=state.id)
         return state_from_row(row)
 
     def archive(self, state_id: str, at: object) -> None:

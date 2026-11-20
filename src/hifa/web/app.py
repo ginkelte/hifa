@@ -673,7 +673,7 @@ def state_position(
         with uow.read() as tx:
             state = tx.states.get(state_id)
         if state is None:
-            raise NotFound(resource="workflow_state", key=state_id)
+            raise NotFound(resource="state", key=state_id)
         neighbours = [
             summary.state
             for summary in list_states(uow, state.team_id)

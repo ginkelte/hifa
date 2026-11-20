@@ -479,16 +479,22 @@ def test_validate_label_scope_accepts_workspace_label(label: Label, team: Team) 
 
 
 def test_validate_label_scope_rejects_label_from_other_team(label: Label, other_team: Team) -> None:
+    """A cross-team label is a bad argument: exit 2, and the field names the label."""
     with pytest.raises(Validation) as excinfo:
         rules.validate_label_scope(other_team.id, label)
     assert excinfo.value.rule == "LABEL_TEAM_MISMATCH"
+    assert excinfo.value.field == "label"
+    assert excinfo.value.exit_code == 2
 
 
 def test_validate_label_scope_rejects_retired_label(label: Label, team: Team) -> None:
+    """A retired label is a state conflict, not a bad argument: exit 4, not exit 2."""
     retired = label.model_copy(update={"retired_at": NOW})
-    with pytest.raises(Validation) as excinfo:
+    with pytest.raises(Conflict) as excinfo:
         rules.validate_label_scope(team.id, retired)
     assert excinfo.value.rule == "LABEL_RETIRED"
+    assert excinfo.value.code == "LABEL_RETIRED"
+    assert excinfo.value.exit_code == 4
 
 
 # --- archivar team --------------------------------------------------------------------

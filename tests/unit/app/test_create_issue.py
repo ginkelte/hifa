@@ -385,11 +385,12 @@ def test_missing_label_is_rejected() -> None:
 
 
 def test_retired_label_is_rejected() -> None:
+    """A retired label exists and is well referenced: the refusal is a state conflict."""
     retired = Label(
         id="L9", workspace_id="WS", team_id="T1", name="old", color="#000000", retired_at=NOW
     )
     uow, _ = build(labels=[retired])
-    with pytest.raises(Validation) as caught:
+    with pytest.raises(Conflict) as caught:
         create_issue(uow, CreateIssue(team="ENG", title="x", labels=("L9",)), Actor())
     assert caught.value.rule == "LABEL_RETIRED"
 

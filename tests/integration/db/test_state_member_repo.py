@@ -40,7 +40,7 @@ def test_state_get_by_name_and_require(world) -> None:
         with pytest.raises(NotFound) as exc:
             tx.states.require("no-existe")
 
-    assert exc.value.resource == "workflow_state"
+    assert exc.value.resource == "state"
 
 
 def test_state_update_and_archive(world) -> None:
