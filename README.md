@@ -152,7 +152,7 @@ gap-free and never reused — not even after an issue is trashed.
 | **Optional dashboard** | board, list, issue detail, quick add, draggable columns. FastAPI + Jinja2 + htmx + Alpine, all vendored: offline, no Node, strict CSP |
 | **One-command bootstrap** | `hifa init` seeds workspace, team, states, labels and your local user. Idempotent |
 | **Yours to move** | one file. `cp`, `rsync`, `git`, or drop it on a USB stick. WAL mode so a read never blocks a write |
-| **Tested like a product** | 1600 tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
+| **Tested like a product** | 1625 collected tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
 
 ## CLI surface
 
@@ -353,7 +353,7 @@ git clone https://github.com/ginkelte/hifa && cd hifa
 uv sync --extra web --extra test
 
 ruff check . && ruff format --check .   # style
-pytest                                  # 1600 tests: unit, integration, e2e (CLI and web)
+pytest                                  # 1625 tests collected: unit, integration, e2e (CLI and web)
 lint-imports                            # the A1/A2 contracts
 python scripts/spec_contract_check.py --all   # spec ↔ code drift
 python scripts/check_edge_parity.py     # CLI vs web capability parity
@@ -478,9 +478,9 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 
 | | |
 |---|---|
-| Tests | **1600** passing (`pytest`: unit, integration, e2e CLI and web) |
+| Tests | **1625** collected by `pytest` (1624 passing, 1 skipped): unit, integration, e2e CLI and web |
 | Code | ~16.5k lines in `src/`, ~22.7k in `tests/` |
-| Specs | 18 documents · 228 Gherkin scenarios (`specs/acceptance/`) · 62 recorded decisions (`specs/DECISIONS.md`) |
+| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 70 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
 | Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `serve` (board, list, detail, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |
