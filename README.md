@@ -515,8 +515,8 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 | | |
 |---|---|
 | Tests | **1815** collected by `pytest` (1815 passing, 0 skipped): unit, integration, e2e CLI and web, plus one perf budget over 10 000 rows |
-| Code | ~18.9k lines in `src/` (18 880), ~26.3k in `tests/` (26 342), Python only |
-| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 72 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
+| Code | ~18.9k lines in `src/` (18 919), ~26.4k in `tests/` (26 419), Python only |
+| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 73 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
 | Shipped | `init`, `issue create`, `issue show` (`--with`), `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `search`, `db reindex`, `serve` (board, list, detail, search, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |
