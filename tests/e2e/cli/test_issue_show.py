@@ -524,12 +524,26 @@ def test_show_accepts_the_ulid_of_the_issue(cli: Cli) -> None:
 
 
 def test_show_with_a_nonexistent_reference_is_not_found(cli: Cli) -> None:
-    """A reference that resolves nowhere is the verb's one `3`, with the noun in `field`."""
-    result = cli.run("issue", "show", "ENG-999", "--json")
+    """A reference that resolves nowhere is the verb's one `3`, with the noun in `field`.
+
+    The scenario of SPEC-050 §7 asserts the sentence `stderr` carries, not only the code, so the
+    human line is read here byte for byte — `does not exist`, the quoted reference and the `field`
+    the catalogue's `NotFound` row publishes — and `stdout` is empty because a refusal writes
+    nothing a caller could mistake for an object.
+    """
+    result = cli.run("issue", "show", "ENG-999")
 
     assert result.exit_code == 3, out(result)
-    assert error_of(result)["code"] == "not_found"
-    assert error_of(result)["field"] == "issue"
+    assert result.stdout == ""
+    assert result.stderr == "hifa: issue 'ENG-999' does not exist (field: issue)\n"
+
+    envelope = cli.run("issue", "show", "ENG-999", "--json")
+
+    assert envelope.exit_code == 3, out(envelope)
+    assert error_of(envelope)["code"] == "not_found"
+    assert error_of(envelope)["field"] == "issue"
+    assert error_of(envelope)["message"] == "issue 'ENG-999' does not exist"
+    assert error_of(envelope)["details"] is None
 
 
 def test_the_history_entries_resolve_the_actor_and_keep_the_stored_values(cli: Cli) -> None:

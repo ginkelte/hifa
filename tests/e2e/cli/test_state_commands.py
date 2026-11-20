@@ -248,10 +248,11 @@ def test_update_to_a_duplicate_name_exits_four(sandbox: Path) -> None:
 
 
 def test_update_an_unknown_state_exits_three(sandbox: Path) -> None:
+    """The refusal is the catalogue's `NotFound` sentence of SPEC-050 §6, on `stderr`."""
     result = run("state", "update", "Nope", "--name", "Whatever")
 
     assert result.exit_code == 3, out(result)
-    assert "not found" in out(result)
+    assert result.stderr == "hifa: state 'Nope' does not exist (field: state)\n"
 
 
 def test_update_with_json_and_quiet_exits_two(sandbox: Path) -> None:
