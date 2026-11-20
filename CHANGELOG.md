@@ -1,3 +1,10 @@
+# [0.13.0](https://github.com/ginkelte/hifa/compare/v0.12.0...v0.13.0) (2026-11-20)
+
+
+### Features
+
+* **cli:** issue show, its four collections and the refusals that name what is missing (HIFA-49) ([#37](https://github.com/ginkelte/hifa/issues/37)) ([ea07308](https://github.com/ginkelte/hifa/commit/ea073080d344d4cf67592a02aec131fae65644e8))
+
 # [0.12.0](https://github.com/ginkelte/hifa/compare/v0.11.0...v0.12.0) (2026-11-20)
 
 
