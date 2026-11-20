@@ -34,6 +34,20 @@ BLOCK_KEYS: tuple[str, ...] = (
 #: The four collection keys of the detail payload, in the order it appends them.
 COLLECTION_KEYS: tuple[str, ...] = ("comments", "relations", "history", "children")
 
+#: Keys of `HistoryEntry`, the element of the `history` collection, in the order it declares.
+HISTORY_KEYS: tuple[str, ...] = (
+    "id",
+    "issue_id",
+    "actor_id",
+    "field",
+    "old_value",
+    "new_value",
+    "created_at",
+    "old_label",
+    "new_label",
+    "actor_label",
+)
+
 #: The sentence `--with attachments` is refused with, byte for byte.
 ATTACHMENTS_REFUSAL = "hifa: --with attachments has no payload in this version (field: with)"
 
@@ -80,7 +94,8 @@ def add_history(db: Path, identifier: str, count: int) -> None:
     """`count` history rows stamped in the future, the newest carrying the field `title`.
 
     The writes the commands make are stamped by the system clock, so the fixture has to sit after
-    it for the cap and the order to be observable at all.
+    it for the cap and the order to be observable at all. The newest row is a title change, so the
+    forward section ends with the sentence that change reads as.
     """
     with sqlite3.connect(db) as conn:
         (issue_id,) = conn.execute(
@@ -90,7 +105,7 @@ def add_history(db: Path, identifier: str, count: int) -> None:
             (issue_id, f"field{index:03d}", None, "value", _stamp(index))
             for index in range(count - 1)
         ]
-        rows.append((issue_id, "title", "Old", "New", "2030-01-02T00:00:00Z"))
+        rows.append((issue_id, "title", "Old", "Fix SSO login", "2030-01-02T00:00:00Z"))
         conn.executemany(
             "INSERT INTO issue_history"
             " (issue_id, actor_id, field, old_value, new_value, created_at)"
@@ -234,8 +249,8 @@ def test_the_children_section_lists_the_live_children_only(cli: Cli) -> None:
     assert set(children[0]) == {"id", "identifier", "title"}
 
 
-def test_the_history_section_is_newest_first_and_capped_at_100(cli: Cli) -> None:
-    """The cap is the read's, and the order is `created_at` descending with the id beside it."""
+def test_the_history_section_prints_the_story_oldest_first_and_at_most_100(cli: Cli) -> None:
+    """The cap is the read's window, the order is forward, and the cells are sentences."""
     cli.create("Busy")
     add_history(cli.db, "ENG-1", 120)
 
@@ -243,8 +258,11 @@ def test_the_history_section_is_newest_first_and_capped_at_100(cli: Cli) -> None
 
     assert result.exit_code == 0, out(result)
     rows = sections(result)["HISTORY"]
+    assert rows[0].split() == ["WHEN", "ACTOR", "EVENT"]
     assert len(rows) == 101
-    assert "title" in rows[1]
+    assert rows[-1].endswith("changed the title to \u201cFix SSO login\u201d")
+    assert "field000" not in result.stdout
+    assert "state_id" not in result.stdout
 
 
 # --- the collections, through the envelope -----------------------------------------------
@@ -288,6 +306,20 @@ def test_a_collection_that_was_not_requested_is_an_empty_list(cli: Cli) -> None:
 
     assert document["children"] == []
     assert document["relations"] == []  # requested nowhere, and the edge exists
+
+
+def test_the_history_element_carries_the_ten_keys_and_keeps_the_reads_order(cli: Cli) -> None:
+    """The envelope's `history` is newest-first because the payload is the envelope's."""
+    cli.create("Fix SSO login")
+    assert cli.run("issue", "edit", "ENG-1", "-t", "Fix SSO login again").exit_code == 0
+
+    document = payload(cli.run("issue", "show", "ENG-1", "--with", "history", "--json"))
+    elements = document["history"]
+
+    assert tuple(elements[0]) == HISTORY_KEYS
+    assert [element["field"] for element in elements] == ["branch_name", "title", "created"]
+    assert elements[1]["new_label"] == "Fix SSO login again"
+    assert elements[0]["actor_label"] != ""
 
 
 def test_the_comment_element_carries_the_canonical_keys(cli: Cli) -> None:
