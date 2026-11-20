@@ -12,6 +12,7 @@ import typer
 from hifa import __version__
 from hifa.cli.commands.init import init_command
 from hifa.cli.commands.issue import issue_app
+from hifa.cli.commands.label import label_app
 from hifa.cli.commands.serve import serve_command
 from hifa.cli.commands.state import state_app
 from hifa.cli.commands.team import team_app
@@ -53,6 +54,7 @@ def main(
 
 app.command("init")(init_command)
 app.add_typer(issue_app, name="issue")
+app.add_typer(label_app, name="label")
 app.add_typer(team_app, name="team")
 app.add_typer(state_app, name="state")
 app.command("serve")(serve_command)

@@ -232,6 +232,10 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(name="issue.relate", cli="issue relate", web=None, debt="HIFA-34"),
     Capability(name="issue.relations", cli="issue relations", web=None, debt="HIFA-34"),
     Capability(name="issue.blocked", cli="issue blocked", web=None, debt="HIFA-34"),
+    # The two label links of an issue: the dashboard's chips are HIFA-61 (T-20.3 ships
+    # `POST`/`DELETE /_/issues/{identifier}/labels`).
+    Capability(name="issue.label", cli="issue label", web=None, debt="HIFA-61"),
+    Capability(name="issue.unlabel", cli="issue unlabel", web=None, debt="HIFA-61"),
     # The CLI transport of this page is `hifa issue show`, which no verb carries yet.
     Capability(name="issue.show", cli=None, web=("GET", "/{team}/issue/{ref}"), debt="HIFA-49"),
     # HIFA-2 (T-07) ships the verb that exposes both reads; the board read MODEL
@@ -253,6 +257,15 @@ CAPABILITIES: tuple[Capability, ...] = (
         cli="state update",
         web=("POST", "/_/states/{state_id}/position"),
     ),
+    # --- label catalogue --------------------------------------------------------------------
+    # Five verbs of the catalogue. The dashboard's picker has no catalogue without `list`
+    # (HIFA-61), and administering labels is its own page (HIFA-62). `reason=` is not available
+    # to them: they are user-facing capabilities with a dashboard meaning, so the gap is debt.
+    Capability(name="label.list", cli="label list", web=None, debt="HIFA-61"),
+    Capability(name="label.create", cli="label add", web=None, debt="HIFA-62"),
+    Capability(name="label.show", cli="label show", web=None, debt="HIFA-62"),
+    Capability(name="label.update", cli="label update", web=None, debt="HIFA-62"),
+    Capability(name="label.archive", cli="label archive", web=None, debt="HIFA-62"),
     # --- search ---------------------------------------------------------------------------
     # `GET /search` is a 501 placeholder until T-11, which also lands `hifa search`.
     Capability(name="search.issues", cli=None, web=("GET", "/search"), debt="HIFA-7"),
