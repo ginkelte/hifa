@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from hifa.adapters.sqlite._base import UNSET, BaseRepo, Unset, dt_text, row_dict, to_bool, to_dt
@@ -21,6 +22,7 @@ _UPDATE = (
     "UPDATE label SET team_id = ?, parent_id = ?, name = ?, color = ?, description = ?,"
     " is_group = ?, group_type = ?, retired_at = ? WHERE id = ? RETURNING *"
 )
+_RETIRE = "UPDATE label SET retired_at = ? WHERE id = ?"
 
 
 def label_from_row(row: sqlite3.Row | dict[str, Any]) -> Label:
@@ -64,7 +66,13 @@ class LabelRepo(BaseRepo):
         return label
 
     def get_by_name(self, workspace_id: str, team_id: str | None, name: str) -> Label | None:
-        """Look up by name: the team label first, then the workspace one."""
+        """Exact match in the team level first, then the workspace one; never a name resolution.
+
+        The comparison is byte-for-byte, with no case folding and no trimming, and the team's row
+        wins over a workspace row spelled the same. It returns at most one row and has no way to
+        report that a level held two, so it must never be handed a user-supplied name: that name
+        goes through the catalogue's resolution, which folds case and refuses an ambiguous level.
+        """
         if team_id is not None:
             row = self._one(
                 f"SELECT {COLUMNS} FROM label WHERE workspace_id = ? AND team_id = ? AND name = ?",
@@ -137,9 +145,15 @@ class LabelRepo(BaseRepo):
             raise NotFound(resource="label", key=label.id)
         return label_from_row(row)
 
-    def retire(self, label_id: str, at: Any) -> None:
+    def retire(self, label_id: str, at: datetime) -> None:
+        """Stamp `retired_at`."""
         self._guard_write()
-        self._conn.execute("UPDATE label SET retired_at = ? WHERE id = ?", (dt_text(at), label_id))
+        self._conn.execute(_RETIRE, (dt_text(at), label_id))
+
+    def unretire(self, label_id: str) -> None:
+        """Clear `retired_at`: the undo stamps no time, so there is no time to read."""
+        self._guard_write()
+        self._conn.execute(_RETIRE, (None, label_id))
 
     def count_uses(self, label_id: str) -> int:
         return int(self._scalar("SELECT COUNT(*) FROM issue_label WHERE label_id = ?", (label_id,)))

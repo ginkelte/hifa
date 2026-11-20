@@ -333,7 +333,7 @@ def _restore_label_once(uow: UnitOfWork, cmd: RestoreLabel, actor: Actor) -> Lab
                 code="LABEL_NOT_RETIRED",
             )
         _refuse_live_case_variant(tx.labels, workspace_id, label)
-        tx.labels.retire(label.id, None)
+        tx.labels.unretire(label.id)
         return tx.labels.require(label.id)
 
 
