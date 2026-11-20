@@ -4,7 +4,7 @@ Feature: Database initialization and bootstrap
   # A user with no previous database runs `hifa init` and gets a usable tracker with
   # 1 workspace, 1 team, 7 workflow states (D-013, the shared `In Review` of D-058), 4 labels
   # and 1 member.
-  # The current schema is user_version = 3 (migrations 001/002/003 from SPEC-010).
+  # The current schema is user_version = 4 (migrations 001/002/003/004 from SPEC-010; 004 is data only).
 
   @REQ-F001 @smoke
   Scenario: init creates the database with the schema and the seed data
@@ -12,8 +12,8 @@ Feature: Database initialization and bootstrap
     When I run "hifa init --db /tmp/h1/hifa.db --name Acme --team-key ENG"
     Then the exit code is 0
     And the file "/tmp/h1/hifa.db" exists
-    And the user_version of the database is 3
-    And the table "schema_migration" has 3 rows with versions 1, 2 and 3
+    And the user_version of the database is 4
+    And the table "schema_migration" has 4 rows with versions 1, 2, 3 and 4
     And there are 7 rows in "workflow_state" with positions 1.0, 2.0, 3.0, 4.0, 4.5, 5.0 and 6.0
     And the state "Triage" has type "triage"
     And the state "Todo" has type "unstarted" and is_default 1
@@ -57,8 +57,8 @@ Feature: Database initialization and bootstrap
     Given a file "/tmp/h1/otra.db" that is not a hifa database
     When I run "hifa init --db /tmp/h1/otra.db --force"
     Then the exit code is 0
-    And the table "schema_migration" has 3 rows
-    And the user_version of the database is 3
+    And the table "schema_migration" has 4 rows
+    And the user_version of the database is 4
 
   @REQ-F004 @smoke
   Scenario: the environment variable defines the path when there is no flag

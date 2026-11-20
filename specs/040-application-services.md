@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 10
-spec_revision: 38
+version: 11
+spec_revision: 39
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -88,6 +88,11 @@ a `dict` of changes: the typed command is the only transport (R4).
 | `create_project`, `update_project`, `archive_project`, `add_milestone` | `projects` | write functions | yes |
 | `create_cycle`, `complete_cycle`, `add_issues_to_cycle` | `cycles` | write functions | yes |
 | `issue_detail`, `list_issues`, `list_board`, `list_blocked`, `agenda`, `search_issues`, `list_comments`, `list_attachments`, `list_members`, `member_detail`, `list_teams`, `team_detail`, `list_states`, `list_labels`, `label_detail`, `list_projects`, `project_detail`, `list_cycles`, `cycle_detail` | `boards` / `teams` / `labels` / `members` / `projects` / `cycles` | read functions | yes |
+| `history_rows` | `history` | read function: `(rows, *, states, members, parents=None, priorities=PRIORITY_LABELS, due_dates=None) -> HistoryPage` — the one formatter of `issue_history` rows for every edge (HIFA-46, D-074) | yes |
+| `HistoryRow` | `history` | `@dataclass(frozen=True, slots=True)`: eleven fields, declared in the `history.py` block of §2.2 — the one shape the edges read a history row as | yes |
+| `HistoryPage` | `history` | `@dataclass(frozen=True, slots=True)`: `rows`, `window_size`, `truncated`, `last_activity: LastActivity \| None` — declared in the same block | yes |
+| `LastActivity` | `history` | `@dataclass(frozen=True, slots=True)`: `text`, `row_id` — the one-line summary under the title (SPEC-070 §2.5.7.2) | yes |
+| `PRIORITY_LABELS`, `DUE_DATE_FORMAT` | `history` | constants: the five priority labels of `v_priority` and the `20 Nov 2026` date shape — the two producers `priority`/`due_date` rows had none of (SPEC-030 §2.6) | yes |
 
 Read vocabulary, without exceptions: `list_<plural>` returns a tuple of summary rows;
 `<singular>_detail` returns the detail read model. `issue_detail` is the only one with a name of its
@@ -894,6 +899,99 @@ def issue_detail(
 # `True` on the answer. It is a visibility argument of the *caller*, not a second read: SPEC-070 §2.1.1
 # is the only consumer (the detail page and the panel of a trashed issue, D-059), and every listing,
 # every count and the row/card fragments keep the default.
+
+
+# src/hifa/app/history.py  -- reads: one formatter and the two shapes it answers, no writes
+
+#: The five priority labels: the same five `v_priority` fixes (SPEC-010 §3, SPEC-020 §2.1). A **constant**
+#: and not a query — `priority` is a closed 0-4, so this map is total and costs no statement (SPEC-030 §2.6).
+PRIORITY_LABELS: Final[Mapping[int, str]] = {
+    0: "No priority",
+    1: "Urgent",
+    2: "High",
+    3: "Medium",
+    4: "Low",
+}
+
+#: The one date shape a row renders (`20 Nov 2026`), the shape the timeline's day separators print too
+#: (SPEC-070 §2.5.7.2). A format and not a map: `due_date` is a calendar date, so a format is total where
+#: a map could miss the one value a row carries.
+DUE_DATE_FORMAT: Final[str] = "%d %b %Y"
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRow:
+    id: int  # issue_history.id: the table's integer AUTOINCREMENT key (SPEC-010 §3), not a ULID
+    field: str  # the writer's name, one of the 21 values of SPEC-030 §2.4
+    old_value: str | None  # the stored TEXT of the old side, untouched (P7)
+    new_value: str | None  # the stored TEXT of the new side, untouched (P7)
+    old_label: str | None  # the old side resolved: a state, a member, an identifier, `High`, `20 Nov 2026`
+    new_label: str | None  # the same for the new side; None when that side is NULL or names no target
+    actor_id: str | None  # issue_history.actor_id, the ULID; None when the writer had no actor
+    actor_label: str  # the actor's display name, or `someone` (§2.5.7.1 rule 4 of SPEC-070)
+    sentence: str  # the wording of SPEC-070 §2.5.7, composed here and nowhere else (P2/P4)
+    dot_color: str | None  # workflow_state.color for a `state_id` row, None for every other field
+    created_at: datetime  # UTC; the instant `<time datetime>` prints
+
+
+@dataclass(frozen=True, slots=True)
+class LastActivity:
+    text: str  # "<actor_label> <sentence> · <relative>", the one dim line under the title (§2.5.7.2)
+    row_id: int  # the HistoryRow.id the line links to
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryPage:
+    rows: list[HistoryRow]  # oldest-first: the read's window, sorted by (created_at, id) — D-D
+    window_size: int  # len(rows) as the read returned it, ≤ 100: the N of `Show all N` (§2.5.7.2)
+    truncated: bool  # window_size == the read's LIMIT, so older rows may exist: a floor, never a total
+    last_activity: LastActivity | None  # None only when `rows` is empty
+
+
+def history_rows(
+    rows: Sequence[IssueHistory],
+    *,
+    states: Mapping[str, str],
+    members: Mapping[str, str],
+    parents: Mapping[str, str] | None = None,
+    priorities: Mapping[int, str] = PRIORITY_LABELS,
+    due_dates: Mapping[str, str] | None = None,
+) -> HistoryPage: ...
+
+
+# The one formatter of the history timeline: the CLI (`hifa issue history` and the HISTORY section of
+# `issue show --with`, SPEC-050 §2.5.3.2/§2.5.3.3), the REST envelope (SPEC-060 §2.4.2) and the two web
+# hosts (SPEC-070 §2.3.4/§2.5.7) all project the rows this function returns, and no edge owns a
+# prettifying step of its own (P2).
+#
+# `rows` is the `history` tuple of `IssueDetail` or the `HistoryRepo.list_for_issue` window; the order
+# it arrives in is not the order it answers in. The answer is **oldest-first** by `(created_at, id)` --
+# D-D's order, the index order of `idx_history_issue`, and the only order a story reads in -- so a
+# caller holding the read's newest-first window passes it as it is. This function sorts; no edge does.
+#
+# The five maps are SPEC-030 §2.6's, `{stored value: label}` each, resolved by the read and never here,
+# and never one lookup per row (§2.4 of SPEC-030 names the N+1 as the thing not to do): `states` (row 16),
+# `members` (row 13) and `parents` (row 17) cost statements, `priorities` and `due_dates` cost none
+# because a closed 0-4 and a calendar date are constants of this module -- defaults, so a caller that has
+# nothing to add passes nothing, and a read that wants to hand over its own map may. `due_dates=None`
+# means "label the dates this module formats": the map is built here from `DUE_DATE_FORMAT` for exactly
+# the distinct values the rows carry, which is why `due_date` rows render as `20 Nov 2026` and not as
+# `2026-11-20`. A value a map does not hold is a target that no longer exists and renders as
+# `<kind> (deleted)`; a kind with no map at all renders `changed <field>`. `domain/` is not imported for a
+# label: the labels arrive as strings.
+#
+# `HistoryRow` is the only shape the edges read a row as, and it is declared above rather than described:
+# eleven fields, of which `old_value`/`new_value` are the raw pair (P7: the `--json` envelope and the
+# `data-*` attributes carry it) and `sentence`/`dot_color`/`old_label`/`new_label` are the four renderings
+# a template may not compute (SPEC-070 §2.3.7). `HistoryPage` carries the two facts a row cannot: how many
+# rows the window held (`window_size`, the N of `Show all N`) and whether it was full (`truncated`, which
+# is what makes an `N` a floor rather than a total) beside `last_activity`, the one-line summary the
+# panel renders under the title. No edge counts, slices or re-sorts anything it answers.
+#
+# raises: nothing. An unknown `field`, an unresolvable value and a missing actor are answers, not
+# refusals: `changed <field>`, `<kind> (deleted)` and `someone`.
+
+# src/hifa/app/boards.py  -- reads, continued (DETAIL_INCLUDE's other readers)
 
 
 def list_issues(db: Database, filters: ListFilters) -> IssuePage: ...
@@ -1771,8 +1869,9 @@ cases follow the same pattern (read → validate with `rules` → write → hist
                       milestones per R7bis, created_at=now, updated_at=now)
 14.     saved = tx.issues.insert(issue)                     # RETURNING *
 15.     tx.issues.set_labels(saved.id, [l.id for l in labels])
-16.     tx.history.record(saved.id, [("created", None, saved.identifier)], actor_id=actor.member_id,
-                           now=now)
+16.     tx.history.record(saved.id, [("created", None, None)], actor_id=actor.member_id, now=now)
+    # the value is NULL: the row says the issue was created and the identifier is the issue's identity,
+    # which every rendering already has (SPEC-030 §2.4, migration 004 of SPEC-010 §3.7, D-074)
     # COMMIT on leaving the with; any exception up to here => total ROLLBACK
 17. return saved
 ```
@@ -2354,7 +2453,7 @@ Feature: Application use cases
     Given the ENG team with a default state "Backlog" and the label "bug"
     When create_issue is run with title "Fix login" and labels ("bug",)
     Then an issue exists with identifier "ENG-1" and the label "bug"
-    And a row exists in issue_history with field "created" and new_value "ENG-1"
+    And a row exists in issue_history with field "created" and new_value NULL
     Given a forced failure in history.record
     When the same create_issue is run
     Then the issue does not exist
@@ -2961,6 +3060,38 @@ contract it must meet.
   returns, and `src/hifa/adapters/sqlite/reads.py` adds `AND i.trashed = 0` to the parent, the children
   and the far-end `WHERE` — never to the header's, which keeps `include_trashed` working. The sort is
   here because the pair `(row, far end)` is here; the predicate is there because the row is there.
+
+- spec_revision 39 (2026-11-20): **the `created` row stops echoing the identifier, and the one
+  formatter every edge renders history with is declared (HIFA-46, D-074).** `version` 10 → 11: §2.2
+  gains a read function and its `HistoryRow`, which is a signature this spec publishes.
+  (1) **`create_issue` wrote `("created", None, saved.identifier)`** and the identifier is the identity
+  of the issue the timeline already names, so every rendering had to skip a value that carried nothing.
+  Step 16 of §5.1 now writes `("created", None, None)`; the rows already written are normalised by
+  `migrations/004_history_created_backfill.sql` (SPEC-010 §3.7), and §7's assertion moves with the
+  writer — the `created` row of `ENG-1` has `new_value` `NULL`, which is the only value this use case
+  can produce.
+  (2) **No edge owned the history formatter, and P2/P4 need one owner named.** §2.2 declares
+  `history_rows(rows, *, states, members, parents=None, priorities=PRIORITY_LABELS, due_dates=None) ->
+  HistoryPage` in `src/hifa/app/history.py`: it resolves nothing (the read builds the maps of SPEC-030
+  §2.4/§2.6), it sorts oldest-first, and it answers the shapes declared beside it — so the CLI, the API
+  and the two web hosts project one row and neither a template nor a route composes a sentence. `domain/`
+  is untouched by it: labels arrive as strings.
+  (3) **The two shapes were named and never declared, and the answer was a bare list.** `HistoryRow`
+  appeared in a signature and in a `#` paragraph that described it as a dict of eleven keys, and the web's
+  element disagreed with the description (a different colour key, no `actor_id`, an added `created_label`)
+  while `last_activity` — which two sections claimed — was produced by nobody. The `history.py` block now
+  declares `HistoryRow` (eleven typed fields), `HistoryPage` (`rows`, `window_size`, `truncated`,
+  `last_activity`) and `LastActivity` (`text`, `row_id`) in the voice `AddLabelResult` is declared in, and
+  §2.2's symbol table lists all three; SPEC-070 §2.3.4 projects that row under one colour key instead of
+  describing a second shape.
+  (4) **`priority` and `due_date` rows reached the grammar without a producer.** The grammar renders
+  `priority "2"` as `High` and `due_date "2026-11-20"` as `20 Nov 2026`, and the read handed the formatter
+  three maps (`states`, `members`, `parents`) — so two of the eight non-printable kinds of SPEC-030 §2.4 had
+  nothing to resolve them. The module declares `PRIORITY_LABELS` (the five of `v_priority`) and
+  `DUE_DATE_FORMAT` (`20 Nov 2026`), and the signature takes both as defaults, so both kinds have a
+  producer that costs no statement.
+  (5) **Counts.** §7 does not move: the one assertion that changed is the value of a row, not the
+  number of scenarios. No error code, `# raises:` line or command is added or removed.
 
 - spec_revision 38 (2026-11-20): **the visibility this function inherits is one predicate, not a set
   equality (HIFA-49, round three).** `version` 9 → 10: §2.2's `issue_detail` guarantee changes for the

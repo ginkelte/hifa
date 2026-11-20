@@ -3,15 +3,15 @@ id: SPEC-010
 title: Data model and migrations
 component: persistence
 status: approved
-version: 2
-spec_revision: 3
+version: 3
+spec_revision: 4
 depends_on: [SPEC-000]
 implements:
   - src/hifa/adapters/sqlite/migrations/**
 acceptance: specs/acceptance/010-data-model.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-11
+updated: 2026-11-20
 ---
 
 # SPEC-010 — Data model and migrations
@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Final, Sequence
 
 MIGRATIONS_DIR: Final[str] = "migrations"  # package resource (importlib.resources)
-MAX_VERSION: Final[int] = 3  # 001_init, 002_schema_migration, 003_team_previous_key
+MAX_VERSION: Final[int] = 4  # 001_init, 002_schema_migration, 003_team_previous_key, 004_history_created_backfill
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ def apply_migrations(
 | `open_db` | function | yes | the only connection factory: applies the PRAGMA of §4.2 R5.3, `row_factory=sqlite3.Row`, `isolation_level=None`, `check_same_thread=False`, `busy_timeout=5000`. With `readonly=True` it opens in `ro` mode and does not write |
 | `schema_version` | function | yes | `PRAGMA user_version`; `0` on a virgin database. It does not read `schema_migration` |
 | `apply_migrations` | function | yes | applies, in numeric order, the versions `> schema_version`, each in its own transaction; returns `MigrationResult`. Idempotent |
-| `MAX_VERSION` | constant | yes | 3; a database with a higher `user_version` ⇒ `SchemaTooNew` |
+| `MAX_VERSION` | constant | yes | 4; a database with a higher `user_version` ⇒ `SchemaTooNew` |
 | `MigrationResult` | dataclass | yes | exact shape as above; it is the `--json` of `hifa db migrate` (SPEC-050 §2.5.5) |
 
 Reconciliation note: SPEC-030 §2 declares `connect(path, readonly=False)` with the same
@@ -87,15 +87,16 @@ Errors produced by the contract (full catalog in §6): `MigrationChecksumMismatc
 
 ## 3. Data it touches (DDL v1, normative)
 
-Three files, applied in order. `PRAGMA user_version` ends at **3** and the schema has
+Four files, applied in order. `PRAGMA user_version` ends at **4** and the schema has
 **17 tables** (15 domain tables + `schema_migration` + `team_previous_key`), 3 views and the FTS5 index
-`issue_fts` with its 3 triggers.
+`issue_fts` with its 3 triggers — **the same 17/3/3 as version 3**, because `004` adds no object.
 
 | File | Version | Contents |
 |---|---|---|
 | `migrations/001_init.sql` | 1 | 15 domain tables, indexes, views `v_priority`/`v_issue`/`v_team_progress`, `issue_fts` and its triggers |
 | `migrations/002_schema_migration.sql` | 2 | `schema_migration` table (ledger, D-006) |
 | `migrations/003_team_previous_key.sql` | 3 | `team_previous_key` table (historical keys, R3) |
+| `migrations/004_history_created_backfill.sql` | 4 | **no DDL**: one `UPDATE` that nulls the identifier a `created` row of `issue_history` used to echo into `new_value` (§3.7, D-074) |
 
 No file contains `PRAGMA`: `journal_mode` cannot be changed inside a transaction and
 the other PRAGMAs are per connection (§4.2 R5.3).
@@ -416,7 +417,7 @@ CREATE TABLE schema_migration (
 ```
 
 The rows for 001 and 002 are inserted by `apply_migrations` (§5), not by the `.sql`: the checksum is computed
-at apply time. After a complete `hifa db migrate` the table has **3 rows** (versions 1, 2 and 3).
+at apply time. After a complete `hifa db migrate` the table has **4 rows** (versions 1, 2, 3 and 4).
 
 ### 3.6 `003_team_previous_key.sql` (migration 003)
 
@@ -433,6 +434,43 @@ CREATE INDEX idx_team_previous_key_key ON team_previous_key(key);
 
 It stores every `key` a team left behind in `hifa team set-key` (R3). The index by `key` resolves
 `hifa issue show ENG-12` when `ENG` no longer exists as a current key.
+
+### 3.7 `004_history_created_backfill.sql` (data migration, migration 004)
+
+```sql
+-- No CREATE, no ALTER, no DROP: a data migration. `create_issue` used to write the issue's own
+-- identifier into `new_value` of its `created` row; the row records an event and the event is "the
+-- issue was created", so the value is NULL and the sentence says it (SPEC-070 §2.5.7).
+UPDATE issue_history
+   SET new_value = NULL
+ WHERE field = 'created' AND new_value IS NOT NULL;
+```
+
+**Why this is a migration, and what kind of reason that is: it is hygiene, and no rendering is broken
+without it.** The grammar of SPEC-070 §2.5.7 has **no place for a value** on `created` — the sentence is
+`created the issue` whatever the pair holds — so a row that still carries the identifier prints exactly the
+same bytes as a normalised one, and this document does not claim otherwise. What the migration buys is
+agreement between the stored row and the writer's contract: `record` writes `(None, None)` for that field
+(SPEC-030 §2.4), and a database whose rows disagree with the contract hands the next reader a value that
+means nothing without a note saying so — a diff view, an export or a `data-*` attribute would have to carry
+the knowledge that `004` had or had not run. Normalising once means `NULL` is where the contract says `NULL`,
+and nothing downstream has to know which version wrote the row (D-074).
+
+- **It is idempotent twice over.** The migrator applies a file only when its version is greater than
+  `PRAGMA user_version` (§5, R5.1), so a database that already ran it never runs it again; and the
+  statement itself re-executes as a no-op, because after the first pass no row satisfies the `WHERE`.
+  A database at `user_version` 1, 2 or 3 upgrades to 4 in one transaction with its rows cleaned; a
+  database at 4 answers `MigrationResult(applied=(), backup_path=None)`.
+- **A fresh database pays nothing.** `001…003` create `issue_history` empty, so `004` matches no row on
+  `hifa init`; the file exists so that the version numbering is one sequence, not two.
+- **It adds no schema object, so nothing the DDL check compares moves.** `scripts/spec_contract_check.py
+  --all` compares the set of tables, views and indexes of a migrated database against the `CREATE`
+  blocks of this document; a file with no `CREATE` cannot change that set, and v4 answers **17 tables,
+  3 views, the FTS table and its 3 triggers**, exactly as v3 does.
+- **Its cost is one scan.** `issue_history` carries `idx_history_issue(issue_id, created_at)` and no
+  index on `field`, so the `WHERE` is a full scan of one small table, run once per database. The
+  measured database (`~/.local/share/hifa/hifa.db`, 2026-11-20) had **255** rows and **92** of them
+  matched; the migration is not sized by that number, which is a property of that file on that day.
 
 ## 4. Rules
 
@@ -495,10 +533,10 @@ Applying a migration, step by step (`apply_migrations`):
 
 ```
 1. version = schema_version(conn)                     # PRAGMA user_version
-2. plan = [m for m in discover(migrations_dir) if m.version > version]  sorted by version
+2. If version > MAX_VERSION ⇒ SchemaTooNew (exit 4): the database is from a newer binary.
+3. plan = [m for m in discover(migrations_dir) if m.version > version]  sorted by version
    If a file does not match ^\d{3}_[a-z0-9_]+\.sql$ ⇒ MigrationFailed (exit 6).
-3. If plan is empty ⇒ return MigrationResult(applied=[], from=to=version, backup=None).
-4. If version > MAX_VERSION ⇒ SchemaTooNew (exit 4): the database is from a newer binary.
+4. If plan is empty ⇒ return MigrationResult(applied=[], from=to=version, backup=None).
 5. If backup ⇒ VACUUM INTO "hifa.db.bak-<version>"; error ⇒ BackupFailed (exit 6), nothing is touched.
 6. For each migration m of plan, in order:
    6.1 checksum = sha256(bytes of the file)
@@ -514,6 +552,14 @@ Applying a migration, step by step (`apply_migrations`):
    same transaction (the ledger is born knowing what already happened); 003 is registered normally in 6.4.
 8. return MigrationResult(applied=[...], from_version=version, to_version=last).
 ```
+
+**The order is not cosmetic: step 2 precedes step 4, and `migrate.py` implements exactly that.** A database
+at `user_version = 5` has **no plan** — every file is already behind it — so a version check placed after the
+empty-plan return would answer `applied=()` and exit 0 for the one fixture §7 declares at exit 4
+(`schema_too_new`). The code raises `SchemaTooNew` before it compares the files with the cursor —
+`src/hifa/adapters/sqlite/migrate.py::apply_migrations`, the `if current > MAX_VERSION` that precedes
+`plan = [m for m in migrations if m.version > current]` — and the checksum sweep of step 6.2 runs before that
+return too, for the same reason: a run with nothing to apply is still a run that must refuse.
 
 `hifa db migrate` (SPEC-050 §2.5.5) is a wrapper: `open_db` → `apply_migrations` → prints
 `MigrationResult` as `--json` or one line per applied version. `hifa init` (SPEC-100) calls the
@@ -543,18 +589,18 @@ Feature: Schema and migrations
   Scenario: initial migration on an empty database
     Given a nonexistent database file
     When "hifa db migrate" is run
-    Then user_version is 3
+    Then user_version is 4
     And the 17 schema tables exist in "sqlite_master"
     And the views v_issue, v_priority and v_team_progress exist
-    And "schema_migration" has 3 rows with versions 1, 2 and 3
+    And "schema_migration" has 4 rows with versions 1, 2, 3 and 4
     And the virtual table "issue_fts" exists with its 3 triggers
 
   Scenario: migration is idempotent
-    Given a database already migrated to version 3
+    Given a database already migrated to version 4
     When "hifa db migrate" is run again
     Then no migration is applied
-    And user_version is still 3
-    And "schema_migration" still has 3 rows
+    And user_version is still 4
+    And "schema_migration" still has 4 rows
 
   Scenario: issue number is not repeated under concurrency
     Given an ENG team with 5 issues
@@ -581,29 +627,40 @@ Feature: Schema and migrations
     And a "Bug" label of the ENG team is inserted without error
 
   Scenario: the altered checksum of an applied migration aborts
-    Given a database migrated to version 3
+    Given a database migrated to version 4
     When "001_init.sql" is edited and "hifa db migrate" is run
     Then the exit code is 6
     And the "error.code" field is "migration_checksum_mismatch"
-    And user_version is still 3
+    And user_version is still 4
 
   Scenario: a database from a newer binary is left untouched
-    Given a database with user_version 4
+    Given a database with user_version 5
     When "hifa db migrate" is run
     Then the exit code is 4
     And the "error.code" field is "schema_too_new"
     And no table was modified
+
+  Scenario: the created row loses the identifier the writer used to echo
+    Given a database at version 3 with 3 issues and their created rows carrying "ENG-1", "ENG-2" and "ENG-3"
+    When "hifa db migrate" is run
+    Then user_version is 4
+    And the 3 created rows have new_value NULL
+    And no other row of issue_history changed
+    When "hifa db migrate" is run again
+    Then no migration is applied
+    And the 3 created rows still have new_value NULL
 ```
 
 ## 8. Regeneration checklist
 
-1. Create `migrations/001_init.sql`, `002_schema_migration.sql` and `003_team_previous_key.sql` with the
-   DDL of §3 **exactly** (order: parent tables → children → indexes → views → FTS and triggers).
+1. Create `migrations/001_init.sql`, `002_schema_migration.sql`, `003_team_previous_key.sql` and
+   `004_history_created_backfill.sql` with the DDL of §3 **exactly** (order: parent tables → children →
+   indexes → views → FTS and triggers), then the one `UPDATE` of §3.7 in its own file.
 2. `migrate.py`: implement `open_db`, `schema_version`, `apply_migrations` with the signatures of §2 and
    the flow of §5; discover the `.sql` files with `importlib.resources` (the installed package does not depend
    on the repo).
 3. `connection.py` (SPEC-030) applies the PRAGMAs of R5.3 on every connection; no `.sql` repeats them.
-4. Tests: migration on an empty database (`user_version 3`, 17 tables, 3 views, 3 ledger rows),
+4. Tests: migration on an empty database (`user_version 4`, 17 tables, 3 views, 4 ledger rows),
    idempotency, each violated CHECK/FK, altered checksum, `schema_too_new`, failed backup and
    number concurrency.
 5. `python scripts/spec_contract_check.py --spec specs/010-data-model.md` compares tables, columns,
@@ -629,4 +686,27 @@ Feature: Schema and migrations
 
 ## Notes
 
-- spec_revision 3 (2026-11-11): translated to English (repo-wide language convention).
+- spec_revision 4 (2026-11-20): **a fourth migration that adds no object, and the version every count in
+  this document already published (HIFA-46, D-074).** `version` 2 → 3: `MAX_VERSION` is a §2 constant and
+  the file table of §3 is the DDL contract, so a database this spec produces is no longer the one v2
+  described.
+  (1) **The `created` row of `issue_history` echoed the issue's identifier into `new_value`**, so every
+  rendering of that row had to skip a value that carries nothing the row does not already say. `004` is
+  the **data** migration that nulls it, declared in §3.7 with the reason it is a migration and with its
+  two kinds of idempotence (the migrator's `user_version` gate and the statement's own empty second pass).
+  The reason is **hygiene and not a rendering fix**, and §3.7 says so: the grammar has no place for a value
+  on `created`, so the row printed the same sentence before the migration (D-074).
+  (2) **`004` adds no table, view, index or trigger, and this document says so where the totals are.**
+  §3's intro now reads 17 tables / 3 views / the FTS table and its 3 triggers **at version 4**, which is
+  the same object set as version 3; `scripts/spec_contract_check.py --all` compares that set and cannot
+  move because of a file with no `CREATE`.
+  (3) **Every count that said 3 now says 4**: `MAX_VERSION` **in the §2 block as well as its §2 row** — the
+  block was the one place this revision left at `3`, and a binary built from it would answer `SchemaTooNew`
+  on the database `004` itself produces — §3's "ends at", §3.5's ledger rows, §7's four scenarios
+  (`user_version`, the two ledger-row assertions, and the `schema_too_new` probe, which now needs version
+  **5** to be too new), and §8's checklist. §7 gains one scenario — the backfill and its second run — so it
+  goes 8 → 9; no other acceptance file of this delta is touched by it.
+  (4) **§5's steps were ordered so that the one scenario the file declares could not run**: the empty-plan
+  return came before the `MAX_VERSION` check, which answers `applied=()` and exit 0 for a database at 5
+  while §7 asserts exit 4. Steps 2 and 4 now carry the order `migrate.py` implements — the version check
+  before the plan — and §5 names the code that implements it.

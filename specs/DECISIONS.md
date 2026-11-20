@@ -4444,3 +4444,230 @@ does not need narrowing for this delta to stand; it does need to be read with it
 and a future revision of SPEC-030 that said "a `SCAN` the query's own text caused is fixed in the spec that
 owns the text" would state it without leaving a reader to reconcile the two sentences. This decision
 amends nothing of SPEC-030.
+
+## D-074 — The history vocabulary is the writers', the backfill is a migration, and a timeline is a story
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.4 (the closed `field` vocabulary, 21 values, with its writer
+and its shape), SPEC-010 §3.7 (migration `004`), SPEC-070 §2.5.7 (the one owner of the wording),
+SPEC-050 §2.4.2 (a `HistoryEntry` of ten keys) and §2.5.3.3 (the verb) · **Touches:** SPEC-010 §2, §3,
+§7, §8, Notes; SPEC-030 §2.4, §2.6, §3, §4.2, §7, §8, Notes; SPEC-040 §2.2, §5.1, §7, Notes; SPEC-050
+§2.4.1, §2.4.2, §2.5.3, §2.5.3.2, §2.5.3.3, §6, §7, §8, §11; SPEC-060 §2.4.2, Notes; SPEC-070 §2.1.3,
+§2.1.4, §2.2, §2.3.4, §2.5.7, §6, §7, §8, §11; `specs/001-mvp-v1.md`, `specs/001-mvp-v1.tasks.md`,
+`specs/acceptance/001-mvp-v1/01-init.feature`; `specs/INDEX.md`; this file
+
+**The situation.** HIFA-46 reports two defects of the activity timeline: a state change renders the
+ULIDs of `workflow_state` (`...B80 → ...B7Z`) and the `created` row renders as an empty arrow pointing at
+the issue's own identifier. The ticket also publishes a grammar table (§2) and a vocabulary (§11
+consequence 2) that the writers do not produce, and **three of its numbers are not the database's**. This
+entry records what was measured, which layer owns each half, and where the ticket and the code disagreed
+and which one won.
+
+**The measurement, and what it eliminated.** Read-only on `~/.local/share/hifa/hifa.db` on 2026-11-20
+(the host has no `sqlite3` binary; the queries ran through Python's `sqlite3` module in `mode=ro`):
+
+```
+select field, count(*) from issue_history group by field
+  created 92 · state_id 75 · board_order 34 · completed_at 18 · started_at 13 · description 11
+  · relation 5 · trashed 4 · archived_at 2 · canceled_at 1                          -- 255 rows
+select count(*) from issue_history where field='created' and new_value is not null   -- 92
+select count(*) from issue_history h join issue i on i.id=h.issue_id
+  where h.field='created' and h.new_value=i.identifier                               -- 92 (and 0 that do not)
+select count(*) from issue_history b where b.field='board_order'
+  and exists (select 1 from issue_history s where s.issue_id=b.issue_id
+              and s.field='state_id' and s.created_at=b.created_at)                  -- 33 of 34
+select distinct new_value from issue_history where field='relation'                  -- 'blocks HIFA-51', 'related HIFA-3', …
+```
+
+Three conclusions come out of it and all three are load-bearing. The **`created` rows are 92 and not the
+45 the ticket publishes**, and every one of them carries exactly the issue's identifier — the ticket's
+count is stale, not approximate. **`relation` is a noun whose value already reads `blocks HIFA-51`**, not a
+discriminator of the form `relation:<type>`: the type and the far end's identifier travel inside the
+value (`_relation_value` in `src/hifa/app/issues.py` builds it with `type.name_as_seen(direction)` plus
+`other.identifier`), so the resolution the ticket thought a relation row needed does not exist. And
+**`board_order` is almost never an event of its own**: 33 of its 34 rows share their `created_at` with a
+`state_id` row, because `update_issue` and `move_issue` write both in one `record` call — the rank is the
+move's consequence, and the one row that stands alone is a drag inside a column.
+
+**1. The vocabulary is the writers', and the ticket's list is not.** The rule is the two-family rule
+SPEC-050 §2.4.2 already stated (a change to a column of `issue` carries that column's name; a record event
+that is not a column carries the noun of the write); the **set** is now enumerated — 21 values — in
+SPEC-030 §2.4, with the use case behind each, the shape of its two sides and the sentence SPEC-070 §2.5.7
+renders. The ticket's §2 table names sixteen fields and five of them cannot be stored by anything in this
+tree:
+
+| the ticket's name | what the writer actually stores | why |
+|---|---|---|
+| `label_id` | `label` | the row carries the label's **name**, and `label` is the noun of `add_label`/`remove_label` (SPEC-050 §2.4.2's rule) |
+| `relation:<type>` | `relation` | the type is inside the value, `blocks HIFA-51`; a discriminator would put the same fact in two columns |
+| `archived` | `archived_at` | the column is `archived_at` and the writer writes that name |
+| `restored` | `archived_at` with a `NULL` new value, and `trashed` `"1" → "0"` | restoring is a direction, not a field: the same two columns carry it |
+| `comment_added` | **nothing today** | no writer emits a history row for a comment; HIFA-6 will, and the revision that adds the writer adds the value |
+
+and ten values the ticket never names are storable and therefore needed a sentence: `archived_at`,
+`trashed`, `label`, `relation`, `estimate`, `branch_name`, `board_order`, `started_at`, `completed_at`,
+`canceled_at`. The arithmetic is the record of the correction: the ticket's sixteen minus the five it
+invents plus the ten it omits is **21**, and the enumerable set has no value that is not a column name or a
+noun of a write. **The writers are the fact and the ticket's intent is the guide**: `archived`/`restored`
+meant "the archive layer changed" and that intent is honoured by two sentences on `archived_at`; `label_id`
+meant "a label came or went" and the intent is honoured by `label` carrying the name a chip can print.
+
+**2. The `created` backfill is a migration, and the reason is hygiene rather than a rendering.** The row
+says the issue was created; the identifier is the identity the timeline's own header carries, so echoing it
+into `new_value` stored a value nothing could print. `create_issue` writes `("created", None, None)` from the
+PR that lands this revision (SPEC-040 §5.1 step 16) **and `migrations/004_history_created_backfill.sql` nulls
+the rows already written in that same PR** — the ordering `comment_added`/HIFA-6 is declared with, because a
+writer and the data it leaves behind are one fact. **The migration is not what makes the screen right:**
+SPEC-070 §2.5.7's grammar has no place for a value on `created`, so the sentence was `created the issue`
+before the migration and after it (SPEC-050 §2.5.3.3's sample says so in its own words). What it buys is that
+the stored row agrees with the writer's contract — `NULL` where the contract says `NULL` — so the next reader
+(a diff, an export, a `data-*` attribute) does not have to know which version wrote a row. The idempotence is
+twofold: the migrator applies a file only when its version exceeds `PRAGMA user_version` (SPEC-010 R5.1), so a
+database at 4 never re-runs it; and the statement's `WHERE` matches no row after the first pass, so a manual
+re-run is a no-op. **The window a migration cannot close is named:** a binary older than that PR still writes
+the identifier on every issue it creates into a file `004` has already passed, and no second pass will clean
+those rows; the consequence is invisible for the reason above — one shape on screen either way — and
+SPEC-030 §2.4 says so rather than claiming `NULL` on every row of every database.
+It **adds no schema object** — 17 tables, 3 views, the FTS table and its 3 triggers at version 4 are the
+same set as at version 3 — so the DDL check of `scripts/ci_drift_check.py` cannot move because of
+it, and what it costs is one full scan of `issue_history` on the upgrade (`idx_history_issue` leads with
+`issue_id`; there is no index on `field`, and none is added for a one-time pass).
+
+**3. Order is oldest-first, and D-D is binding.** The timeline is `<ol>` in `(created_at, id)` ascending —
+`created` first, newest last — because a story is read forward and because `idx_history_issue(issue_id,
+created_at)` already serves that order. The read model keeps its `DESC LIMIT 100` window (SQL-7 row 11) and
+**the formatter sorts** (SPEC-040 §2.2's `history_rows`): the order of a payload is decided where the
+payload is assembled and not in SQL, which is D-072 §1 applied to a second collection. Two surfaces read
+that ascending order and one does not: the timeline and `hifa issue history` print it forward, the CLI's
+`HISTORY` section too, and `--json` keeps the envelope's newest-first order because the envelope is the
+read's. `--limit N` keeps the **newest** N of the window and prints them forward — `git log -n`'s cut — and
+the panel's cut is the **first** 8 (D-C), because the panel's reader starts at the top of the story. **The
+window is 100 and it is a floor, not a total:** the read cannot say how many events an issue has, so
+`Show all N` publishes the window's size and a full window prints `the last 100 events` — a hundred-row
+issue and a ten-thousand-row issue answer the same 100 rows, and the section says which of the two it is
+showing. A `COUNT(*)` was the alternative and it is not free (it is one more aggregate per page for a number
+nothing on the screen uses) and not this delta's to add.
+
+**4. Comments merge when HIFA-6 lands, and nothing of this delta merges them.** The ticket's D-A is accepted
+and binds: when `comment_on_issue` writes a history row, that row is the timeline's and the `Comments`
+section is retired rather than kept beside it. This delta **reserves** the value and does not declare a
+sentence for it: `comment_added` is named in SPEC-050 §2.4.2 (the revision that adds the writer adds the
+noun) and deliberately **absent** from SPEC-030 §2.4's table and SPEC-070 §2.5.7's grammar, because a
+sentence for a field no writer stores is a rendering of nothing — the same refusal D-071 §2 made for a
+payload with no producer. The consequence is a one-line change in three places when HIFA-6 lands, and no
+place where a half-declared comment event could rot.
+
+**5. One row, one shape, on both edges — and the sentence has one owner.** `HistoryEntry` is **ten keys**
+on both edges (`id, issue_id, actor_id, field, old_value, new_value, created_at, old_label, new_label,
+actor_label`, appended, never inserted): the CLI of SPEC-050 §2.4.2 and the REST class of SPEC-060 §2.4.2
+publish the same ten, so an agent reads the story without joining `workflow_state`, `member` or `issue`, and
+the raw pair stays for a client that wants the key (P7). `actor_label` is the key that makes the last claim
+true: `actor_id` is a ULID, `HistoryRow`'s display name was app-internal, and until the wire carried it the
+actor was the one field of the story a client still had to resolve. `IssueDetail` is still **33 + 4 = 37
+keys**: an element of a collection is not a key of the object, and a delta that grew the envelope to publish
+a label would have moved a number every count in this corpus quotes. The **wording** has one owner,
+SPEC-070 §2.5.7, and the two other specs quote it — SPEC-030 beside each writer, SPEC-050 in a terminal —
+which is the arrangement SPEC-050 §2.4.2 already used for the `field` rule. The row itself is declared once,
+as SPEC-040 §2.2's `HistoryRow` (eleven typed fields, `dot_color` the one colour key), and the web's element
+**is** that row plus `created_label`; the formatter answers `HistoryPage`, which carries `rows`,
+`window_size`, `truncated` and `last_activity` — the four facts a row cannot. It is
+`src/hifa/app/history.py::history_rows`, not a template (P4) and not `domain/` (a state's display name is not
+a concept the domain layer is asked to learn), and not a web-only step (P2) — the CLI verb, the REST envelope
+and the two web hosts project the same rows.
+
+**6. A ULID never reaches the screen, and every way it could is a rule.** A target that is gone or unknown
+renders `<kind> (deleted)`; a missing side renders the direction's own sentence (`cleared the priority`,
+`unassigned`, `restored the issue`) and never a dangling arrow; an unknown field renders `changed <field>`;
+an unknown actor renders `someone`. The formatter raises nothing — the four are answers, and SPEC-040 §2.2
+declares `raises: nothing` for it. The web keeps the raw pair in `data-*` attributes, which are data and not
+text, so a CSS `content:` cannot print a key.
+
+**7. Three statements about the stored rows were false, and the fixes are in the layers that own them.** (a)
+*Six kinds of stored value are opaque* left out two the grammar already renders: `priority "2"` is `High` and
+`due_date "2026-11-20"` is `20 Nov 2026`, and neither had a producer, so `set priority to High` was a sentence
+about a `2`. The count is **eight**, all with a producer: the six ULID kinds through the read's maps (SQL-7
+rows 13/16/17) and those two through SPEC-040 §2.2's `PRIORITY_LABELS` and `DUE_DATE_FORMAT`, which are
+constants — a closed 0-4 and a date format — and therefore cost no statement. (b) *A `board_order` row renders
+nothing when it shares an instant with a `state_id` row* made the payload's cardinality a property of a
+rendering, so the CLI, the JSON envelope, the REST array and the two web hosts could disagree, and "no row is
+dropped" was false of the surface that dropped one. The read drops it now — SQL-7 row 11 excludes a
+`board_order` row whose immediately preceding row of the same issue, by `id`, is a `state_id` row — which is
+the writers' **batch** and not `created_at`'s precision (33 of the measured database's 34 `board_order` rows
+are exactly `id − 1` from a `state_id` row), and every edge publishes the count the read returns. (c) The
+three milestone rows published one direction (`ISO → NULL`) while `apply_milestones` writes `NULL → ISO` on
+entering the state — the direction `started work` / `completed it` / `canceled it` renders — so both are
+declared, as `archived_at` already did.
+
+**What it wins over, and what it does not touch.** It **supersedes** SPEC-030's `spec_revision` 20 sentence
+that "this table adds no name to them" — the table now enumerates the writers' set, because the enumeration
+belongs to the layer that writes the `INSERT` while the *rule* stays SPEC-050 §2.4.2's. It **supersedes**
+SPEC-050 §2.5.3.2's `HISTORY` section columns `WHEN ACTOR FIELD FROM TO`, which printed a ULID pair and
+said its "CLI half is HIFA-46 and is not declared by this revision": the CLI half is declared in §2.5.3.3
+and the section prints the verb's three cells. **It also supersedes D-071 §5's own sentence** — "`HISTORY`
+is `WHEN  ACTOR  FIELD  FROM  TO`" and "`HISTORY`'s `FROM`/`TO` print the **stored** strings, so a `state_id`
+change shows two ULIDs; rendering them as names is the timeline's rule … whose CLI half is **HIFA-46**, and
+this decision neither fixes nor pre-empts it" — for the same reason and in the same words it supersedes the
+section in SPEC-050: the columns are `WHEN  ACTOR  EVENT`, the cells are the sentence and its resolved
+labels, and the stored pair survives only in `--json` (P7). D-071 §5's other four sentences stand — the
+sections grow in a fixed order, `COMMENTS` drops `ISSUE`, an empty collection prints no section, and the
+block's key field is 9 columns. No other decision publishes a `FIELD`/`FROM`/`TO` row for this collection.
+It **supersedes** the ticket's §2 vocabulary list and its
+`relation:<type>`, `label_id`, `archived`, `restored` rows, for the reasons measured in point 1, and the
+ticket's `45` for the `92` of point 2 with the database and the date named. It **does not contradict**
+D-024 (the delta is in English), D-059 and D-027 (the trash visibility and what the detail page reads are
+untouched), D-060 (comments stay flat and keep their section until HIFA-6), D-062 (the `field`/`resource`
+split of a 404 is not in question), D-071 (a payload with no producer is still refused: `comment_added` has
+no sentence) or D-072 (its §1 is the rule this delta applies to a second collection; its §2–§3 are the trash
+and the milestone keys and are untouched). The ticket's own D-A…D-E are not decisions of this file: they are
+its §11 and they are honoured here as the ticket's binding input — D-C, D-D and D-E are the ones this delta
+writes into three specs.
+
+**What this does not change.** No table, column, index or view is added, removed or renamed: `004` is data
+only and `issue_history`'s DDL is what SPEC-010 §3.1 already declared. No exit code moves — the verb's set
+is **0, 2, 3**, the set of the read it projects — and no error class or `rule` is added; the one new sentence
+(`--limit` outside 1-100) leaves by the bucket the same flag already uses on this edge, `validation_error`
+with `field: "limit"`, which is what `issue list --limit` answers for the same mistake: one flag name with two
+bounds (1-200 the listing's window, 1-100 the history read's) and **one** code, because two codes for one
+mistake is a flag a caller has to read twice. No flag of an existing
+command moves; `issue show --with history` costs the same read and the same statements, and SQL-7 gains
+**one conditional statement** (row 17) whose gate is a *kind* — a page with one `parent_id` row and a page
+with two hundred pay the same one — so REQ-F030-12's 12 is unchanged on a database whose history names no
+parent. That last clause is **measured, not general**: the field list of `~/.local/share/hifa/hifa.db` on
+2026-11-20 has ten values and `parent_id` is not one of them, but `update_issue` writes a `parent_id` row on
+`issue edit --parent`, so any database that has used that flag pays the 13 — the 12 is a property of a file,
+never of "the v1 writers". Nothing of `domain/` moves, no checkbox of
+`001-mvp-v1.tasks.md` is ticked, and no `src/`, `tests/`, `scripts/` or migration file is written by this
+delta: it is a specification, and the code lands in the implementation PR of HIFA-46, which also declares the
+`issue.history` capability row — `cli="issue history"` beside this delta's fragment, **both edges present**,
+so no `debt=`/`reason=` and nothing for `check_edge_parity.py`'s single-edge rule to refuse — together with
+the route's `FRAGMENT_ALLOWLIST` entry, in
+`scripts/check_edge_parity.py` in the same commit (a verb and a fragment the checker fails on until they are
+declared). **Two sentences of the MVP layer still say the opposite** and this delta does not edit them:
+`001-mvp-v1.md`'s seam 8 lists "reading history … `issue history|tree|blocking`" among the verbs that "today
+have no command" and asks for "a contract change in SPEC-050 … with a `version` bump of 050" — which is this
+delta, §2.5.3.3 and 13 → 14 — and `001-mvp-v1.tasks.md` T-06 says "(there is no `issue history` verb)". Both
+are the implementation PR's to correct, beside the code; a requirements file that pre-announced a CLI edge
+would be a fourth place claiming what the tree does. The **numbers** of the same two files are a different
+matter and are corrected here: `REQ-F001` said `user_version = 3` and `01-init.feature` asserted it, which
+contradicted the `MAX_VERSION` of §2 that this delta publishes, so `4` is written where `3` was — a value that
+already had an owner, not a promise about a command.
+
+**Counts, each measured in the worktree (2026-11-20).** SPEC-030 §7 **27 → 30** and SPEC-010 §7 **8 → 9**
+(`grep -cE '^  (Scenario|Scenario Outline):' specs/030-sqlite-adapter.md` → 30,
+`…/010-data-model.md` → 9); SPEC-050 §7 **62 → 69** and SPEC-070 §7 **72 → 80**
+(`…/050-cli.md` → 69, `…/070-web-dashboard.md` → 80); SPEC-040 §7 **59** and SPEC-060 §7 **27** do not move;
+`IssueDetail` stays **37** keys (33 + 4) and `HistoryEntry` goes 7 → **10**; the `.feature`
+corpus stays **17 files / 240 scenarios (228 `Scenario` + 12 `Scenario Outline`)** — no scenario is added or
+removed there, the four `user_version` assertions of `01-init.feature` and the two files of the MVP layer
+carrying `3` are corrected to `4`, which is a value and not a count (`find . -name '*.feature' | wc -l` → 17;
+`grep -cE '^  (Scenario|Scenario Outline):'` summed → 240);
+this file goes **73 → 74** decisions. **Which tool checks what, because they are often confused:** 
+`python3 scripts/ci_drift_check.py` applies the real migrations to a temporary database and compares the
+resulting set of tables, views and indexes against the `CREATE` blocks of `specs/010-data-model.md` — a
+data-only migration cannot move that set; `python3 scripts/spec_contract_check.py --all` runs the same DDL
+comparison **and** the extra checks, among them `pyproject.toml`'s entrypoint (`hifa = "hifa.cli.main:app"`)
+and the base dependencies. Both pass, and neither is **evidence about this delta**: they read a schema and an
+entrypoint, not a sentence, a key list, a scenario count or a step order. A `version` moves in **six** specs —
+SPEC-010 2 → 3 (`MAX_VERSION` and the file table),
+SPEC-030 7 → 8 (`IssueDetail.history_parents`, SQL-7 row 17), SPEC-040 10 → 11 (`history_rows`),
+SPEC-050 13 → 14 (a verb and three keys), SPEC-060 10 → 11 (a schema class), SPEC-070 9 → 10 (a fragment, a
+view-model key and §2.5.7) — and every one of them is a §2 signature, key or table, not a note.

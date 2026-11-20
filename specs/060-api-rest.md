@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 10
-spec_revision: 18
+version: 11
+spec_revision: 19
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -254,6 +254,9 @@ class HistoryEntry(BaseModel):
     old_value: str | None
     new_value: str | None
     created_at: str
+    old_label: str | None  # additive, spec_revision 19: the resolved `old_value`, or null
+    new_label: str | None  # additive, spec_revision 19: the resolved `new_value`, or null
+    actor_label: str  # additive, spec_revision 19: the display name of `actor_id`, or "someone"
 
 
 class IssueDetail(IssueOut):
@@ -267,6 +270,31 @@ class IssueDetail(IssueOut):
 collections, so the object is **33 + 4 = 37 keys**, and all four are always present — a collection that
 was not asked for and one with no rows are both `[]`, and no key tells them apart (SPEC-050
 §2.5.3.2 says the same for the CLI, which emits this class field for field).
+
+**`HistoryEntry` is ten keys, and the envelope is still 37.** A collection's element is not a key of
+the object that carries the collection, so the three keys this revision appends to `HistoryEntry` move the
+**element** and not `IssueDetail`: 37 stays 37, and a consumer that ignores history parses the same
+object it already parsed (R2 — append, never reorder). The row is the one SPEC-040 §2.2's
+`history_rows` answers (`HistoryRow`, declared there field by field), and these are its keys:
+
+- `old_value`/`new_value` are the **stored** TEXT, unchanged and never rewritten (P7). A client that
+  wants the raw key of a state change still reads it here, exactly as `issue show --json` publishes it.
+- `old_label`/`new_label` are the **resolved** rendering of the same two, from the maps of
+  SPEC-030 §2.6 (SQL-7 rows 13, 16 and 17, plus the two constants of SPEC-040 §2.2 for `priority` and
+  `due_date`) and never from a join a client would have to run; `null` when the corresponding value is
+  `null`, when the field names no target (`description`, `trashed`) or when the target no longer exists —
+  in which case the label is `"<kind> (deleted)"` and not `null`, because "the row had no second side" and
+  "the row pointed at something that is gone" are two different facts and a client cannot tell them apart
+  from a `null`.
+- `actor_label` is the display name of `actor_id`, or `"someone"` when the row carries no actor or names a
+  member this workspace no longer holds. It is **never** `null`, and it is what makes the element
+  join-free for the actor: `actor_id` alone is a ULID a client cannot print.
+- The sentence the web renders is **not** in this object: an envelope carries data, and the wording is
+  SPEC-070 §2.5.7's. This edge publishes the three labels precisely so a client does not have to own a
+  copy of the grammar.
+
+`field` is the writer's vocabulary of SPEC-030 §2.4, closed at 21 values, and `relation` is not
+`relation:<type>`: the type travels inside `new_value` as `"blocks HIFA-51"` (SPEC-030 §2.4, D-074).
 
 `AttachmentOut` is **declared once, in §2.4.4, and produced nowhere in v1**: `add_attachment` is declared
 in SPEC-040 §2.2 and implemented nowhere, it is the only writer of `attachment` (SPEC-040 §3.1), and it is
@@ -990,7 +1018,8 @@ $ curl -s 'localhost:7777/api/v1/issues?team=ENG&cursor=eyJ2IjoxLCJvIjoicHJpb3Jp
 $ curl -s localhost:7777/api/v1/issues/ENG-13?include=comments
 {"id":"01JCV3X9...","identifier":"ENG-13",…,"comments":[],"relations":[],
  "history":[{"id":1,"issue_id":"01JCV3X9...","actor_id":null,"field":"state_id",
-             "old_value":null,"new_value":"01JCV3...","created_at":"2026-11-08T14:03:11Z"}],
+             "old_value":null,"new_value":"01JCV3...","created_at":"2026-11-08T14:03:11Z",
+             "old_label":null,"new_label":"Todo","actor_label":"someone"}],
  "children":[]}
 ```
 
@@ -1558,6 +1587,24 @@ Feature: hifa REST API
   (4) **§7 goes 26 → 27** — one scenario for the 37 keys, the four trailing keys and the two 422s — and
   §8's count is corrected: it said **24** while §7 carried 26, a drift this revision had to touch because
   it moves the number anyway.
+
+- spec_revision 19 (2026-11-20): **`HistoryEntry` publishes the resolved values beside the stored ones, and
+  the envelope does not move (HIFA-46, D-074).** `version` 10 → 11: §2.4.2 declares a published schema
+  class and a key list a client deserialises, which is the ground every earlier version bump of this
+  spec stood on.
+  (1) **A client that wanted to render history had to join `workflow_state`, `member` and `issue`
+  itself.** The element now carries `old_label`/`new_label` and `actor_label` — appended after
+  `new_label`, never inserted — resolved by SPEC-040 §2.2's `history_rows` through the maps SPEC-030 §2.6
+  already loads, and `old_value`/`new_value` stay exactly as stored (P7). `actor_label` was the key the
+  first two left out: without it the actor of a row was a ULID and this edge's "no join" claim was false
+  for the one field it named. SPEC-050 §2.4.2's `HistoryEntry` is the same **ten** keys: one row has one
+  shape on both edges, which is the property three rounds of this corpus spent on `field`.
+  (2) **A `null` label means "that side of the row is empty", and a target that is gone renders
+  `<kind> (deleted)`** — two different facts, and `null` for both would have merged them. `actor_label`
+  is the exception that proves the rule: `someone` is an answer too, and it is never `null`.
+  (3) **Counts.** `IssueDetail` is still **33 + 4 = 37 keys**: an element of a collection is not a key of
+  the object, and the three keys move `HistoryEntry` from 7 to **10**. §7 stays at **27** scenarios — no
+  route, no status and no error code changes, and `field`'s vocabulary is SPEC-030 §2.4's to enumerate.
 
 - spec_revision 18 (2026-11-20): **round three: the rule that selects `include` names, the one home of a
   shape with no producer, and one API path (HIFA-49).** `version` 9 → 10: §2.5.1's route table loses two
