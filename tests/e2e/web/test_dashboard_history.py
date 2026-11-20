@@ -287,8 +287,12 @@ def test_the_floor_line_travels_inside_the_list_the_swap_replaces(
 
     assert listing is not None
     assert "the last 100 events" in listing.group(1)
-    assert re.search(r'<li class="dim history-floor" role="note">the last 100 events</li>',
-                     listing.group(1)) is not None
+    assert (
+        re.search(
+            r'<li class="dim history-floor" role="note">the last 100 events</li>', listing.group(1)
+        )
+        is not None
+    )
     # The line is inside the list and not in any row's accessible name.
     assert all("the last 100 events" not in row for row in EVENT.findall(section))
 
