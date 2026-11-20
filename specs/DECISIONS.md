@@ -3122,3 +3122,93 @@ checkbox ticked and no scenario added or removed: the corpus is still **240 (228
 still holds **62** decisions. No `version` moves in that round: §6 of SPEC-020 stops claiming a payload
 the edges never built, and a pointer, a sample's fourth key and the spelling of a noun are not a change
 to any requirement, flag, route, exit code or payload shape.
+
+## D-063 — A page with no query is a state, not a refusal
+
+**Date:** 2026-11-20 · **Wins:** SPEC-070 §2.1.8 (the page owns its four states) and SPEC-090 §2.6.1 (the
+use case owns `query_empty`) · **Touches:** SPEC-070 §2.1.1, §2.1.8, §2.1.9, §2.3.5, §4 (R21), §6, §7,
+§11; SPEC-090 §1, §2.5, §2.6, §2.6.1, §6, §7, §11, §12; `specs/INDEX.md`
+
+**The rule.** `GET /search` has exactly four states: **empty** (no `q`, or a `q` of spaces) ⇒ `200`,
+the use case is not called; **results** ⇒ `200`; **no results** (`hits=[]` from a valid query) ⇒ `200`;
+**error** (a query SPEC-090 §6 refuses) ⇒ `422`, the same template with the query kept. It answers `400`
+for none of them. `query_empty` survives as the refusal of the two edges that are **asked to run a
+query**: `hifa search` (exit 2) and `GET /api/v1/search` (422, SPEC-060 §2.5.4).
+
+**Why the surfaces could not keep the `400`.** SPEC-070 §2.1.1 and §6 declared "an empty `q` in `/search`
+⇒ `400`", and `base.html` renders `<a href="/search">` in the top bar of **every** page: the one URL the
+navigation offers answered an error page, which is the dead end T-11 was opened to remove. The
+contradiction was not between two specs but between a spec row and a link the same spec declares in
+§2.1.1 — and a page whose only entry point is a `400` is a page nothing links to, whatever the table
+says.
+
+**Why `422` and not `400` for the query it cannot read.** The page never *asked* for a query: the reader
+did, in a form the page serves. A missing `q` is not invalid input, it is the state the page is in before
+the first search; a `q` SPEC-090 refuses is invalid input, and `422` with the input kept is what this
+layer already does for every other rejection (§6). `400` stays where it already was: the `/_/` family
+without `HX-Request` (R5) and the cross-site write guard (R28) — both of them a malformed *client*, not
+a mistyped query.
+
+**The alternatives rejected.** (1) *Keep the `400` and point the sidebar at `/search?q=`* — there is no
+query to prefill, and a seeded one would run a search nobody asked for on every click. (2) *Let the page
+call `search_issues` with an empty text and render the `query_empty` it raises* — the page would catch
+the refusal to show the empty state, which is a `400` wearing the markup of a `200`; the state is
+declared instead, and the use case is never called without something to search for. (3) *Make the empty
+state a `404`* — the page exists and the workspace exists; only the query is absent.
+
+**What it does not change.** The CLI's exit `2` and the API's `422` for `query_empty`, its code and its
+message; the `q` grammar of SPEC-090 §2.3; the palette (`/_/palette`, R19), whose two phases already
+answer an empty `q` with actions only; and the board/list `q`, which is the title filter of D-025.
+
+**Verification.** SPEC-090 §2.6.1 lists the seven consumer rules; SPEC-070 §2.1.8's state table is the
+contract and §7 has a scenario per state (the empty one asserts `200` and the absence of any hit); the
+catalogue of §6 no longer carries `type something to search`, because it was a refusal that no longer
+exists — the empty state's copy is a read-model key of §2.3.5.
+
+## D-064 — The search use case is `search_issues`, and the hit is flat
+
+**Date:** 2026-11-20 · **Wins:** SPEC-090 §2.2/§2.3 (the shape of the payload) and SPEC-040 §2.2 (the
+entry point every edge calls) · **Touches:** SPEC-090 §1, §2.3, §2.5, §2.6, §2.6.1, §8, §12; SPEC-050
+§2.3, §2.4.1, §2.4.1.1, §2.4.3, §2.5.1, §7, §11; SPEC-070 §2.1.4, §2.1.8, §4 (R21), §11;
+`specs/INDEX.md`
+
+**The rule.** (1) **One entry point:** `search_issues(db: Database, query: SearchQuery) -> SearchPage`,
+the signature SPEC-040 §2.2 has carried, is what every edge calls; `SearchService` is the object
+`app/search.py` builds over `Reads` and nobody outside that module constructs; `parse_query(raw)` is the
+public parser and the class's `parse` method is gone. (2) **One hit shape:** `SearchHit` of SPEC-090 §2.2,
+flat and eleven fields — `issue_id, identifier, title, state_name, state_type, priority, due_date,
+assignee_display_name, updated_at, snippet, score`. D-002's `{issue, snippet, score}` is the one part of
+that resolution that does not survive: it predates the dataclass and would have made every edge read six
+values out of a nested 31-key `Issue`.
+
+**Why the entry point had to be settled.** The corpus carried three answers to "how do I search": SPEC-040
+§2.2 declares the function, SPEC-090 §2.3 declared the class, SPEC-050 §2.3 and SPEC-070 §2.1.4/R21 called
+the class, and T-11 was opened on the observation that "there is no `search_issues` use case". A class
+whose constructor takes `SearchReads` cannot be the application port: an edge that builds it has to import
+`adapters/sqlite/reads.py` to obtain the port, which A3 forbids for `web/` and `cli/`, and D-012 settles the
+question in advance — an edge calls a function of SPEC-040 §2.2 and declares none of its own. The
+implementation is one function that constructs the service, calls it once and returns its page, so the
+class keeps the logic and the port stays a function.
+
+**Why the hit is flat.** The CLI table (SPEC-050 §2.4.1.1) and the page (`search_vm`, SPEC-070 §2.3.5)
+print the same six fields — identifier, title, state, priority, updated, snippet — and a flat hit hands
+them each one key; the nested shape hands them `hit.issue.identifier`, `hit.issue.title`,
+`hit.issue.state.name`, `hit.issue.priority`, `hit.issue.updated_at` and `hit.snippet`, i.e. a 31-key
+payload to render six values, with two keys of the same object read at two depths. The envelope stays the
+five keys of SPEC-090 §2.2 — `hits, total, has_more, backend, took_ms` — and only the element changes.
+
+**The alternatives rejected.** (1) *Promote `SearchService` to the port and declare it in SPEC-040 §2.2* —
+a port whose constructor takes an adapter object forces every edge to know the adapter; it also leaves
+`search_issues` declared and unimplemented in the spec that owns the port. (2) *Keep `{issue, snippet,
+score}`* — see above; it also contradicts the flat hit every scenario of SPEC-090 §7 already asserts.
+(3) *Two shapes, one per edge* — the same query would answer two payloads depending on who asked, which is
+exactly what D-016 forbids and what the API already defers to SPEC-090 for.
+
+**What it does not change.** The `hifa search` flags, the envelope's five keys, the ranking, the `like`
+fallback, the `snippet`'s markers and the rule that no edge escapes them; the API's `SearchPage`
+(SPEC-060 §2.5.4) and its `422`; the CLI's exit codes `0/2/6`; and the page's `count=False`, which is
+D-063's page, not this shape's.
+
+**Verification.** SPEC-090 §8 step 11 names `search_issues`/`parse_query`/`SearchService` for the contract
+check; SPEC-050 §7 asserts the eleven keys of a hit; SPEC-070 §7 asserts the six rendered fields and the
+single escaping of the snippet; `grep -rn "SearchService(" src/hifa/cli src/hifa/web` must return nothing.

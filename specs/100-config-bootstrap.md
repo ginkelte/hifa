@@ -3,8 +3,8 @@ id: SPEC-100
 title: Configuration and bootstrap
 component: support
 status: review
-version: 1
-spec_revision: 7
+version: 2
+spec_revision: 8
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/config.py
@@ -15,7 +15,7 @@ implements:
 acceptance: specs/acceptance/100-config-bootstrap.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-16
+updated: 2026-11-20
 ---
 
 # SPEC-100 — Configuration and bootstrap
@@ -319,7 +319,7 @@ VALUES('integrity-check'); ROLLBACK`). With the database opened in `ro` mode, th
 | `hifa init` | `--name TEXT` (workspace; default `basename(cwd)`), `--team-key TEXT` (default `ENG`), `--team-name TEXT` (default `Engineering`), `--icon TEXT` (default `🚀`), `--color TEXT` (default `#5E6AD2`), `--timezone TEXT` (default `America/Santiago`), `--no-labels`, `--no-member`, `--force`, `--db PATH` (global), `--json` | `BootstrapResult` | 0, 2, 4 |
 | `hifa doctor` | `--db` (global), `--json`, `--verbose` | `DoctorReport` | 0, 1, 2, 3 |
 | `hifa db path` | `--db` (global), `--json` | `{"db_path": "...", "source": "file", "config_file": "..."}` | 0, 2 |
-| `hifa db reindex` | `--db` (global), `--json` | `{"reindexed": 10000}` | 0, 3 |
+| `hifa db reindex` | `--db` (global), `--json`, `--quiet` | `{"reindexed": 10000}` | 0, 3, 6 |
 
 This table is the **only** row for `init`, `doctor` and `db`; SPEC-050 §2.5.1/§2.5.5 copies it
 literally (D-013). `--name` is the workspace name (that flag, not `--workspace-name`); the
@@ -522,7 +522,7 @@ Invariants that `hifa init` guarantees on completion:
   | C5 | `schema_version` | `PRAGMA user_version` vs. `migrations_max_version(migrations_dir)` | `user_version > max` (database newer than the binary) | `user_version < max` (pending migrations) |
   | C6 | `file_size` | `os.stat(db_path).st_size` + size of the `-wal` | — | > 512 MB (suggest `VACUUM`) |
   | C7 | `permissions` | `stat.st_mode & 0o777` of the file and of the directory | — | file ≠ `0600` or directory ≠ `0700` (or more permissive) |
-  | C8 | `fts_integrity` | `BEGIN; INSERT INTO issue_fts(issue_fts) VALUES('integrity-check'); ROLLBACK` | `database disk image is malformed` exception | any other `OperationalError` (table missing) → suggest `hifa db reindex` |
+  | C8 | `fts_integrity` | `BEGIN; INSERT INTO issue_fts(issue_fts) VALUES('integrity-check'); ROLLBACK` | `database disk image is malformed` exception, or `issue_fts` missing (the schema is broken and no search can run: `critical`, detail `fts index is missing — run "hifa db migrate"`, because a rebuild needs a table to rebuild) | the index and the table disagree (`warning`, detail `fts index out of sync — run "hifa db reindex"`) |
   | C9 | `counts` | `COUNT(*)` of `workspace, team, workflow_state, label, member, project, cycle, issue, comment` | — | — (always `info`) |
 
 - **R19 — Exit code (REQ-F100-18).** `0` if there is no `warning` or `critical`; `1` if there is at least one
@@ -531,10 +531,29 @@ Invariants that `hifa init` guarantees on completion:
 - **R20 — Read-only (REQ-F100-19).** `doctor` does not modify data: the only write statement
   is the one of C8, always inside a rolled-back transaction. `doctor` does not apply migrations, does not
   repair indexes and does not change permissions (it only reports them; hardening them belongs to `init`).
-- **R21 — `hifa db reindex` (REQ-F100-20).** It runs
-  `INSERT INTO issue_fts(issue_fts) VALUES('rebuild')` in a transaction and returns the number of
-  indexed issues (`SELECT COUNT(*) FROM issue`). It is the action recommended by C8 and by rule
-  R19 of SPEC-090 (rebuild after `VACUUM`). If the database does not exist ⇒ exit 3.
+- **R21 — `hifa db reindex` (REQ-F100-20), and it is the whole contract of the verb.** The command
+  resolves the database path with §2.2, opens it **read-write**, and executes exactly this:
+  `BEGIN IMMEDIATE; INSERT INTO issue_fts(issue_fts) VALUES('rebuild'); COMMIT` — one transaction, so a
+  failure leaves the previous index in place rather than half of a new one. It then returns
+  `SELECT COUNT(*) FROM issue`, the number of indexed issues, which is what `reindex`'s `int` and the
+  `reindexed` key both carry. Four consequences, all of them testable:
+  - **The count is every row of `issue`, trashed and archived included**, because the index holds every
+    row — visibility is a predicate of the query (SPEC-090 R10), never of the index. After the rebuild,
+    `COUNT(*)` of `issue_fts` equals `COUNT(*)` of `issue`.
+  - **It writes nothing else.** No row of `issue` changes, no `issue_history` row is written, no
+    `VACUUM` runs (that is `db vacuum`, which owes the rebuild of SPEC-090 R19), and the command is
+    idempotent: reindexing twice returns the same number and the same database bytes.
+  - **It is the action C8 recommends**, and the only corrective action the search contract allows
+    (SPEC-090 R18, D-003): no search ever rebuilds the index and `hifa search --reindex` does not exist.
+  - **The failures are loud.** A path that does not exist, or that cannot be opened ⇒ exit `3`,
+    `database_not_found`. A file that exists but has no `workspace` table ⇒ exit `2`,
+    `not_a_hifa_database` (§6). A build whose SQLite has no `ENABLE_FTS5` ⇒ exit `6`, `fts5_unavailable`;
+    a database whose `issue_fts` is missing or whose image is malformed ⇒ exit `6`, `corrupt_database`.
+    None of these is answered with `{"reindexed": 0}`: an index that could not be rebuilt and an index
+    with nothing to rebuild are different answers, and the empty database is the second one — exit 0,
+    `{"reindexed": 0}`.
+  Human output is the one line `reindexed N issues` (SPEC-050 §2.4.1); `--json` is
+  `{"reindexed": N}`; `--quiet` prints nothing and the exit code is the answer.
 - **R22 — Parameterized SQL (REQ-S100-02, SPEC-000 REQ-S002).** The checks use constant
   queries; the few values (paths, versions) never enter the SQL. `migrations_max_version`
   reads file names with `re.fullmatch(r"(\d{3})_[A-Za-z0-9_]+\.sql", name)` and discards whatever
@@ -641,7 +660,9 @@ run and returns exit 2 with the checks already computed.
 | `ConfigError` | `in_memory_not_supported` | `hifa init` with `--db :memory:` | exit 2 |
 | `Validation` | `not_a_hifa_database` | the file exists but has no `workspace` table | exit 2 |
 | `Conflict` | `schema_too_new` | `user_version` > the binary's maximum migration | exit 4 |
-| `NotFound` | `db_not_found` | `doctor`/`reindex` on a nonexistent path | exit 3 |
+| `DatabaseNotFound` | `database_not_found` | `doctor`/`reindex` on a nonexistent path that cannot be opened (the code of SPEC-050 §6 for a missing file; this table's only `3` besides `not_found`) | exit 3 |
+| `Fts5Unavailable` | `fts5_unavailable` | `reindex` on a build whose SQLite has no `ENABLE_FTS5` (R21) | exit 6 |
+| `CorruptDatabase` | `corrupt_database` | `reindex` when `issue_fts` is missing or the image is malformed (R21) | exit 6 |
 
 Catalog of `CheckResult`s that produce exit ≠ 0:
 
@@ -654,10 +675,10 @@ Catalog of `CheckResult`s that produce exit ≠ 0:
 | `schema_version` | warning / critical | `user_version V, available migrations M` (warning if V < M, critical if V > M) |
 | `file_size` | warning | `<bytes> bytes (<MB> MB) — consider VACUUM` |
 | `permissions` | warning | `db <mode> (expected 0600), dir <mode> (expected 0700)` |
-| `fts_integrity` | warning / critical | `fts index out of sync — run "hifa db reindex"` |
+| `fts_integrity` | warning / critical | `fts index out of sync — run "hifa db reindex"` (warning); `fts index is missing — run "hifa db migrate"` (critical, SPEC-100 R18/C8) |
 
-No check invents new exit codes: `doctor` uses exclusively `0/1/2/3` from R19, and
-`init` uses `0/2/4`. The `1` is **exclusive** to `doctor` (linter convention: 0 clean, 1 findings)
+No check invents new exit codes: `doctor` uses exclusively `0/1/2/3` from R19, `init` uses `0/2/4` and
+`db reindex` uses `0/3/6` (R21). The `1` is **exclusive** to `doctor` (linter convention: 0 clean, 1 findings)
 and is documented here because the global table of SPEC-000 A7 reserves it for that command and no
 other spec may use it (D-014). An internal bug is `6`, never `1`.
 
@@ -829,18 +850,26 @@ Feature: Configuration, bootstrap and database diagnostics
   Scenario: doctor on a nonexistent path
     When "hifa doctor --db /tmp/no-existe/hifa.db" is executed
     Then the exit code is 3
-    And the message contains "db_not_found"
+    And error.code is "database_not_found"
 
-  Scenario: reindex repairs the FTS index
-    Given a database where issue_fts was dropped
+  Scenario: reindex repairs an out-of-sync FTS index
+    Given a database whose "issue_fts" disagrees with "issue"
     When "hifa doctor" is executed
     Then the fts_integrity check is warning
-    When "hifa db reindex" is executed
+    And the exit code is 1
+    When "hifa db reindex --json" is executed
     Then the exit code is 0
-    And the result shows the number of reindexed issues
+    And the "reindexed" field is the number of issues
     When "hifa doctor" is executed again
     Then the fts_integrity check is "ok"
     And the exit code is 0
+
+  Scenario: reindex refuses a database whose index cannot be rebuilt
+    Given a database where "issue_fts" was dropped
+    When "hifa db reindex --json" is executed
+    Then the exit code is 6
+    And error.code is "corrupt_database"
+    And the "reindexed" field is absent
 
   Scenario: config resolution has no side effects
     Given an empty directory
@@ -915,6 +944,21 @@ Feature: Configuration, bootstrap and database diagnostics
 
 ## 11. Notes
 
+- **spec_revision 8 (2026-11-20): `hifa db reindex` has a contract down to its transaction (HIFA-7).**
+  `version` 1 → 2: §2.7's row gains `--quiet` and the exit code `6`, R21 is rewritten, and §6 gains the
+  two codes that row can now produce. In terms of the system: (1) **the verb the search cannot live
+  without is the only one of the `db` group this revision contracts** — `db migrate`, `db vacuum`,
+  `db path` and `hifa doctor` stay declared and unimplemented, one ticket each, and no row moved;
+  (2) **`reindexed` counts every row of `issue`**, trashed and archived included, because the index
+  holds them (visibility is a query predicate, SPEC-090 R10): after the rebuild `COUNT(*)` of
+  `issue_fts` equals `COUNT(*)` of `issue`, which is what `10-search.feature` asserts;
+  (3) **the two failures are loud and named** — `fts5_unavailable` when the interpreter's SQLite has no
+  `ENABLE_FTS5`, `corrupt_database` when `issue_fts` is missing or the image is malformed — and neither
+  is answered with `{"reindexed": 0}`, which is the *empty database*, an exit-0 answer;
+  (4) **C8 stops sending a missing table to `reindex`**, which could never repair it: a missing
+  `issue_fts` is `critical` and names `db migrate`; the warning is the out-of-sync index, whose only
+  fix is the rebuild; (5) **the code of a missing file is `database_not_found`**, not `db_not_found`:
+  §6's row, its scenario and SPEC-050 §6 now agree on the one name.
 - **spec_revision 7 (2026-11-16): the seed gains one shared `In Review` at `4.5` (D-058).** §2.5's
   `DEFAULT_STATES` is now `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) ·
   In Review(4.5) · Done(5.0) · Canceled(6.0)`: one column for spec review and code review alike, of type
@@ -957,8 +1001,9 @@ Feature: Configuration, bootstrap and database diagnostics
     was removed from SPEC-050: the default team is `[cli].default_team` and the member
     only `--member`/`HIFA_MEMBER` (§2.3, member bullet).
   - **Gap 8:** `hifa db path` is declared here and SPEC-050 copies it; `hifa db reindex` has a single
-    envelope (`{"reindexed": N}`, exit `0,3`) and `hifa db doctor` does not exist (alias of `hifa doctor`,
-    which is the only `doctor`).
+    envelope (`{"reindexed": N}`, exit `0,3` — `0,3,6` since rev 8, R21: the two `6`s are the index's
+    unavailability, `fts5_unavailable` and `corrupt_database`) and `hifa db doctor` does not exist (alias
+    of `hifa doctor`, which is the only `doctor`).
   - **D-014:** `1` is exclusive to `doctor`; the global map (2 validation, 3 not found,
     4 conflict, 5 transition, 6 internal) remains in force for the rest of the commands.
 - **Gap not applied (§6.1 vs D-014):** the rule "`1` is exclusive to `doctor`" depends on

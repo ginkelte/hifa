@@ -2,13 +2,14 @@
 Feature: Search
 
   # FTS5 with bm25, filtered by visibility at query time. The envelope is the one of
-  # SPEC-090 §2: {hits, total, has_more, backend, took_ms}. The only corrective action
-  # on the index is `hifa db reindex` (D-003).
+  # SPEC-090 §2: {hits, total, has_more, backend, took_ms}. `total` is null unless `--count`
+  # is passed (SPEC-090 R11), so every scenario that asserts it passes the flag. The only
+  # corrective action on the index is `hifa db reindex` (D-003).
 
   @REQ-F025 @smoke
   Scenario: search finds by title and returns a snippet
     Given the issue "ENG-50" with title "Broken login on Safari"
-    When I run "hifa search 'login' --json"
+    When I run "hifa search 'login' --count --json"
     Then the "total" field is 1
     And the "backend" field is "fts"
     And the result includes a snippet field with the word "login"
@@ -16,14 +17,14 @@ Feature: Search
   @REQ-F025 @smoke
   Scenario: an issue in trash does not appear in search
     Given the issue "ENG-50" with title "Broken login on Safari"
-    When I run "hifa issue delete ENG-50 --yes" and then "hifa search 'login' --json"
+    When I run "hifa issue delete ENG-50 --yes" and then "hifa search 'login' --count --json"
     Then the "total" field is 0
     And the "hits" field is empty
 
   @REQ-F025 @smoke
   Scenario: trash and restore keep the result without reindexing
     Given the issue "ENG-50" in trash with title "Broken login on Safari"
-    When I run "hifa issue restore ENG-50" and then "hifa search 'login' --json"
+    When I run "hifa issue restore ENG-50" and then "hifa search 'login' --count --json"
     Then the "total" field is 1
     And no reindexing was run
 
@@ -38,7 +39,7 @@ Feature: Search
   @REQ-S002 @smoke
   Scenario Outline: a hostile FTS query is treated as literal text
     Given the issue "ENG-51" with title "Broken login"
-    When I run "hifa search <query> --json"
+    When I run "hifa search <query> --count --json"
     Then the exit code is 0
     And the "total" field is 0
     And no issue is returned
