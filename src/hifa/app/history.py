@@ -119,23 +119,24 @@ def history_rows(
     *,
     states: Mapping[str, str],
     members: Mapping[str, str],
+    state_colors: Mapping[str, str],
     parents: Mapping[str, str] | None = None,
     priorities: Mapping[int, str] = PRIORITY_LABELS,
     due_dates: Mapping[str, str] | None = None,
-    state_colors: Mapping[str, str] | None = None,
     now: datetime | None = None,
 ) -> HistoryPage:
     """Sort the window oldest-first and answer it with every rendering a reader needs.
 
-    `states`, `members` and `parents` are the read's maps; `priorities` and `due_dates` are word
-    maps this module owns and cannot miss. `state_colors` and `now` are optional and change
-    nothing about the rows: a dot colour needs the state's colour, which the name map does not
-    carry, and the summary's relative stamp needs the edge's clock. An unknown field, an
-    unresolvable value and a missing actor are answers, never refusals.
+    `states`, `members`, `state_colors` and `parents` are the read's maps; `priorities` and
+    `due_dates` are word maps this module owns and cannot miss. `state_colors` is required because
+    `HistoryRow.dot_color` is part of the row's shape and no other map carries a colour: a caller
+    that omits it does not render a plainer dot, it publishes a row that lost one of its fields.
+    `now` is the edge's clock, and the summary under the title is either the whole line —
+    `<actor> <sentence> · <relative>` — or absent: without a clock there is no half line to print.
+    An unknown field, an unresolvable value and a missing actor are answers, never refusals.
     """
     ordered = sorted(rows, key=lambda row: (row.created_at, row.id))
     dates = due_dates if due_dates is not None else _due_dates(ordered)
-    colours = state_colors or {}
     parent_map = parents or {}
 
     page: list[HistoryRow] = []
@@ -158,7 +159,7 @@ def history_rows(
                 actor_id=entry.actor_id,
                 actor_label=(members.get(entry.actor_id) if entry.actor_id else None) or SOMEONE,
                 sentence=sentence,
-                dot_color=_dot(entry, colours),
+                dot_color=_dot(entry, state_colors),
                 created_at=entry.created_at,
             )
         )
@@ -332,13 +333,16 @@ def _relation_sentence(old: str | None, new: str | None) -> str | None:
 
 
 def _last_activity(page: list[HistoryRow], now: datetime | None) -> LastActivity | None:
-    """The newest row as the line under the title; `now` adds how long ago it happened."""
-    if not page:
+    """The newest row as the line under the title, and nothing without a clock to measure it by.
+
+    The line's declared shape is `<actor_label> <sentence> \u00b7 <relative>`, so a reader either
+    gets the whole line or no line: a caller with no clock (the CLI, whose payload has no such
+    line) cannot publish half of one.
+    """
+    if not page or now is None:
         return None
     newest = page[-1]
-    text = f"{newest.actor_label} {newest.sentence}"
-    if now is not None:
-        text = f"{text} \u00b7 {relative_time(newest.created_at, now)}"
+    text = f"{newest.actor_label} {newest.sentence} \u00b7 {relative_time(newest.created_at, now)}"
     return LastActivity(text=text, row_id=newest.id)
 
 

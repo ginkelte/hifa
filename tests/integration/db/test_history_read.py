@@ -271,6 +271,7 @@ def test_the_read_and_the_formatter_answer_one_story(world: World) -> None:
             members=detail.members,
             parents=detail.history_parents,
             state_colors={state.id: state.color for state in detail.states},
+            now=now,
         )
 
     assert [row.sentence for row in page.rows] == [
@@ -279,4 +280,4 @@ def test_the_read_and_the_formatter_answer_one_story(world: World) -> None:
         "added the label bug",
     ]
     assert page.last_activity is not None
-    assert page.last_activity.text == "Ana P\u00e9rez added the label bug"
+    assert page.last_activity.text == "Ana P\u00e9rez added the label bug \u00b7 just now"

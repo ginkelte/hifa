@@ -44,9 +44,14 @@ def _row(
     )
 
 
-def _page(*rows: IssueHistory) -> HistoryPage:
+def _page(*rows: IssueHistory, now: datetime | None = NOW) -> HistoryPage:
     return history_rows(
-        rows, states=STATES, members=MEMBERS, parents=PARENTS, state_colors={"S2": "#F2994A"}
+        rows,
+        states=STATES,
+        members=MEMBERS,
+        parents=PARENTS,
+        state_colors={"S2": "#F2994A"},
+        now=now,
     )
 
 
@@ -217,6 +222,7 @@ def test_a_caller_may_hand_its_own_word_maps() -> None:
         [_row(1, "priority", None, "2"), _row(2, "due_date", None, "2026-11-20")],
         states=STATES,
         members=MEMBERS,
+        state_colors={"S2": "#F2994A"},
         priorities={2: "Alta"},
         due_dates={"2026-11-20": "20/11/2026"},
     )
@@ -287,8 +293,16 @@ def test_the_last_activity_is_the_newest_row() -> None:
     )
 
     assert page.last_activity == LastActivity(
-        text="Beto D\u00edaz moved from Todo to Done", row_id=2
+        text="Beto D\u00edaz moved from Todo to Done \u00b7 just now", row_id=2
     )
+
+
+def test_a_caller_without_a_clock_gets_no_summary_and_not_half_of_one() -> None:
+    """The line's shape needs the stamp, so the whole line is what a clock buys (P7)."""
+    page = _page(_row(1, "state_id", "S1", "S2"), now=None)
+
+    assert page.rows[0].sentence == "moved from Todo to Done"
+    assert page.last_activity is None
 
 
 def test_the_last_activity_adds_the_relative_stamp_when_the_clock_is_known() -> None:
@@ -296,6 +310,7 @@ def test_the_last_activity_adds_the_relative_stamp_when_the_clock_is_known() -> 
         [_row(1, "state_id", "S1", "S2", at=NOW)],
         states=STATES,
         members=MEMBERS,
+        state_colors={},
         now=NOW + timedelta(hours=2),
     )
 
