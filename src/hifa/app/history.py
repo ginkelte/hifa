@@ -2,8 +2,11 @@
 
 Every edge reads a history row through `history_rows`, so the wording of a sentence exists once,
 here, and no route, template or CLI command assembles one of its own. The function resolves
-nothing: the maps it receives are the labels the read already looked up, and the two word maps it
-owns — the priority labels and the due-date shape — are constants.
+nothing: the maps it receives are the labels the read already looked up, and the word maps it
+owns — the priority labels, the due-date shape, the month names and the "how long ago" grammar —
+are constants. `relative_time` is public for the same reason: a comment's stamp and the detail's
+`updated_label` are the same sentence about the same instant, and the edge that printed its own
+would be the way two surfaces started disagreeing.
 """
 
 from __future__ import annotations
@@ -33,7 +36,9 @@ WINDOW_SIZE: Final[int] = 100
 #: The word an actor whose member is gone (or absent) renders as.
 SOMEONE: Final[str] = "someone"
 
-_MONTHS: Final[tuple[str, ...]] = (
+#: The twelve month names the timeline prints. A constant, not `strftime`'s locale: a row's stamp
+#: reads the same on a machine with no locale set (SPEC-070 §2.5.7.2's day separators print it too).
+MONTHS: Final[tuple[str, ...]] = (
     "Jan",
     "Feb",
     "Mar",
@@ -344,12 +349,17 @@ def _last_activity(page: list[HistoryRow], now: datetime | None) -> LastActivity
     newest = page[-1]
     text = f"{newest.actor_label} {newest.sentence}"
     if now is not None:
-        text = f"{text} \u00b7 {_relative(newest.created_at, now)}"
+        text = f"{text} \u00b7 {relative_time(newest.created_at, now)}"
     return LastActivity(text=text, row_id=newest.id)
 
 
-def _relative(moment: datetime, now: datetime) -> str:
-    """`just now`, `2 m ago`, `2 h ago`, `3 d ago`, and an absolute stamp past a month."""
+def relative_time(moment: datetime, now: datetime) -> str:
+    """`just now`, `2 m ago`, `2 h ago`, `3 d ago`, and an absolute stamp past a month.
+
+    The one grammar of "how long ago" in the tree: the summary under the title, a comment's stamp
+    and the detail's `updated_label` all read it, so an edge that printed its own would be the way
+    two surfaces started disagreeing about the same instant.
+    """
     seconds = int((now - moment).total_seconds())
     if seconds < 60:
         return "just now"
@@ -359,7 +369,7 @@ def _relative(moment: datetime, now: datetime) -> str:
         return f"{seconds // 3600} h ago"
     if seconds < 86400 * 30:
         return f"{seconds // 86400} d ago"
-    return f"{_MONTHS[moment.month - 1]} {moment.day} {moment.hour:02d}:{moment.minute:02d}"
+    return f"{MONTHS[moment.month - 1]} {moment.day} {moment.hour:02d}:{moment.minute:02d}"
 
 
 # --- word maps ---------------------------------------------------------------------------
@@ -389,10 +399,12 @@ def _trim(value: str) -> str:
 
 __all__ = [
     "DUE_DATE_FORMAT",
+    "MONTHS",
     "PRIORITY_LABELS",
     "HistoryPage",
     "HistoryRow",
     "LastActivity",
     "history_rows",
+    "relative_time",
     "wire_instant",
 ]

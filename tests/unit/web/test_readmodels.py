@@ -224,3 +224,17 @@ def test_the_issue_vm_carries_no_attachments_key() -> None:
 
     assert "attachments" not in vm
     assert {"comments", "relations", "history"} <= set(vm)
+
+
+def test_the_labels_and_the_month_names_are_the_application_layers_constants() -> None:
+    """One home: this module reads the maps, it does not keep a copy that can drift.
+
+    The panel renders a history row's label and a stamp's month on the same line, so a second copy
+    is not a style question — it is the two halves of one row disagreeing after a one-sided edit.
+    `is` and not `==`: a copy with the same values is exactly the thing this forbids.
+    """
+    from hifa.app import history
+    from hifa.web import readmodels
+
+    assert readmodels.PRIORITY_LABELS is history.PRIORITY_LABELS
+    assert readmodels.MONTHS is history.MONTHS

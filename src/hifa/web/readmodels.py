@@ -13,19 +13,21 @@ from typing import Any
 from urllib.parse import urlencode
 
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage
-from hifa.app.history import SOMEONE, WINDOW_SIZE, HistoryPage, history_rows, wire_instant
+from hifa.app.history import (
+    MONTHS,
+    PRIORITY_LABELS,
+    SOMEONE,
+    WINDOW_SIZE,
+    HistoryPage,
+    history_rows,
+    relative_time,
+    wire_instant,
+)
 from hifa.domain.entities import WorkflowState
 from hifa.domain.identifier import parse as parse_identifier
 from hifa.web.markdown import render_markdown
 
 PRIORITY_GLYPHS: dict[int, str] = {0: "\u2013", 1: "U", 2: "H", 3: "M", 4: "L"}
-PRIORITY_LABELS: dict[int, str] = {
-    0: "No priority",
-    1: "Urgent",
-    2: "High",
-    3: "Medium",
-    4: "Low",
-}
 SORT_LABELS: dict[str, str] = {
     "manual": "Manual",
     "created": "Created",
@@ -35,20 +37,6 @@ SORT_LABELS: dict[str, str] = {
 }
 SORT_OPTIONS: tuple[str, ...] = ("manual", "created", "updated", "priority", "due")
 FILTER_KEYS: tuple[str, ...] = ("state", "assignee", "label", "cycle", "project", "q")
-MONTHS: tuple[str, ...] = (
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-)
 #: Fallback for a state without a stored colour (`workflow_state.color` is nullable).
 DEFAULT_STATE_COLOR = "#6B6F76"
 #: The fields the edit form and the `PATCH` of an issue accept, in the order they are rendered.
@@ -113,21 +101,17 @@ def _day_stamp(day: date) -> str:
 
 
 def _relative(moment: datetime | None, now: datetime | None) -> str:
-    """`2 h ago` / `3 d ago`, falling back to an absolute stamp."""
+    """`2 h ago` / `3 d ago` from `relative_time`, and the absolute stamp when a side is missing.
+
+    The grammar is `app/history.py`'s; what this function owns is the edge's answer to an absent
+    instant: nothing to say for a moment that does not exist, and the stamp rather than an interval
+    when the caller brought no clock.
+    """
     if moment is None:
         return ""
     if now is None:
         return _stamp(moment)
-    seconds = int((now - moment).total_seconds())
-    if seconds < 60:
-        return "just now"
-    if seconds < 3600:
-        return f"{seconds // 60} m ago"
-    if seconds < 86400:
-        return f"{seconds // 3600} h ago"
-    if seconds < 86400 * 30:
-        return f"{seconds // 86400} d ago"
-    return _stamp(moment)
+    return relative_time(moment, now)
 
 
 def _query(**params: object) -> str:
