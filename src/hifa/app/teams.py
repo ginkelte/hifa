@@ -19,6 +19,7 @@ from pathlib import Path
 
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
 from hifa.app.commands import Actor, CreateState, CreateTeam, Unset, UpdateState
+from hifa.app.labels import case_variant_at_level
 from hifa.config import (
     DEFAULT_COLOR,
     DEFAULT_ICON,
@@ -280,7 +281,9 @@ def bootstrap(
         if opts.seed_labels:
             for label_name, color in DEFAULT_LABELS:
                 entry = f"label:{label_name}"
-                if repos.labels.get_by_name(workspace.id, None, label_name) is not None:
+                # The seed is a creation path like any other: a level that already carries this
+                # name in another spelling is the label, not a second row beside it.
+                if case_variant_at_level(repos.labels, workspace.id, None, label_name) is not None:
                     skipped.append(entry)
                     continue
                 repos.labels.insert(

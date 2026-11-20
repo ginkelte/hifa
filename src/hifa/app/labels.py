@@ -591,6 +591,29 @@ def _ambiguous_teams(ref: str, matches: list[Label], teams: TeamRepo) -> Validat
     )
 
 
+def case_variant_at_level(
+    labels: LabelRepo,
+    workspace_id: str,
+    team_id: str | None,
+    name: str,
+    *,
+    exclude_id: str | None = None,
+) -> Label | None:
+    """The row a level already carries under another spelling of this name, if there is one.
+
+    `bug` and `Bug` are two rows to a case-sensitive unique index and one name to a reader, and a
+    reference to that name would have to pick one of them. Creation and rename refuse the second
+    one (`_refuse_case_variant`) and the seed skips it (`bootstrap`), so both read the same
+    predicate instead of restating it. Retired rows count, exactly as the partial unique indexes
+    count them.
+    """
+    wanted = name.casefold()
+    for row in labels.list(workspace_id, team_id=team_id, include_retired=True):
+        if row.id != exclude_id and row.name.casefold() == wanted:
+            return row
+    return None
+
+
 def _refuse_case_variant(
     labels: LabelRepo,
     workspace_id: str,
@@ -599,16 +622,10 @@ def _refuse_case_variant(
     *,
     exclude_id: str | None = None,
 ) -> None:
-    """Refuse a name the same level already carries in another spelling of the same case.
-
-    `bug` and `Bug` are two rows to a case-sensitive unique index and one name to a reader, and a
-    reference to that name would have to pick one of them. Creation and rename keep the second
-    from being written; retired rows count, exactly as the partial unique indexes count them.
-    """
-    wanted = name.casefold()
-    for row in labels.list(workspace_id, team_id=team_id, include_retired=True):
-        if row.id != exclude_id and row.name.casefold() == wanted:
-            raise _label_name_conflict(name, row.name)
+    """Refuse a name the same level already carries in another spelling of the same case."""
+    existing = case_variant_at_level(labels, workspace_id, team_id, name, exclude_id=exclude_id)
+    if existing is not None:
+        raise _label_name_conflict(name, existing.name)
 
 
 def _unique_label_name(name: str, cause: Conflict) -> Conflict:
