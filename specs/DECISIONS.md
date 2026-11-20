@@ -2768,9 +2768,10 @@ step, in the same PR as the routes, because `CAPABILITIES` may not name a verb t
 §2.1/§2.2/§3.1/§4.1/§4.2/§5/§5.6/§6/§7/§9/Notes, SPEC-050
 §2.3/§2.3.1/§2.4.1/§2.4.3/§2.4.4/§2.4.5/§2.5/§2.5.3/§2.5.3.1/§2.5.4/§2.7/§3/§6/§9/§11,
 SPEC-020 §2.5/§2.6/§4.2/§6/§7/Notes (the exception class of `validate_label_scope` and the `field` of
-`NotFound`), SPEC-060 §2.5.1/§2.5.3/§2.7/§5.3/§6.1/§6.3/§11 (the set that triggers the label-in-use
-`409`, the transport codes, the `field` of a 404 and its two published examples), SPEC-001 REQ-F024,
-REQ-F034, §7.2 and Notes,
+`NotFound`), SPEC-060 §2.5.1/§2.5.3/§2.7/§5.3/§6.1/§6.3/§7/§11 (the set that triggers the label-in-use
+`409`, the transport codes, the `field` of a 404, its two published examples and the scenario of §7 that
+asserts that `field`), SPEC-001 REQ-F024,
+REQ-F034, §7 and Notes,
 `specs/001-mvp-v1.tasks.md` (its header, its acceptance-coverage line and its Notes — no checkbox),
 `specs/acceptance/001-mvp-v1/09-labels.feature`, and the three `error.field` steps of a missing issue
 in `03-issues-crud.feature`, `15-cli-contract.feature` and `16-dashboard.feature` (see (h), the one
@@ -2780,7 +2781,10 @@ implementer's step, not this revision's. **The list is the diff's, re-derived in
 carries SPEC-050 §2.7 (the `hifa issue show ENG-999` example, whose `field` moves with (h)) and §9 (the
 provenance bullet that tells a reader where `label show|update` and `--undo` came from), and it does
 not carry SPEC-050 §2.4.2, which no hunk of this branch edits — the `replaced` object left that section
-in revision 24 and the entry said so while still naming it.
+in revision 24 and the entry said so while still naming it. **Round 4 adds the one entry the list still
+owed:** SPEC-060 §7, whose `error.field` step is `060:1302` and whose hunk is the `ref` → `issue` change
+the round-3 cascade made; D-062 already carried it, so the two entries now name the same sections for the
+same reason (D-062).
 
 **Prior state: labels worked on the way in and nowhere after that.** `--label` on `issue create` accepts
 repeats or a comma-separated list, resolves each name per team, creates nothing, links `issue_label` and
@@ -3054,7 +3058,10 @@ exception's own accessor surface (SPEC-020 §2.6, §6), not the payload of an HT
 declares `details` as `null` or a list of `{field, message}` and a 404 renders `"details": null`, because
 the resource already travels in `field` and the key in `message`. Widening §6.3 to carry a dict for one
 class of error is the alternative this decision did not take: it would change the shape of every error
-envelope to save one key, and it would give a client two places to read the same noun.
+envelope to save one key, and it would give a client two places to read the same noun. Round 4 closed the
+last place the corpus still promised otherwise: SPEC-050 §2.4.5's 404 sample printed three keys while
+promising the API's envelope, and it now prints `"details": null` — the CLI and the API publish the same
+four keys, as §2.4.5 has promised since the first revision.
 
 **The consequence, which is the whole issue family and not the label one.** A derived field cannot be
 `ref` for an issue and `label` for a label: `ref` names the *parameter* the route took, and the rule says
@@ -3074,6 +3081,13 @@ missing issue assert it. The statements it forced, from the diff of this branch:
   sample) and §7 (the scenario that asserts it).
 - SPEC-001 REQ-F034, and the three `error.field` steps of a missing issue in
   `03-issues-crud.feature`, `15-cli-contract.feature` and `16-dashboard.feature`.
+- The spelling of the noun, which round 4 finished. `state` is the noun the flag names and the one
+  SPEC-050 §2.5.3 publishes for a `--state` that resolves nowhere (exit 3 `not_found`), while SPEC-040
+  §5.2's declared raise for that same input named the table instead and the two `raises:` lines of §2
+  said the same: a value a client reads was publishing an implementation name. The raise site, those two
+  `raises:` lines and §6's `NOT_FOUND` row now spell `state`, and that row is the single statement of the
+  set — an implementation name survives nowhere in SPEC-030 or SPEC-040 as a noun, only as the table it
+  is (SPEC-010 §3).
 
 **What does not move.** The code stays `not_found`, the exit code 3 and the status 404. The `ref` values
 that are not resources stay exactly as they were: `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')`
@@ -3096,5 +3110,15 @@ and `specs/001-mvp-v1.tasks.md` 14 → 15 with **no checkbox ticked**. The sweep
 a 404 assertion or envelope sample still names, filtered by the two rules that legitimately keep one —
 returns nothing outside `LABEL_AMBIGUOUS` and `ISSUE_ARCHIVED`; the corpus of
 `specs/acceptance/001-mvp-v1/` is **240** scenarios (228 `Scenario` + 12
-`Scenario Outline`), the figure `SPEC-001 §7.2`, `specs/INDEX.md` and `specs/001-mvp-v1.tasks.md` now
+`Scenario Outline`), the figure `SPEC-001 §7`, `specs/INDEX.md` and `specs/001-mvp-v1.tasks.md` now
 carry.
+
+**The round that closed the residue (round 4).** SPEC-020 `spec_revision` 12 → 13 (§6's sample and the
+§7 scenario that read it), SPEC-040 29 → 30 (§2's two `raises:` lines, §5.2's raise site, §6's
+`NOT_FOUND` row and the payload sentence under it), SPEC-050 26 → 27 (§2.4.5's 404 sample), SPEC-001
+16 → 17 and `specs/001-mvp-v1.tasks.md` 15 → 16 (six pointers into a numbered subsection of SPEC-001 §7
+that document does not have — its §7 runs straight to §8 — now pointing at `§7` itself), again with no
+checkbox ticked and no scenario added or removed: the corpus is still **240 (228 + 12)** and this file
+still holds **62** decisions. No `version` moves in that round: §6 of SPEC-020 stops claiming a payload
+the edges never built, and a pointer, a sample's fourth key and the spelling of a noun are not a change
+to any requirement, flag, route, exit code or payload shape.

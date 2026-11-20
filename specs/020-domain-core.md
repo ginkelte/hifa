@@ -4,7 +4,7 @@ title: Domain core
 component: domain
 status: review
 version: 5
-spec_revision: 12
+spec_revision: 13
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -1027,13 +1027,21 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 `exit 1` does **not** appear in this table: it is reserved for `hifa doctor` (warn) by D-001/D-014. Every mapping
 bug or unclassified error is `6`.
 
-Exact shape of the payload, identical in CLI `--json` and in the API:
+The exception's accessor surface, not the payload of an edge. `HifaError` exposes `code`, `message`,
+`field` and `details` (§2.6), and `exc.details` is the mapping the class carries: `resource` and `key`
+in `NotFound`, `rule` and `field` in `Validation`, `rule` in `Conflict` — merged with whatever the
+constructor's `details=` argument added, so `Validation(rule="CLOSE_WITH_OPEN_CHILDREN",
+details={"open_children": 2})` reads back `{"rule": "CLOSE_WITH_OPEN_CHILDREN", "open_children": 2}`.
+That is what a consumer **inside the process** reads: the application layer branches on `exc.rule`, a
+test asserts on `exc.details["rule"]`, no raise site passes the derived values.
 
-```json
-{"error": {"code": "CLOSE_WITH_OPEN_CHILDREN",
-           "message": "cannot close an issue with open sub-issues",
-           "details": {"issue": "ENG-42", "open_children": 2}}}
-```
+What a client reads is the envelope of an **edge**, and neither edge builds it from this mapping:
+SPEC-060 §6.3 declares `code`, `message`, `field` and `details`, with `details` `null` or a list of
+`{field, message}`, and SPEC-050 §2.4.5's `--json` renders the same four keys. A 404 is
+`"details": null` because the resource already travels in `field` and the key in `message`; the rule of
+a `Validation` or a `Conflict` travels as the name SPEC-040 §6 gives it, in `message`. `to_dict()`
+(§2.6) serializes the exception for a domain reader and carries this same mapping under `details`; an
+edge that forwarded it as-is would publish a shape §6.3 does not allow, which is why no edge does.
 
 ## 7. Acceptance Criteria
 
@@ -1246,12 +1254,13 @@ Feature: Pure domain core
     Then it raises Validation with rule "TEAM_HAS_OPEN_ISSUES"
 
   @REQ-F020-14
-  Scenario: errors expose a code and serializable details
+  Scenario: errors expose a code and the details accessor
     Given a Validation with rule "TITLE_EMPTY", field "title" and value ""
-    When to_dict() is called
-    Then the result has the key "error"
-    And error.code is "VALIDATION"
-    And error.details.rule is "TITLE_EMPTY"
+    When exc.details is read
+    Then exc.details["rule"] is "TITLE_EMPTY"
+    And exc.details["field"] is "title"
+    And exc.code is "VALIDATION"
+    And to_dict() returns a mapping with the single key "error"
     And Validation is a subclass of HifaError
     And a NotFound with resource "label" and key "infra" has field "label"
     And a NotFound with resource "label_link" and key "b" has field "label_link"
@@ -1381,6 +1390,19 @@ Executable from top to bottom; every step has a verification command.
   `checksum`), infrastructure and not domain. It has no entity, repo or use case, by design.
 
 ## Notes
+
+- spec_revision 13 (2026-11-20): **this file stops publishing a payload (HIFA-14, D-062).** §6 called a
+  dict of `{"issue", "open_children"}` "the exact shape of the payload, identical in CLI `--json` and in
+  the API", while SPEC-060 §6.3 declares the wire `details` as `null` or a list of `{field, message}` and
+  renders `"details": null` on a 404 — so the one section of this document that described an edge was
+  describing an envelope no edge builds. §6 now describes the exception's **accessor surface** instead:
+  `exc.details` is the mapping the class carries (`resource`/`key` in `NotFound`, `rule`/`field` in
+  `Validation`, `rule` in `Conflict`), which is what a consumer inside the process reads, and the wire is
+  §6.3's with the rule travelling as text in `message`. §7's `@REQ-F020-14` scenario follows: it read
+  `error.details.rule` off a `to_dict()`, and it now reads `exc.details["rule"]` — the domain test the
+  decision kept, instead of the envelope `details` the decision did not put on the wire. `version` stays
+  5: no class, attribute, code, exit code or payload shape changes; §2.6's surface is the one revision 11
+  declared and §6 now says who reads it. One scenario rewritten, none added: the corpus stays 240.
 
 - spec_revision 12 (2026-11-20): **the `details` of an exception is a surface, not a payload (HIFA-14,
   D-061, D-062).** §2.6 said the derived `resource`/`key` are merged "into `details`", which made the

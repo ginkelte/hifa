@@ -4,7 +4,7 @@ title: Application services
 component: application
 status: review
 version: 5
-spec_revision: 29
+spec_revision: 30
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -552,7 +552,7 @@ def set_due_date(uow: UnitOfWork, cmd: SetDueDate, actor: Actor) -> Issue: ...
 def move_issue(uow: UnitOfWork, cmd: MoveIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|workflow_state|neighbor),
+# raises: NotFound(issue|state|neighbor),
 #         Validation(STATE_TEAM_MISMATCH|STATE_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|POSITION_NEIGHBOR
 #                    |POSITION_OUT_OF_ORDER|RANKING_EXHAUSTED|ISSUE_TRASHED),
 #         InvalidTransition(ISSUE_ARCHIVED)
@@ -569,7 +569,7 @@ def reorder_issue(uow: UnitOfWork, cmd: ReorderIssue, actor: Actor) -> Issue: ..
 def rebalance_board(uow: UnitOfWork, cmd: RebalanceBoard, actor: Actor) -> RebalanceReport: ...
 
 
-# raises: NotFound(team|workflow_state), Validation(RANKING_DEGRADED)
+# raises: NotFound(team|state), Validation(RANKING_DEGRADED)
 
 
 def archive_issue(uow: UnitOfWork, cmd: ArchiveIssue, actor: Actor) -> Issue: ...
@@ -1659,7 +1659,7 @@ numeric positions: the client does not send the whole column (070 R9) and the se
  4.     target = cmd.target_state  and (tx.teams.get_state_by_name(issue.team_id, cmd.target_state)
                                        or tx.teams.get_state(cmd.target_state))
         target is None and cmd.target_state is not None
-                => NotFound(resource='workflow_state', key=cmd.target_state)
+                => NotFound(resource='state', key=cmd.target_state)
         target is None and cmd.target_state is None => target = current (reorder only)
  5.     open_children = tx.issues.count_open_children(issue.id) if target.type.is_terminal else 0
         rules.validate_transition(current, target, open_children)      # R6
@@ -2067,6 +2067,11 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `UOW_NESTED` / `HIFA_ERROR` | `HifaError` | nested transaction or broken invariant | any use case | **6** | 500 |
 | `NOT_FOUND` | `NotFound` | nonexistent issue, team, state, label, label_link, member, project, milestone, cycle, comment, relation, attachment or neighbor | all | 3 | 404 |
 
+**This row is the one statement of the nouns.** Each resource is spelled the same way on both edges and
+in every `raises:` line of §2: `state`, never `workflow_state` — the latter is the table of SPEC-010 and
+an implementation name, and it never reaches a client as a `field`. The list is closed: a raise site that
+needs a noun here adds it in this cell, and no edge re-decides one (D-062).
+
 **`q` is a title filter, not search: workspace search is SPEC-090 / `search_issues` (D-025).** With
 `q` declared inside `ListFilters` (SPEC-030 §2.6) this layer has no filter left that it refuses to
 translate, so the former rule that rejected `q` as an unsupported filter is **removed** from the
@@ -2120,10 +2125,13 @@ the row of `label_detail`; no issue-scoped reference and no list can raise it. `
 of its own on purpose: it takes no `ref`, so its `Validation` cell names only the parent, the name, the
 color and the team, and `LABEL_AMBIGUOUS` is not among them.
 
-Payload shape: the one of SPEC-020 §6 (`{"error": {"code", "message", "details"}}`). `details` always
-includes `resource`/`key` in `NotFound`, `rule`/`field` in `Validation` and `rule` in `Conflict`. The
-errors of this layer carry no SQL, table names nor paths: that is REQ-S060-03 and it is verified with a
-forced-500 test.
+Payload shape: the envelope of the edge — SPEC-060 §6.3 for the API and SPEC-050 §2.4.5 for `--json` —
+`code`, `message`, `field` and `details`, with `details` `null` or a list of `{field, message}`. What this
+layer guarantees is the *accessor* those edges read: `NotFound.details` carries `resource`/`key`,
+`Validation.details` `rule`/`field` and `Conflict.details` `rule` (SPEC-020 §2.6, §6), and no
+member of that mapping is published as a nested payload — a 404 renders `"details": null` and the rule
+travels in `message` (D-062). The errors of this layer carry no SQL, table names nor paths: that is
+REQ-S060-03 and it is verified with a forced-500 test.
 
 ## 7. Acceptance Criteria
 
@@ -2651,6 +2659,20 @@ Feature: Application use cases
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 30 (2026-11-20): **one spelling for the noun a move cannot find, and one statement of the
+  set (HIFA-14, D-062).** §5.2's declared raise for a `--state` that resolves to nothing spelled its noun
+  after the SQL table, and the two `raises:` lines of §2 (`move_issue`, `rebalance_board`) spelled it the
+  same way, while §2.2's `update_issue` line said `NotFound(issue|state|…)` for the same missing target,
+  §6's `NOT_FOUND` row listed `state` among its nouns, and SPEC-050 §2.5.3 published `field: "state"` for
+  that exact input — so one resource had two published spellings and the one a client would have read was
+  an implementation name. All three sites now say `state`, the noun the flag itself names and both edges
+  publish, and §6's row states that it is the one statement of the set: no edge and no `raises:` line
+  re-decides a noun. The same revision fixes the sentence under §6's table, which called the payload "the
+  one of SPEC-020 §6" and had that section list `resource`/`key` inside `details` — §6 now points at
+  SPEC-060 §6.3 and SPEC-050 §2.4.5 for the envelope and keeps only the accessor this layer guarantees
+  (D-062). `version` stays 5: no signature, no exception class, no rule and no envelope member of §2
+  changes — the name of a resource is not a signature, and the two edges already published `state`.
 
 - spec_revision 29 (2026-11-20): **the rename of a retired label has a scenario on this side too, and
   this file stops saying "5" (HIFA-14, D-061, D-062).** Revision 28 made a retired row reachable by
