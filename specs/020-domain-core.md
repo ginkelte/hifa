@@ -3,8 +3,8 @@ id: SPEC-020
 title: Domain core
 component: domain
 status: review
-version: 3
-spec_revision: 9
+version: 5
+spec_revision: 13
 depends_on: [SPEC-000, SPEC-010]
 implements:
   - src/hifa/domain/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/020-domain-core.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-17
+updated: 2026-11-20
 ---
 
 # SPEC-020 — Domain core
@@ -688,8 +688,12 @@ def validate_relation_scope(source: Issue, target: Issue) -> None:
 
 
 def validate_label_scope(issue_team_id: str, label: Label) -> None:
-    """label.retired_at not None -> Validation(rule='LABEL_RETIRED').
-    label.team_id not in (None, issue_team_id) -> Validation(rule='LABEL_TEAM_MISMATCH')."""
+    """label.retired_at not None -> Conflict(rule='LABEL_RETIRED').
+    label.team_id not in (None, issue_team_id) -> Validation(rule='LABEL_TEAM_MISMATCH').
+
+    The two refusals are different kinds, and the class is what tells them apart: a cross-team
+    label is a bad argument (exit 2 / 422), while a retired one exists and is well referenced —
+    the state of the row contradicts the write (exit 4 / 409, D-061)."""
 
 
 def validate_archive_team(team: Team, open_issues: int) -> None:
@@ -739,6 +743,8 @@ class NotFound(HifaError):
     def resource(self) -> str: ...
     @property
     def key(self) -> str: ...
+    @property
+    def field(self) -> str: ...
 
 
 class Conflict(HifaError):
@@ -810,9 +816,19 @@ class InvalidTransition(HifaError):
     def allowed(self) -> tuple[str, ...]: ...
 ```
 
-Each subclass fixes its attributes as read-only properties (`resource`/`key`, `rule`/`field`/
-`value`, `current`/`target`/`allowed`) and includes them in `details` (explicit `details` are
-merged with the derived ones, without overwriting them). All kwargs are **keyword-only** except `message`.
+Each subclass fixes its attributes as read-only properties (`resource`/`key`/`field`,
+`rule`/`field`/`value`, `current`/`target`/`allowed`) and merges the derived ones into the mapping
+`details` returns, without overwriting explicit values. That mapping — `resource` and `key` for
+`NotFound`, `rule` and `field` for `Validation`, `rule` for `Conflict` — is the **exception's own
+accessor surface** (the dict `details` hands back, §6), not a wire payload: an edge reads it, it does
+not forward it. `NotFound.field` is the one **derived** value of the family — it returns `resource`,
+the noun of what does not exist, and no raise site passes it — so an edge that renders a 404 publishes
+that value as `error.field` and **nothing** into `error.details`, which stays `null`
+(SPEC-060 §6.3). A client that reads `"details": null` and a domain reader that reads
+`exc.details["resource"]` are therefore both correct, and neither has to know about the other. Every
+edge renders `field` of a 404 without inventing one — `label` for a label reference that resolves
+nowhere, `label_link` for a label the issue does not wear (SPEC-040 §2.2, SPEC-050 §2.4.5, SPEC-060
+§2.5.3). All kwargs are **keyword-only** except `message`.
 `code` is a stable `str` in `SCREAMING_SNAKE_CASE` that the edge uses to map to exit code /
 HTTP (table in §6).
 
@@ -924,9 +940,9 @@ Each one is verifiable by a scenario of §7 and by a unit test with the same tag
 | **REQ-F020-09** | `validate_close`/`validate_transition` reject closing with `open_children > 0` with `rule='CLOSE_WITH_OPEN_CHILDREN'`; they allow closing with `open_children == 0` | 2 tests |
 | **REQ-F020-10** | `validate_parent` rejects self-parent, parent from another team, a cycle in the ancestor chain (including a 3+ level cycle) and a tree deeper than `MAX_SUBISSUE_DEPTH` — counted with the height of the moved subtree, so reparenting a chain is bounded like creating one | 5 tests |
 | **REQ-F020-11** | `validate_relation` rejects self-relation (`Validation`), exact duplicate and symmetric duplicate (`Conflict`); `validate_relation_scope` rejects an edge between two workspaces (`RELATION_WORKSPACE_MISMATCH`) and accepts two teams of one workspace | 5 tests |
-| **REQ-F020-12** | `validate_label_scope` accepts workspace labels and own-team labels; rejects a label from another team and a retired label | 4 tests |
+| **REQ-F020-12** | `validate_label_scope` accepts workspace labels and own-team labels; rejects a label from another team with `Validation(rule='LABEL_TEAM_MISMATCH')` (exit 2) and a retired label with `Conflict(rule='LABEL_RETIRED')` (exit 4) | 4 tests |
 | **REQ-F020-13** | `validate_archive_team` rejects archiving a team with `open_issues > 0` and one already archived | 2 tests |
-| **REQ-F020-14** | The 5 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}` | structure test + `isinstance` test |
+| **REQ-F020-14** | The 5 exceptions respect the hierarchy, expose their attributes and `to_dict()` returns `{"error": {"code", "message", "details"}}`; `NotFound.field` returns its `resource` (`'label'` for `NotFound(resource='label', key='infra')`, `'label_link'` for `resource='label_link'`), so the edges publish one value per 404 without passing one | structure test + `isinstance` test + the `field` assertions of §7 |
 | **REQ-F020-15** | No `domain/` module imports what R11 forbids nor calls `now`, `today`, `time`, `uuid4`, `random` | AST test that walks the 6 files |
 | **REQ-F020-16** | No function of `rules`, `ranking` or `identifier` mutates its arguments or global state; two calls with the same input give the same output | double call + copy comparison |
 | **REQ-F020-17** | `validate_date_range` rejects `target < start` in `project` and in `cycle` (`ends_at <= starts_at`) | 2 tests |
@@ -1002,22 +1018,30 @@ between(prev=1536.0, next=1536.0000005) -> Validation(RANKING_EXHAUSTED)
 | `Validation` | `RELATION_WORKSPACE_MISMATCH` | an edge between two workspaces | exit 2 | 422 |
 | `Validation` | `RANKING_EXHAUSTED` | no float gap between two positions | exit 2 | 422 |
 | `Validation` | `STATE_ARCHIVED` | move/create against a `workflow_state` with `archived_at` | exit 2 | 422 |
-| `NotFound` | `NOT_FOUND` | nonexistent id/identifier | exit 3 | 404 |
+| `NotFound` | `NOT_FOUND` | nonexistent id/identifier; `field` is the `resource` (what does not exist, `label` vs `label_link`) | exit 3 | 404 |
 | `Conflict` | `CONFLICT` | uniqueness (`identifier`, `(team_id, number)`, duplicate label) | exit 4 | 409 |
-| `Conflict` | `RELATION_DUPLICATE` / `TEAM_ALREADY_ARCHIVED` | logical duplicate | exit 4 | 409 |
+| `Conflict` | `RELATION_DUPLICATE` / `TEAM_ALREADY_ARCHIVED` / `LABEL_RETIRED` | logical duplicate, or the same change asked twice: a repeated relation, an archived team archived again, a retired label attached or retired again | exit 4 | 409 |
 | `InvalidTransition` | `INVALID_TRANSITION` | not raised by any function of this layer: the single producer is the use-case layer, which raises it for a write on an issue with `archived_at` not null (SPEC-040 §6, R20; D-042); the class exists so that condition maps to exit 5 of D-014 | exit 5 | 409 |
 | `HifaError` (base) | `HIFA_ERROR` | bug: it should never escape; the edge treats it as 500 | exit 6 | 500 |
 
 `exit 1` does **not** appear in this table: it is reserved for `hifa doctor` (warn) by D-001/D-014. Every mapping
 bug or unclassified error is `6`.
 
-Exact shape of the payload, identical in CLI `--json` and in the API:
+The exception's accessor surface, not the payload of an edge. `HifaError` exposes `code`, `message`,
+`field` and `details` (§2.6), and `exc.details` is the mapping the class carries: `resource` and `key`
+in `NotFound`, `rule` and `field` in `Validation`, `rule` in `Conflict` — merged with whatever the
+constructor's `details=` argument added, so `Validation(rule="CLOSE_WITH_OPEN_CHILDREN",
+details={"open_children": 2})` reads back `{"rule": "CLOSE_WITH_OPEN_CHILDREN", "open_children": 2}`.
+That is what a consumer **inside the process** reads: the application layer branches on `exc.rule`, a
+test asserts on `exc.details["rule"]`, no raise site passes the derived values.
 
-```json
-{"error": {"code": "CLOSE_WITH_OPEN_CHILDREN",
-           "message": "cannot close an issue with open sub-issues",
-           "details": {"issue": "ENG-42", "open_children": 2}}}
-```
+What a client reads is the envelope of an **edge**, and neither edge builds it from this mapping:
+SPEC-060 §6.3 declares `code`, `message`, `field` and `details`, with `details` `null` or a list of
+`{field, message}`, and SPEC-050 §2.4.5's `--json` renders the same four keys. A 404 is
+`"details": null` because the resource already travels in `field` and the key in `message`; the rule of
+a `Validation` or a `Conflict` travels as the name SPEC-040 §6 gives it, in `message`. `to_dict()`
+(§2.6) serializes the exception for a domain reader and carries this same mapping under `details`; an
+edge that forwarded it as-is would publish a shape §6.3 does not allow, which is why no edge does.
 
 ## 7. Acceptance Criteria
 
@@ -1230,13 +1254,16 @@ Feature: Pure domain core
     Then it raises Validation with rule "TEAM_HAS_OPEN_ISSUES"
 
   @REQ-F020-14
-  Scenario: errors expose a code and serializable details
+  Scenario: errors expose a code and the details accessor
     Given a Validation with rule "TITLE_EMPTY", field "title" and value ""
-    When to_dict() is called
-    Then the result has the key "error"
-    And error.code is "VALIDATION"
-    And error.details.rule is "TITLE_EMPTY"
+    When exc.details is read
+    Then exc.details["rule"] is "TITLE_EMPTY"
+    And exc.details["field"] is "title"
+    And exc.code is "VALIDATION"
+    And to_dict() returns a mapping with the single key "error"
     And Validation is a subclass of HifaError
+    And a NotFound with resource "label" and key "infra" has field "label"
+    And a NotFound with resource "label_link" and key "b" has field "label_link"
 
   @REQ-F020-15
   Scenario: the domain imports no infrastructure and reads no clock
@@ -1363,6 +1390,48 @@ Executable from top to bottom; every step has a verification command.
   `checksum`), infrastructure and not domain. It has no entity, repo or use case, by design.
 
 ## Notes
+
+- spec_revision 13 (2026-11-20): **this file stops publishing a payload (HIFA-14, D-062).** §6 called a
+  dict of `{"issue", "open_children"}` "the exact shape of the payload, identical in CLI `--json` and in
+  the API", while SPEC-060 §6.3 declares the wire `details` as `null` or a list of `{field, message}` and
+  renders `"details": null` on a 404 — so the one section of this document that described an edge was
+  describing an envelope no edge builds. §6 now describes the exception's **accessor surface** instead:
+  `exc.details` is the mapping the class carries (`resource`/`key` in `NotFound`, `rule`/`field` in
+  `Validation`, `rule` in `Conflict`), which is what a consumer inside the process reads, and the wire is
+  §6.3's with the rule travelling as text in `message`. §7's `@REQ-F020-14` scenario follows: it read
+  `error.details.rule` off a `to_dict()`, and it now reads `exc.details["rule"]` — the domain test the
+  decision kept, instead of the envelope `details` the decision did not put on the wire. `version` stays
+  5: no class, attribute, code, exit code or payload shape changes; §2.6's surface is the one revision 11
+  declared and §6 now says who reads it. One scenario rewritten, none added: the corpus stays 240.
+
+- spec_revision 12 (2026-11-20): **the `details` of an exception is a surface, not a payload (HIFA-14,
+  D-061, D-062).** §2.6 said the derived `resource`/`key` are merged "into `details`", which made the
+  next reader ask why a 404 of SPEC-060 §6.3 carries `"details": null` while this spec says `NotFound`
+  writes two keys there. Both statements are true of different objects: the mapping is what the
+  exception's `details` property returns to a **domain** reader (§6), and the wire `details` of an edge
+  is the one that edge declares — `null` on a 404, because a 404 publishes `field` from that same
+  resource and nothing else (D-062). The paragraph now says so and names both readers, so the two
+  documents no longer read as a contradiction. `version` stays 5: §2.6's surface is the one revision 11
+  declared, and this revision only says who reads it.
+
+- spec_revision 11 (2026-11-20): **a 404 publishes what does not exist, and it is derived (HIFA-14,
+  D-061).** `NotFound` gains `field`, a read-only accessor that returns `resource`: no raise site
+  passes it, so an edge renders `field` of a 404 from the exception instead of choosing a string, and
+  the value is the noun of the missing thing — `label` for a label reference that resolves nowhere,
+  `label_link` for a label the issue does not wear (SPEC-040 §2.2, SPEC-050 §2.4.5, SPEC-060 §2.5.3).
+  The alternative rejected: a passed `field` per raise site, which is the invention this closes and a
+  second place to disagree. `version` 5: §2.6 declares a public attribute of the exception, the same
+  reason `version` 4 was bumped. REQ-F020-14 and its §7 scenario now name the observable.
+
+- spec_revision 10 (2026-11-20): **a retired label is a state conflict, not a bad argument (HIFA-14,
+  D-061).** `validate_label_scope` refuses `label.retired_at not None` with `Conflict(rule=
+  'LABEL_RETIRED')` instead of `Validation`: the reference is well formed and the row exists, and what
+  contradicts the write is the state of that row — the same shape `TEAM_ALREADY_ARCHIVED` already has in
+  this layer. SPEC-040 §2.2, §6 and SPEC-050 §2.5.3 published exit 4 / 409 for that case and this spec
+  published exit 2, so one of the two had to move; D-012 makes this the loser, and §6 gains the rule in
+  its `Conflict` row. The cross-team refusal stays a `Validation` (exit 2), and `create_issue`'s
+  `# raises:` line and its matrix row in SPEC-040 §6 now carry the conflict. `version` 4: §2.5 declares
+  an exception class, which is public contract. Nothing else of §2 moves.
 
 - spec_revision 8 (2026-11-13): **the column has one order, and the threshold is this spec's
   (D-052).** §4.1 gains R15: a column is read by `board_order` and then by `id`, the order SPEC-030

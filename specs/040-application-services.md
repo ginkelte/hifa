@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 4
-spec_revision: 25
+version: 5
+spec_revision: 30
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/040-application-services.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-17
+updated: 2026-11-20
 ---
 
 # SPEC-040 — Application services
@@ -72,16 +72,16 @@ a `dict` of changes: the typed command is the only transport (R4).
 | `CreateIssue`, `UpdateIssue`, `AssignIssue`, `SetPriority`, `SetDueDate`, `MoveIssue`, `ReorderIssue`, `RebalanceBoard`, `ArchiveIssue`, `TrashIssue`, `RestoreIssue` | `commands` | dataclasses | yes |
 | `AddLabel`, `RemoveLabel`, `RelateIssues`, `UnrelateIssues`, `CommentOnIssue`, `UpdateComment`, `ResolveComment`, `AddAttachment` | `commands` | dataclasses | yes |
 | `CreateTeam`, `UpdateTeam`, `ArchiveTeam`, `CreateState`, `UpdateState` | `commands` | dataclasses | yes |
-| `CreateLabel`, `UpdateLabel`, `RetireLabel` | `commands` | dataclasses | yes |
+| `CreateLabel`, `UpdateLabel`, `RetireLabel`, `RestoreLabel` | `commands` | dataclasses | yes |
 | `CreateMember`, `UpdateMember`, `DeactivateMember` | `commands` | dataclasses | yes |
 | `CreateProject`, `UpdateProject`, `ArchiveProject`, `CreateMilestone` | `commands` | dataclasses | yes |
 | `CreateCycle`, `CompleteCycle`, `AddIssuesToCycle` | `commands` | dataclasses | yes |
 | `IssuePage` | `boards` (re-exported from `reads`) | return dataclass, **single owner: SPEC-030 §2.6** | yes |
 | `Board`, `BoardColumn` | `boards` | return dataclasses | yes |
 | `create_issue`, `update_issue`, `assign_issue`, `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `rebalance_board`, `archive_issue`, `trash_issue`, `restore_issue`, `relate_issues`, `unrelate_issues`, `comment_on_issue`, `update_comment`, `resolve_comment`, `add_attachment` | `issues` | write functions | yes |
-| `add_label`, `remove_label` | `labels` | write functions | yes |
+| `add_label`, `remove_label`, `create_label`, `update_label`, `retire_label`, `restore_label` | `labels` | write functions | yes |
 | `create_team`, `update_team`, `archive_team`, `create_state`, `update_state` | `teams` | write functions | yes |
-| `create_label`, `update_label`, `retire_label` | `labels` | write functions | yes |
+| `AddLabelResult` | `labels` | `@dataclass(frozen=True, slots=True) class AddLabelResult: issue: Issue; replaced: Label \| None` — declared in the `labels.py` block of §2.2 | yes |
 | `create_member`, `update_member`, `deactivate_member` | `members` | write functions | yes |
 | `create_project`, `update_project`, `archive_project`, `add_milestone` | `projects` | write functions | yes |
 | `create_cycle`, `complete_cycle`, `add_issues_to_cycle` | `cycles` | write functions | yes |
@@ -205,9 +205,9 @@ class RestoreIssue:
 @dataclass(frozen=True, slots=True)
 class AddLabel:
     issue: str
-    label: str  # ULID or name
-    create_if_missing: bool = False
-    color: str | None = None  # only if create_if_missing
+    label: str  # ULID or name; a name resolves team first, then workspace (§2.2)
+    create_if_missing: bool = False  # creates a team label of the issue's team (R22)
+    color: str | None = None  # only if create_if_missing; it is required then
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,23 +396,29 @@ class DeactivateMember:
 class CreateLabel:
     name: str
     team: str | None = None  # None -> workspace label (visible in all)
-    color: str | None = None
-    description: str | None = None
+    color: str | None = None  # None -> '#6B6F76', the default of `hifa label add --color`
+    description: str | None = None  # "" -> None
     parent: str | None = None  # ULID or name of the group label
     is_group: bool = False
+    group_type: LabelGroupType | str | None = None  # required iff is_group, NULL otherwise
 
 
 @dataclass(frozen=True, slots=True)
 class UpdateLabel:
     label: str
     name: str | Unset = UNSET
-    color: str | None | Unset = UNSET
-    description: str | None | Unset = UNSET
+    color: str | Unset = UNSET  # a label always has a color: there is no "clear the color"
+    description: str | None | Unset = UNSET  # None clears, "" is normalized to None
 
 
 @dataclass(frozen=True, slots=True)
 class RetireLabel:
     label: str  # `retired_at = now`; it does not delete the row (D-015)
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreLabel:
+    label: str  # `retired_at = NULL`; the undo of RetireLabel
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,7 +468,8 @@ Command validation (`__post_init__`, identical in all):
    combinations: `MoveIssue` requires `before_id` if `position == "before"` and `after_id` if
    `position == "after"`, and rejects both anchors with `first`/`last`; `CreateCycle` requires exactly
    one of `ends_at`/`duration_weeks`; `AddLabel` requires `color` if `create_if_missing`;
-   `CreateLabel` requires `parent` if `is_group`; `AddAttachment.url` must be `http`/`https`/`file`;
+   `CreateLabel` requires `group_type` if `is_group` and rejects `parent` if `is_group` (the DDL
+   `CHECK (is_group = 0 OR parent_id IS NULL)`); `AddAttachment.url` must be `http`/`https`/`file`;
    `SetDueDate.due_date` accepts `YYYY-MM-DD` or `None`; `RebalanceBoard.state` is only admitted with
    `scope="board"`.
 4. `title`/`body`/`name`/`url` are validated with `rules.validate_title` / `validate_comment_body` /
@@ -508,7 +515,8 @@ def create_issue(uow: UnitOfWork, cmd: CreateIssue, actor: Actor) -> Issue: ...
 #                    STATE_TEAM_MISMATCH|LABEL_TEAM_MISMATCH|LABEL_NOT_FOUND|PROJECT_TEAM_MISMATCH,
 #                    MILESTONE_PROJECT_MISMATCH|CYCLE_TEAM_MISMATCH|CYCLE_COMPLETED,
 #                    MEMBER_INACTIVE|ESTIMATE_*),
-#         Conflict(UNIQUE)
+#         Conflict(UNIQUE_IDENTIFIER|DUPLICATE_NUMBER|LABEL_RETIRED)  # a retired label is a state
+#         conflict, raised by `validate_label_scope` (SPEC-020 §2.5, D-061)
 
 
 def update_issue(uow: UnitOfWork, cmd: UpdateIssue, actor: Actor) -> Issue: ...
@@ -544,7 +552,7 @@ def set_due_date(uow: UnitOfWork, cmd: SetDueDate, actor: Actor) -> Issue: ...
 def move_issue(uow: UnitOfWork, cmd: MoveIssue, actor: Actor) -> Issue: ...
 
 
-# raises: NotFound(issue|workflow_state|neighbor),
+# raises: NotFound(issue|state|neighbor),
 #         Validation(STATE_TEAM_MISMATCH|STATE_ARCHIVED|CLOSE_WITH_OPEN_CHILDREN|POSITION_NEIGHBOR
 #                    |POSITION_OUT_OF_ORDER|RANKING_EXHAUSTED|ISSUE_TRASHED),
 #         InvalidTransition(ISSUE_ARCHIVED)
@@ -561,7 +569,7 @@ def reorder_issue(uow: UnitOfWork, cmd: ReorderIssue, actor: Actor) -> Issue: ..
 def rebalance_board(uow: UnitOfWork, cmd: RebalanceBoard, actor: Actor) -> RebalanceReport: ...
 
 
-# raises: NotFound(team|workflow_state), Validation(RANKING_DEGRADED)
+# raises: NotFound(team|state), Validation(RANKING_DEGRADED)
 
 
 def archive_issue(uow: UnitOfWork, cmd: ArchiveIssue, actor: Actor) -> Issue: ...
@@ -582,19 +590,7 @@ def restore_issue(uow: UnitOfWork, cmd: RestoreIssue, actor: Actor) -> Issue: ..
 
 # raises: NotFound(issue). Clears `archived_at` and/or `trashed` in one transaction, one row per column
 # cleared; neither set => no-op. It is the only write that accepts an archived issue (R20).
-
-
-def add_label(uow: UnitOfWork, cmd: AddLabel, actor: Actor) -> Issue: ...
-
-
-# raises: NotFound(issue|label), Validation(LABEL_TEAM_MISMATCH|LABEL_RETIRED),
-#         InvalidTransition(ISSUE_ARCHIVED)
-
-
-def remove_label(uow: UnitOfWork, cmd: RemoveLabel, actor: Actor) -> Issue: ...
-
-
-# raises: NotFound(issue|label|label_link), InvalidTransition(ISSUE_ARCHIVED)
+# The two label links of an issue are writes of `labels.py`, not of this module (§2.2, R10, R22).
 
 
 def relate_issues(uow: UnitOfWork, cmd: RelateIssues, actor: Actor) -> IssueRelation: ...
@@ -673,22 +669,60 @@ def update_state(uow: UnitOfWork, cmd: UpdateState, actor: Actor) -> WorkflowSta
 # src/hifa/app/labels.py  -- writes
 
 
+def add_label(uow: UnitOfWork, cmd: AddLabel, actor: Actor) -> AddLabelResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AddLabelResult:
+    issue: Issue  # the issue as read back inside the same transaction, after the write
+    replaced: Label | None  # the sibling this write took off the issue; `None` in every other case
+
+
+# raises: NotFound(issue|label), Validation(ISSUE_TRASHED|LABEL_TEAM_MISMATCH|LABEL_NOT_FOUND|COLOR_FORMAT),
+#         Conflict(LABEL_RETIRED|UNIQUE_LABEL_NAME), InvalidTransition(ISSUE_ARCHIVED)
+# `replaced` is the label this write took off the issue because it belongs to the same `singleSelect`
+# group, and `None` in every other case (R10). `create_if_missing` creates a team label of the issue's
+# team when neither level has the name (R22). A ref that is a ULID and exists nowhere is
+# `NotFound(resource='label')`; a ref that is a **name** and resolves at neither level is
+# `Validation(rule='LABEL_NOT_FOUND')` — §2.2 assigns that code to this verb alone, and `remove_label`
+# answers the same input with `NotFound(resource='label')` (below).
+
+
+def remove_label(uow: UnitOfWork, cmd: RemoveLabel, actor: Actor) -> Issue: ...
+
+
+# raises: NotFound(issue|label|label_link), Validation(ISSUE_TRASHED), InvalidTransition(ISSUE_ARCHIVED)
+# The ref resolves as in `add_label` (§5.6), and the two verbs differ on one input: a **name** that
+# resolves at neither level is `NotFound(resource='label', key=cmd.label)` here and `Validation(rule=
+# 'LABEL_NOT_FOUND')` there. `rules.validate_label_scope` is not called: a retired label has to stay
+# detachable, or a retire would strand the chips it left behind (SPEC-050 §2.5.3). A name that resolves
+# to a label the issue does not carry is `NotFound(resource='label_link')`.
+
+
 def create_label(uow: UnitOfWork, cmd: CreateLabel, actor: Actor) -> Label: ...
 
 
-# raises: NotFound(team|label), Validation(LABEL_GROUP_INVALID|COLOR_FORMAT), Conflict(UNIQUE_LABEL_NAME)
+# raises: NotFound(team|label), Validation(TEAM_ARCHIVED|LABEL_NAME_EMPTY|LABEL_GROUP_INVALID|COLOR_FORMAT),
+#         Conflict(UNIQUE_LABEL_NAME)
 
 
 def update_label(uow: UnitOfWork, cmd: UpdateLabel, actor: Actor) -> Label: ...
 
 
-# raises: NotFound(label), Validation(COLOR_FORMAT), Conflict(UNIQUE_LABEL_NAME)
+# raises: NotFound(label), Validation(LABEL_NAME_EMPTY|LABEL_AMBIGUOUS|COLOR_FORMAT),
+#         Conflict(UNIQUE_LABEL_NAME)
 
 
 def retire_label(uow: UnitOfWork, cmd: RetireLabel, actor: Actor) -> Label: ...
 
 
-# raises: NotFound(label), Conflict(LABEL_RETIRED)
+# raises: NotFound(label), Validation(LABEL_AMBIGUOUS), Conflict(LABEL_RETIRED|LABEL_IN_USE)
+
+
+def restore_label(uow: UnitOfWork, cmd: RestoreLabel, actor: Actor) -> Label: ...
+
+
+# raises: NotFound(label), Validation(LABEL_AMBIGUOUS), Conflict(LABEL_NOT_RETIRED)
 
 # src/hifa/app/members.py  -- writes
 
@@ -901,8 +935,46 @@ def list_states(
 def list_labels(
     db: Database, *, team: str | None = None, include_retired: bool = False
 ) -> tuple[Label, ...]: ...
+
+
 # raises: NotFound(team)
-def label_detail(db: Database, ref: str) -> Label: ...  # raises: NotFound(label)
+#
+# `team=None` is every label of the workspace, both levels. `team=KEY` is the set an issue of that
+# team may wear (SPEC-020 R8): that team's labels **plus** the workspace ones (`team_id IS NULL`),
+# read as two statements of `LabelRepo.list` (UNSET team is not this call) and merged. `include_retired
+# =False` drops every row with `retired_at` not null. Ordered by `name` ASC and then by `id` ASC, so
+# two runs over the same data print the same table.
+#
+# That default is the **display** rule of a read that renders a catalogue, and it is not the rule the
+# catalogue writes resolve with: a read hides retired rows unless the caller asks for `--all`, while a
+# write that acts on a reference must see the retired label it was asked to restore or rename
+# (§4.1 R22 resolves with `include_retired=True`). Rendering a catalogue and acting on one reference
+# have different visibility needs, and this is the one place the difference is decided.
+
+
+def label_detail(
+    db: Database, ref: str
+) -> Label: ...  # raises: NotFound(label), Validation(LABEL_AMBIGUOUS)
+
+
+#
+# `ref` is a ULID or a name, and the resolution rule depends on the kind of reference (§4.1 R22):
+#  - catalogue-scoped (`update_label`, `retire_label`, `restore_label`, `label_detail`): a ULID resolves
+#    with `LabelRepo.get`; a name resolves case-insensitively over every row of the workspace, retired
+#    ones included (`LabelRepo.list`, no team filter, `include_retired=True`): exactly one match is the
+#    answer, none is `NotFound(label)`, and more than one — the same name in two teams — is
+#    `Validation(rule='LABEL_AMBIGUOUS', field='ref')` instead of a silent pick, because these
+#    references have no team scope to narrow with;
+#  - issue-scoped (`add_label`, `remove_label`): the same ULID rule, and a name resolves in the
+#    issue's team and then in the workspace (§5.6 step 4) — never ambiguous, because the issue's team
+#    is the tie-breaker;
+#  - `create_label.parent`: resolved at the label's own level (its team, or the workspace when the new
+#    label is a workspace label), and absent there, not a group, or a group of the other level is
+#    `Validation(rule='LABEL_GROUP_INVALID', field='parent')`.
+#
+# `include_retired=True` is what makes the four catalogue verbs able to act on a retired label at all:
+# `label archive infra --undo` on a retired label is the case the flag exists for, and with the read
+# default it would resolve `None` and answer `NotFound` where the contract says exit 0.
 
 
 # src/hifa/app/members.py  -- reads
@@ -1091,7 +1163,8 @@ the write lock of the UoW (SPEC-030 §2.2), so that the decision and the write s
 | `move_issue` | `issue` (`state_id` + milestones + `board_order` + `updated_at`), `issue_history` (1 row per column changed) | `issue`, current and target `workflow_state`, `count_open_children`, positions of the target state |
 | `reorder_issue` | `issue` (1 position UPDATE) or `issue`×N if there is a rebalance, `issue_history` | `positions` of the scope, neighbors |
 | `archive_issue` / `trash_issue` / `restore_issue` | `issue` (1 UPDATE of `archived_at` and/or `trashed`, none when the layer already has the requested value), `issue_history` (1 row per column changed) | `issue`, `count_open_children` (only in `archive_issue`, of the three) |
-| `add_label` / `remove_label` | `issue_label` (1 INSERT OR IGNORE / DELETE), `issue_history` | `issue`, `label` |
+| `add_label` | `issue_label` (0..N DELETE of the replaced rows of the same `singleSelect` group, then 1 INSERT OR IGNORE), `issue_history` (1 row per label attached, 1 per label detached, in that order), `label` (1 INSERT when `create_if_missing` finds neither level) | `issue`, `label` (team then workspace), the parent group of the label (only when `label.parent_id` is set), `label_ids` of the issue |
+| `remove_label` | `issue_label` (1 DELETE), `issue_history` (1 row) | `issue`, `label` |
 | `relate_issues` | `issue_relation` (1 INSERT), `issue_history` (`relation`) | both `issue`s (each one's `workspace_id`, D-047), existing relations of the pair read in both orders (D-045) |
 | `unrelate_issues` | `issue_relation` (1 DELETE), `issue_history` | both `issue`s, existing relation (matched on the normalised pair, D-045) |
 | `comment_on_issue` | `comment` (1 INSERT) | `issue`, `comment` (parent) |
@@ -1112,7 +1185,7 @@ the write lock of the UoW (SPEC-030 §2.2), so that the decision and the write s
 | `add_attachment` | `attachment` (1 INSERT) | `issue` |
 | `create_member` | `member` (1 INSERT), `team_membership` (N) | `workspace`, `member` (email collision) |
 | `update_member` / `deactivate_member` | `member` (1 UPDATE) | `member`, `workspace` |
-| `create_label` / `update_label` / `retire_label` | `label` (1 INSERT/UPDATE) | `team`, `label` (parent group), team name |
+| `create_label` / `update_label` / `retire_label` / `restore_label` | `label` (1 INSERT / 1 UPDATE) | `team`, `label` (the ref, and the parent group when creating or when judging the `singleSelect` group), `count_uses` for `retire_label` |
 | `create_state` / `update_state` | `workflow_state` (1 INSERT/UPDATE) | `team`, `workflow_state` of the team |
 
 None of this writes `issue_fts` (the triggers of SPEC-090/010 do) nor `v_*` (they are views). The only
@@ -1231,8 +1304,33 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 - **R7bis — Milestones on create.** `create_issue` applies R7 with `current=None`: if the resolved state is of
   type `started`, `started_at = now`; if it is `completed`/`canceled`, the corresponding milestone. It is the
   same milestone table, not a second rule.
-- **R10 — Idempotent labels.** `add_label` of an already present label is not an error and generates no history;
-  `remove_label` of an absent one is `NotFound(resource='label_link')`.
+- **R10 — Idempotent labels, and the one replacement (REQ-F024).** A label link is a row of
+  `issue_label`; the two writes of §2.2 are the only ones that touch it outside `create_issue`.
+  - **Idempotent.** `add_label` of a label the issue already carries is not an error: when the issue
+    carries no other label of the same `singleSelect` group it produces no write, no history row, reads
+    no clock and answers `AddLabelResult(issue, None)`. The sibling set is read **without the incoming
+    label** (§5.6 step 6, `l.id != label.id`), so a linked child is never its own replacement.
+    `remove_label` of a link that does not exist is `NotFound(resource='label_link')`.
+  - **`singleSelect` replaces.** When the incoming label has a `parent_id` and that parent is a group
+    with `group_type = 'singleSelect'`, every label the issue carries with the same `parent_id` **and a
+    different `id`** is **removed** in the same transaction, before the insert. The invariant is read
+    over the set, not over one row: after `add_label` the issue carries at most one label of that group
+    and it is the requested one. A label whose `parent_id` is `NULL`, or whose parent is a
+    `multiSelect` group, replaces nothing, and a `multiSelect` group therefore keeps every child it had.
+  - **The removal is visible.** `AddLabelResult.replaced` carries the label that was taken off the
+    issue, or `None` when nothing was; when the row set was already inconsistent (two siblings, only
+    reachable by editing the database by hand) the guard of §5.6 step 7 does not fire, every sibling
+    other than the incoming label is removed, the detach rows are written and `replaced` is the first of
+    them in `label.name` ASC order, because R16 forbids an order that depends on the read.
+  - **History, and its order.** One row per label moved, all in the same batch and sharing the single
+    `now` of the use case: the detach row first, `('label', <replaced name>, NULL)`, then the attach
+    row, `('label', NULL, <incoming name>)`. `label` is the logical key SPEC-030 §2.5 already declares
+    for this table, so the replacement is two rows with one `field` and no invented name. A write that
+    only removes (the label was already linked) emits the detach row alone; a write that only attaches
+    emits the attach row alone.
+  - **The link is by ULID.** Renaming a label changes no `issue_label` row: every chip, every filter
+    and every history row keeps pointing at the same label, and the history keeps the name the label
+    had at the time of the write.
 - **R11 — One row per edge, in the order the type declares (D-045, D-046).** The pair reaches the
   repository already normalised by `RelationType.canonical_pair`, which is the only place that order is
   decided: `blocks` is persisted **once**, `(blocker, blocked)`, because that direction is the meaning
@@ -1344,6 +1442,82 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
   cycle, a parent, an assignee and a creator add one each when the row carries the id they look up,
   and each relation adds one (SQL-7).
 
+- **R22 — The label catalogue: one creation path, an editable name, a refusal to retire what is in
+  use.** `create_label`, `update_label`, `retire_label` and `restore_label` are the only writes of the
+  `label` table (`add_label` creates only under `create_if_missing`, below). None of them deletes a row
+  (D-015) and none touches `issue_label`.
+  - **`ref` resolution: one rule per kind of reference, and no third rule.** The three catalogue
+    writes (`update_label`, `retire_label`, `restore_label`) and the catalogue read (`label_detail`)
+    share one scope; the two issue verbs share another; `create_label.parent` is resolved at the level
+    it belongs to and is **not** one of the three kinds — it takes no `ref`, it names a parent.
+    - *Issue-scoped* (`add_label`, `remove_label`): a ULID resolves with `LabelRepo.get`; a name
+      resolves **in the issue's team, then in the workspace** (§5.6 step 4). No ambiguity is possible,
+      because the issue's team is the tie-breaker: a team match wins over a workspace one, and two
+      teams cannot be consulted.
+    - *Catalogue-scoped* (`update_label`, `retire_label`, `restore_label`, `label_detail`): a ULID
+      resolves with `LabelRepo.get`; a name resolves case-insensitively across the **workspace**,
+      **retired rows included** — `LabelRepo.list(..., include_retired=True)`, no team filter. The flag
+      is not an option here: these four verbs exist to act on the catalogue, and the three things they
+      must be able to do with a retired row — clear `retired_at`, rename it, print it for `label show` —
+      are invisible under the read default of §2.2 (`include_retired=False`), which is the *display*
+      rule of a listing. A read that renders a catalogue hides retired rows; a reference that acts on
+      one row must see them. One match is the label, none is `NotFound(label, key=<ref>)`, and two
+      matches in different teams is `Validation(rule='LABEL_AMBIGUOUS', field='ref')` with the team keys
+      in the message. Ambiguity is judged over the same set the resolution reads, retired rows included,
+      so a retired `Bug` of one team and a live `Bug` of another is ambiguous rather than a silent pick
+      of the live one; two labels with one name in the **same** team cannot arise at all, because
+      `uq_label_team` and `uq_label_ws` count retired rows too (SPEC-010 R6, D-010), so
+      `LABEL_AMBIGUOUS` always means two teams and never one team twice. Nothing narrows it: the ULID of
+      a retired row comes from `hifa label list --json --all` (SPEC-050 §2.5.4). This is the only place
+      `LABEL_AMBIGUOUS` can be raised.
+    - `create_label.parent` is resolved at the label's own level — the new label's team for a team
+      label, the workspace for a workspace label: a parent absent at that level, not `is_group=1`, or a
+      group of the other level is `Validation(rule='LABEL_GROUP_INVALID', field='parent')` (below).
+  - **`create_label`.** `name` must have non-blank content after trimming, else
+    `Validation(rule='LABEL_NAME_EMPTY', field='name')`. `color` is `'#6B6F76'` when the command brings
+    `None`, and is validated against `#RRGGBB` (`COLOR_FORMAT`) either way. `description` is stored as
+    `NULL` when it is `None` or empty. `team` resolves like every other team reference
+    (`NotFound(team)`) and an archived team is `Validation(TEAM_ARCHIVED)`; `team=None` is a workspace
+    label, so `label add` without `--team` creates one (REQ-F024). A group (`is_group=True`) carries
+    `group_type` and no parent; a child carries `parent`, resolved at its own level — `parent.team_id =
+    cmd.team` for a team label, `parent.team_id IS NULL` for a workspace one — and that parent must be
+    an existing `is_group=1` label there; a parent that exists only at the other level or in another
+    team is `Validation(rule='LABEL_GROUP_INVALID', field='parent')`, and a group without a
+    `group_type` is the same code with `field='group_type'`. A repeated
+    `(workspace_id, team_id, name)` is `Conflict(rule='UNIQUE_LABEL_NAME', field='name')`, which is the
+    condition `LabelRepo.insert` reports as `DUPLICATE_LABEL` (SPEC-030 §2.4): the use case translates
+    it, because §6 is the vocabulary the edges map.
+  - **`update_label`** changes `name`, `color` and `description` and nothing else. `team_id`,
+    `parent_id`, `is_group`, `group_type` and `retired_at` are not editable in v1: moving a label
+    between levels or re-parenting it has no use case and no verb. An empty `name` is
+    `LABEL_NAME_EMPTY`, a `color` outside `#RRGGBB` is `COLOR_FORMAT`, and the uniqueness of the new
+    name is judged at the label's own level (`UNIQUE_LABEL_NAME`; the partial index of D-010 decides
+    which one applies). A retired label may be renamed and recolored — the row is the record and the
+    fix is worth having — and `retired_at` is not touched by this command. `UNSET` leaves a field as it
+    is, `None` clears `description`, and a command that changes nothing writes nothing and returns the
+    label unchanged.
+  - **`retire_label`** writes `retired_at = now` and no other column. An already retired label is
+    `Conflict(rule='LABEL_RETIRED')`, decided before the usage count is paid. A label **in use** is
+    `Conflict(rule='LABEL_IN_USE')`, and in use means `LabelRepo.count_uses(label_id) > 0`: at least
+    one `issue_label` row, whatever layer the issue is in. The trash and the archive are counted on
+    purpose — a restored issue comes back with a chip, and a label retired under it is a chip nothing
+    can re-attach — so the rule is the stricter of the two readings and the one a single declared read
+    can decide (D-061).
+  - **`restore_label`** writes `retired_at = NULL` and no other column. A label that is not retired is
+    `Conflict(rule='LABEL_NOT_RETIRED')` — the same shape as the double retire, not a silent no-op,
+    because the family's layer already answers a repeated change with exit 4. It is the undo SPEC-050
+    §2.5.4 publishes as `label archive --undo`, and it is the only way back.
+  - **Retiring a group retires the group only.** Its children keep their own `retired_at` and stay
+    attachable: SPEC-020 R8 judges the label itself, `group_type` is still readable on the retired
+    group, and the replacement of R10 keeps working for its children.
+  - **`create_if_missing` of `add_label` is the one creation that is not `create_label`.** When the
+    name resolves at neither level, the label is created in the **issue's team** — not the workspace —
+    with `is_group=0`, `group_type=NULL`, `parent_id=NULL`, `description=NULL` and the command's
+    `color`, in the same transaction as the link. A name that resolves at either level is used and
+    nothing is created. It is what `hifa issue label --create` publishes (SPEC-050 §2.5.3) and it is
+    why `CreateLabel` is still the only path to a group, a workspace label or a description
+    (REQ-F040-26).
+
 ### 4.2 Functional requirements (REQ-F)
 
 | ID | Requirement |
@@ -1356,7 +1530,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-06** | `move_issue` computes the position with `ranking.between` for `first`/`last`/`before`/`after` and validates the neighbor |
 | **REQ-F040-07** | `move_issue` toward a terminal state with open children raises `Validation(rule='CLOSE_WITH_OPEN_CHILDREN')` and does not modify the issue |
 | **REQ-F040-08** | `reorder_issue` uses `between`; on `RANKING_EXHAUSTED` it rebalances the scope and retries once |
-| **REQ-F040-09** | `add_label`/`remove_label` validate scope with `rules.validate_label_scope`, are idempotent on add and write history |
+| **REQ-F040-09** | `add_label` validates scope with `rules.validate_label_scope` (retired, team) and is idempotent on add; `remove_label` calls no scope rule, because a retired label has to stay detachable; both write one history row per label moved and refuse a trashed issue with `Validation(rule='ISSUE_TRASHED')` and an archived one with `InvalidTransition(rule='ISSUE_ARCHIVED')` before anything is written; a name that resolves nowhere is `Validation(rule='LABEL_NOT_FOUND')` on `add_label` (exit 2) and `NotFound(resource='label')` on `remove_label` (exit 3) |
 | **REQ-F040-10** | `relate_issues` normalizes `blocked_by` to inverted `blocks` and stores every symmetric type in the canonical order (D-045), so the reversed pair of an existing edge is `Conflict(RELATION_DUPLICATE)` and one row answers both ends; rejects a self-relation and an edge across workspaces (D-047) |
 | **REQ-F040-11** | `unrelate_issues` deletes the relation and writes history; if it does not exist, `NotFound(resource='relation')` |
 | **REQ-F040-12** | `comment_on_issue` validates `body`, requires `parent_id` to be a comment of the same issue and sets `author_id` from the actor |
@@ -1373,7 +1547,7 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-23** | No use case prints nor serializes: there is no `print`, `sys.stdout`, `json.dumps` in `src/hifa/app/` |
 | **REQ-F040-24** | `issue_detail`/`list_issues`/`list_board`/`agenda` resolve the team by ULID or key and do not open a write transaction |
 | **REQ-F040-25** | `create_member`/`update_member`/`deactivate_member` write only `member` (plus `team_membership` on create) and map the duplicate email to `Conflict(rule='UNIQUE_MEMBER_EMAIL')`, not to `sqlite3.IntegrityError` |
-| **REQ-F040-26** | `create_label`/`update_label`/`retire_label` and `create_state`/`update_state` validate scope (team, parent group, state type) and are the only creation paths: `add_label` does not create labels unless `create_if_missing=True` |
+| **REQ-F040-26** | `create_label`/`update_label`/`retire_label`/`restore_label` and `create_state`/`update_state` validate scope (team, parent group, state type) and are the only creation paths: `add_label` creates a label only under `create_if_missing=True`, and then only a team label of the issue's team (R22) |
 | **REQ-F040-27** | `add_attachment` validates the URL scheme (`http`/`https`/`file`) and serializes `metadata` as JSON; there is no use case for deleting attachments (D-015) |
 | **REQ-F040-28** | `update_comment` changes `body` and `edited_at`, does not touch `resolved_at` nor `parent_id`, and does **not** write `issue_history` (R3); an empty body is `Validation(rule='BODY_EMPTY')`. `comment` has no soft delete in SPEC-010, so there is no "deleted comment" case to reject |
 | **REQ-F040-29** | `list_issues` returns `IssuePage` with `has_more` computed by `limit + 1` and an opaque `next_cursor`; with `limit=200` and 10,000 issues it executes no `COUNT(*)` nor `OFFSET` |
@@ -1384,6 +1558,8 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 | **REQ-F040-34** | `update_issue`, `move_issue`, `reorder_issue` and the field-level writes reject an issue with `archived_at` not null with `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` (R20); `archive_issue`, `trash_issue` and `restore_issue` do not |
 | **REQ-F040-35** | A comment thread stops at three: `comment_on_issue` refuses the reply that would sit deeper with `Validation(rule='COMMENT_DEPTH_EXCEEDED', field='parent_id')` and inserts nothing, and the reply that lands at depth 3 is stored | 2 scenarios, one at the boundary and one past it |
 | **REQ-F040-36** | `comment_on_issue` refuses a trashed issue with `Validation(rule='ISSUE_TRASHED')` and an archived one with `InvalidTransition(rule='ISSUE_ARCHIVED')`, both before a parent is read, and writes no row either way | 2 scenarios, one per layer |
+| **REQ-F040-37** | `add_label` returns `AddLabelResult(issue, replaced)`; a label of a `singleSelect` group replaces every sibling the issue carries, in the same transaction and before the insert, and the removal is recorded as its own `('label', <replaced name>, NULL)` row before the attach row; a `multiSelect` group and a label outside any group replace nothing | 3 scenarios: one replacement, one group that must not replace, one no-op |
+| **REQ-F040-38** | `update_label` changes `name`, `color` and `description` only and judges the new name's uniqueness at the label's own level; `retire_label` refuses a label with any `issue_label` row (`Conflict(rule='LABEL_IN_USE')`) and an already retired one (`Conflict(rule='LABEL_RETIRED')`); `restore_label` clears `retired_at` and refuses a label that is not retired (`Conflict(rule='LABEL_NOT_RETIRED')`); a name that matches labels of two teams is `Validation(rule='LABEL_AMBIGUOUS')` on the four catalogue-scoped references — `update_label`, `retire_label`, `restore_label` and `label_detail` — and can never fire on `add_label`/`remove_label`, whose names resolve in the issue's team first; those four resolve a **name** with `LabelRepo.list(..., include_retired=True)`, retired rows included, so `restore_label`, a repeated `retire_label` and the rename of a retired label are reachable by name instead of answering `NotFound` | 6 scenarios: the rename, `LABEL_IN_USE`, `LABEL_RETIRED`, the undo with `LABEL_NOT_RETIRED`, `LABEL_AMBIGUOUS`, and the rename of a retired row resolved by name |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -1397,10 +1573,10 @@ it lives in `domain`; if it needs to read, it lives in `app` and uses the domain
 
 ## 5. Flow
 
-Five flows are normative because the three edges depend on their exact order: creation (§5.1), movement
-with fractional reordering (§5.2), keyset listing (§5.3), the field diff of an edit (§5.4) and the layered
-archive axis (§5.5). The remaining use cases follow the same pattern
-(read → validate with `rules` → write → history → commit).
+Six flows are normative because the three edges depend on their exact order: creation (§5.1), movement
+with fractional reordering (§5.2), keyset listing (§5.3), the field diff of an edit (§5.4), the layered
+archive axis (§5.5) and the label link with its `singleSelect` replacement (§5.6). The remaining use
+cases follow the same pattern (read → validate with `rules` → write → history → commit).
 
 ### 5.1 `create_issue` — step by step
 
@@ -1489,7 +1665,7 @@ numeric positions: the client does not send the whole column (070 R9) and the se
  4.     target = cmd.target_state  and (tx.teams.get_state_by_name(issue.team_id, cmd.target_state)
                                        or tx.teams.get_state(cmd.target_state))
         target is None and cmd.target_state is not None
-                => NotFound(resource='workflow_state', key=cmd.target_state)
+                => NotFound(resource='state', key=cmd.target_state)
         target is None and cmd.target_state is None => target = current (reorder only)
  5.     open_children = tx.issues.count_open_children(issue.id) if target.type.is_terminal else 0
         rules.validate_transition(current, target, open_children)      # R6
@@ -1741,6 +1917,79 @@ Details that are part of the contract:
 - `restore_issue` is the only write that accepts an archived issue (R20). It is also the `--undo` of
   `issue archive` at the edge (SPEC-050 §2.5.3): there is no second use case for undoing an archive.
 
+### 5.6 `add_label` / `remove_label` — the link, the replacement and its history
+
+```
+ 1. cmd already validated by its __post_init__ (and `color` required when `create_if_missing`).
+ 2. with uow.write() as tx:                       # a single write transaction
+ 3.     issue = tx.issues.get(ref) or tx.issues.get_by_identifier(ref)
+        -> None => NotFound(resource='issue', key=cmd.issue)
+        -> issue.trashed => Validation(rule='ISSUE_TRASHED')
+        -> issue.archived_at is not None => InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')
+ 4.     ws = tx.teams.workspace()
+        label = tx.labels.get(cmd.label)                       # a ULID resolves directly
+        if label is None:                                      # then the name, team first
+            label = (tx.labels.get_by_name(ws.id, issue.team_id, cmd.label)
+                     or tx.labels.get_by_name(ws.id, None, cmd.label))
+        if label is None and cmd.create_if_missing:             # R22: a team label, same tx
+            # cmd.color is validated here: COLOR_FORMAT when it is not #RRGGBB
+            label = tx.labels.insert(Label(workspace_id=ws.id, team_id=issue.team_id,
+                                           name=cmd.label, color=cmd.color, description=None,
+                                           parent_id=None, is_group=False, group_type=None,
+                                           retired_at=None))
+        -> None and the ref is a name => Validation(rule='LABEL_NOT_FOUND')  # add_label, exit 2 (§2.2)
+        -> None and the ref is a ULID => NotFound(resource='label', key=cmd.label)
+ 5.     rules.validate_label_scope(issue.team_id, label)   # Conflict(LABEL_RETIRED), Validation(LABEL_TEAM_MISMATCH)
+ 6.     current  = tx.issues.label_ids(issue.id)           # ordered by label.name
+        group    = tx.labels.get(label.parent_id) if label.parent_id else None
+        replaced = []
+        if group is not None and group.group_type is LabelGroupType.SINGLE_SELECT:
+            replaced = [l for l in (tx.labels.get(i) for i in current)
+                        if l.parent_id == label.parent_id and l.id != label.id]
+                                                            # R10: the siblings, never the label itself
+ 7.     if label.id in current and not replaced:
+            return AddLabelResult(issue, None)                 # no write, no clock (R10)
+ 8.     now = uow.clock.now()
+        changes = [("label", l.name, None) for l in replaced]  # the detach rows first
+        if label.id not in current:
+            changes.append(("label", None, label.name))        # then the attach row
+ 9.     for l in replaced: tx.issues.remove_label(issue.id, l.id)
+        tx.issues.add_label(issue.id, label.id)                # INSERT OR IGNORE
+10.     tx.history.record(issue.id, _text_rows(changes), actor_id=actor.member_id, now=now)
+11. return AddLabelResult(<the issue as read back inside the same transaction>,
+                          replaced[0] if replaced else None)    # the first in `label.name` ASC
+```
+
+- **The order is the contract.** The layer refusals of step 3 come before any read of the label: a
+  write to a parked issue answers `ISSUE_TRASHED`/`ISSUE_ARCHIVED` even when the label does not exist,
+  the same order D-060 fixed for the comment. `LABEL_RETIRED` comes before the replacement, so a
+  retired label never takes a sibling off an issue.
+- **The sibling set of step 6 excludes the incoming label** (`l.id != label.id`). Without that clause
+  the label would be its own replacement: re-adding a linked child would delete it, write a detach-only
+  history row and answer `replaced=<itself>`, when R10 calls that case a no-op.
+- **The no-op of step 7 is the only read-only exit** (R12's pattern): when the issue already links the
+  label **and** no sibling of the group is present, it returns before the clock, writes nothing,
+  records no history row and answers `AddLabelResult(issue, None)`.
+- **A row set that is already inconsistent is cleaned, and `replaced` names the first sibling.** With
+  two siblings on the issue, step 6 finds the one that is not the incoming label (`l.id != label.id`),
+  step 7's guard therefore does not fire, step 9 removes it, step 8 emits the detach row alone (the
+  attach row is skipped because `label.id in current`) and step 11 answers the first removed sibling in
+  `label.name` ASC order. `INSERT OR IGNORE` makes the re-insert of the survivor free. This set is only
+  reachable by editing the database by hand; stating it costs one clause and removes the question.
+- **`remove_label` has its own steps, and one of them differs.** It opens the same transaction and runs
+  step 3 unchanged (`ISSUE_TRASHED`, `ISSUE_ARCHIVED` before anything else), then resolves the ref the
+  way step 4 does with no `create_if_missing` branch — a ULID with `LabelRepo.get`, a name in the
+  issue's team and then in the workspace — and then:
+  - `-> None` after both name lookups is `NotFound(resource='label', key=cmd.label)` — exit 3, where
+    `add_label` answers the same input with `Validation(rule='LABEL_NOT_FOUND')`, exit 2. The
+    asymmetry is the vocabulary of §2.2 and the §6 matrix, not an oversight.
+  - `rules.validate_label_scope` is **not** called: taking a retired label off an issue has to stay
+    possible, or a retire would strand the chips it left behind (SPEC-050 §2.5.3).
+  - one DELETE: no row ⇒ `NotFound(resource='label_link')`; one row ⇒ `('label', <name>, NULL)` and no
+    clock read. It never removes a sibling, because detaching is one link and not a group decision.
+- **One label per call.** The edge iterates (GAP-05, SPEC-050 §2.3): N labels are N transactions, and
+  the CLI's answer is the exit code of the first failure.
+
 ## 6. Errors
 
 `app/` does not translate to exit codes nor to HTTP (A7): it raises domain errors with stable `code` and `rule`.
@@ -1774,7 +2023,7 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `TEAM_HAS_OPEN_ISSUES` | `Validation` | archiving a team with open issues | `archive_team` | 2 | 422 |
 | `TEAM_ALREADY_ARCHIVED` | `Conflict` | archiving twice | `archive_team` | 4 | 409 |
 | `TEAM_KEY_INVALID` | `Validation` | key that does not match `identifier.KEY_PATTERN` | `create_team`, `update_team` | 2 | 422 |
-| `ISSUE_TRASHED` | `Validation` | operating on an issue with `trashed = 1` | `update_issue`, `move_issue`, `assign_issue`, `add_label`, `comment_on_issue` | 2 | 422 |
+| `ISSUE_TRASHED` | `Validation` | operating on an issue with `trashed = 1` | `update_issue`, `move_issue`, `assign_issue`, `add_label`, `remove_label`, `comment_on_issue` | 2 | 422 |
 | `CLOSE_WITH_OPEN_CHILDREN` | `Validation` | closing/canceling/archiving a parent with open sub-issues | `move_issue`, `update_issue`, `archive_issue` | 2 | 422 |
 | `ISSUE_ARCHIVED` | `InvalidTransition` | writing an issue with `archived_at` not null (R20), `field='ref'` | `update_issue`, `assign_issue`, `set_priority`, `set_due_date`, `move_issue`, `reorder_issue`, `add_label`, `remove_label`, `comment_on_issue` | **5** | 409 |
 | `POSITION_NEIGHBOR` | `Validation` | nonexistent anchor, from another team or from another state | `move_issue`, `reorder_issue` | 2 | 422 |
@@ -1785,12 +2034,16 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `LIMIT_RANGE` | `Validation` | `limit` outside 1-200 | `list_issues`, `list_board` | 2 | 422 |
 | `ORDER_INVALID` | `Validation` | `order` outside the D-011 vocabulary | `list_issues`, `list_board` | 2 | 422 |
 | `INCLUDE_INVALID` | `Validation` | `include` with a key outside `{comments,relations,attachments,history,children}` | `issue_detail` | 2 | 422 |
-| `LABEL_NOT_FOUND` | `Validation` | `add_label` with a nonexistent name and `create_if_missing=False` | `add_label` | 2 | 422 |
-| `LABEL_TEAM_MISMATCH` | `Validation` | label from another team | `add_label`, `create_label` | 2 | 422 |
-| `LABEL_RETIRED` | `Conflict` | using or retiring an already retired label | `add_label`, `retire_label` | 4 | 409 |
-| `LABEL_GROUP_INVALID` | `Validation` | group with a parent, or `parent` that is not a group | `create_label` | 2 | 422 |
-| `UNIQUE_LABEL_NAME` | `Conflict` | repeated `(workspace_id, team_id, name)` | `create_label`, `update_label` | 4 | 409 |
-| `COLOR_FORMAT` | `Validation` | color outside `#RRGGBB` | `create_label`, `update_label` | 2 | 422 |
+| `LABEL_NOT_FOUND` | `Validation` | `add_label` with a **name** that resolves at neither level and `create_if_missing=False` (exit 2); `remove_label` answers the same input with `NotFound(resource='label')` (exit 3, §5.6) | `add_label` only | 2 | 422 |
+| `LABEL_TEAM_MISMATCH` | `Validation` | label from another team | `add_label`, `create_issue` | 2 | 422 |
+| `LABEL_RETIRED` | `Conflict` | attaching a label with `retired_at` not null, or retiring one (a state conflict, not a bad input: SPEC-020 §2.5) | `add_label`, `create_issue`, `retire_label` | 4 | 409 |
+| `LABEL_IN_USE` | `Conflict` | retiring a label with at least one `issue_label` row, whatever layer the issue is in (`LabelRepo.count_uses > 0`) | `retire_label` | 4 | 409 |
+| `LABEL_NOT_RETIRED` | `Conflict` | restoring a label whose `retired_at` is already NULL | `restore_label` | 4 | 409 |
+| `LABEL_GROUP_INVALID` | `Validation` | a group with a parent, a group without `group_type`, or a `parent` that is not an existing group of the same level (`field` names `parent` or `group_type`) | `create_label` | 2 | 422 |
+| `LABEL_NAME_EMPTY` | `Validation` | a label name that is blank after trimming (`field='name'`) | `create_label`, `update_label` | 2 | 422 |
+| `LABEL_AMBIGUOUS` | `Validation` | a label name that matches labels of two teams, retired rows included (`field='ref'`); the message names the team keys | `update_label`, `retire_label`, `restore_label`, `label_detail` | 2 | 422 |
+| `UNIQUE_LABEL_NAME` | `Conflict` | repeated `(workspace_id, team_id, name)` on create or on rename (the condition `LabelRepo.insert`/`update` reports as `DUPLICATE_LABEL`, which the use case translates into this name) | `create_label`, `update_label`, `add_label` (only under `create_if_missing`) | 4 | 409 |
+| `COLOR_FORMAT` | `Validation` | color outside `#RRGGBB` | `create_label`, `update_label`, `add_label` (only under `create_if_missing`) | 2 | 422 |
 | `UNIQUE_STATE_NAME` | `Conflict` | repeated state `(team_id, name)` | `create_state`, `update_state` | 4 | 409 |
 | `STATE_TYPE_INVALID` | `Validation` | `state_type` outside the six types | `create_state`, `update_state` | 2 | 422 |
 | `STATE_NAME_EMPTY` | `Validation` | blank state name | `create_state` | 2 | 422 |
@@ -1820,6 +2073,11 @@ Codes owned by the application layer (those of SPEC-020 §6 remain valid and are
 | `UOW_NESTED` / `HIFA_ERROR` | `HifaError` | nested transaction or broken invariant | any use case | **6** | 500 |
 | `NOT_FOUND` | `NotFound` | nonexistent issue, team, state, label, label_link, member, project, milestone, cycle, comment, relation, attachment or neighbor | all | 3 | 404 |
 
+**This row is the one statement of the nouns.** Each resource is spelled the same way on both edges and
+in every `raises:` line of §2: `state`, never `workflow_state` — the latter is the table of SPEC-010 and
+an implementation name, and it never reaches a client as a `field`. The list is closed: a raise site that
+needs a noun here adds it in this cell, and no edge re-decides one (D-062).
+
 **`q` is a title filter, not search: workspace search is SPEC-090 / `search_issues` (D-025).** With
 `q` declared inside `ListFilters` (SPEC-030 §2.6) this layer has no filter left that it refuses to
 translate, so the former rule that rejected `q` as an unsupported filter is **removed** from the
@@ -1831,7 +2089,7 @@ Use case → expected errors matrix (contract for the tests of §7):
 
 | Use case | `NotFound` | `Validation` | `Conflict` | `InvalidTransition` |
 |---|---|---|---|---|
-| `create_issue` | team, parent, label, project, milestone, cycle, member | `TITLE_EMPTY`, `TITLE_TOO_LONG`, `PRIORITY_OUT_OF_RANGE`, `TEAM_ARCHIVED`, `STATE_TEAM_MISMATCH`, `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND`, `PROJECT_TEAM_MISMATCH`, `MILESTONE_PROJECT_MISMATCH`, `CYCLE_TEAM_MISMATCH`, `CYCLE_COMPLETED`, `PARENT_SELF`, `PARENT_TEAM_MISMATCH`, `PARENT_CYCLE`, `PARENT_DEPTH_EXCEEDED`, `MEMBER_INACTIVE`, `ESTIMATE_*` | `UNIQUE_IDENTIFIER`, `DUPLICATE_NUMBER` | — |
+| `create_issue` | team, parent, label, project, milestone, cycle, member | `TITLE_EMPTY`, `TITLE_TOO_LONG`, `PRIORITY_OUT_OF_RANGE`, `TEAM_ARCHIVED`, `STATE_TEAM_MISMATCH`, `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND`, `PROJECT_TEAM_MISMATCH`, `MILESTONE_PROJECT_MISMATCH`, `CYCLE_TEAM_MISMATCH`, `CYCLE_COMPLETED`, `PARENT_SELF`, `PARENT_TEAM_MISMATCH`, `PARENT_CYCLE`, `PARENT_DEPTH_EXCEEDED`, `MEMBER_INACTIVE`, `ESTIMATE_*` | `UNIQUE_IDENTIFIER`, `DUPLICATE_NUMBER`, `LABEL_RETIRED` | — |
 | `update_issue` | issue, state, project, milestone, cycle, parent, member | those of `create_issue` + `CLOSE_WITH_OPEN_CHILDREN`, `ISSUE_TRASHED`, `STATE_ARCHIVED` | — | `ISSUE_ARCHIVED` |
 | `assign_issue` / `set_priority` / `set_due_date` | issue, member | `MEMBER_INACTIVE`, `ISSUE_TRASHED`, `PRIORITY_OUT_OF_RANGE`, `DUE_DATE_FORMAT` | — | `ISSUE_ARCHIVED` |
 | `move_issue` | issue, workflow_state, neighbor | `STATE_TEAM_MISMATCH`, `STATE_ARCHIVED`, `CLOSE_WITH_OPEN_CHILDREN`, `POSITION_NEIGHBOR`, `POSITION_OUT_OF_ORDER`, `RANKING_EXHAUSTED`, `ISSUE_TRASHED` | — | `ISSUE_ARCHIVED` |
@@ -1839,7 +2097,8 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `rebalance_board` | team, workflow_state | — | — | — |
 | `archive_issue` | issue | `CLOSE_WITH_OPEN_CHILDREN`, `ISSUE_TRASHED` | — | — |
 | `trash_issue` / `restore_issue` | issue | — | — | — |
-| `add_label` / `remove_label` | issue, label, label_link | `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND` | `LABEL_RETIRED` | `ISSUE_ARCHIVED` |
+| `add_label` | issue, label | `ISSUE_TRASHED`, `LABEL_TEAM_MISMATCH`, `LABEL_NOT_FOUND`, `COLOR_FORMAT` | `LABEL_RETIRED`, `UNIQUE_LABEL_NAME` | `ISSUE_ARCHIVED` |
+| `remove_label` | issue, label, label_link | `ISSUE_TRASHED` | — | `ISSUE_ARCHIVED` |
 | `relate_issues` | issue (×2) | `COMMAND_FIELD`, `RELATION_SELF`, `RELATION_WORKSPACE_MISMATCH` | `RELATION_DUPLICATE` | — |
 | `unrelate_issues` | issue, relation | `COMMAND_FIELD` | — | — |
 | `comment_on_issue` | issue, comment (parent) | `BODY_EMPTY`, `COMMENT_PARENT_MISMATCH`, `COMMENT_DEPTH_EXCEEDED`, `ISSUE_TRASHED` | — | `ISSUE_ARCHIVED` |
@@ -1849,7 +2108,8 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `update_team` | team | `TEAM_KEY_INVALID` | `UNIQUE_TEAM_KEY` | — |
 | `archive_team` | team | `TEAM_HAS_OPEN_ISSUES` | `TEAM_ALREADY_ARCHIVED` | — |
 | `create_state` / `update_state` | team, state | `STATE_TYPE_INVALID`, `STATE_NAME_EMPTY`, `TEAM_ARCHIVED` | `UNIQUE_STATE_NAME` | — |
-| `create_label` / `update_label` / `retire_label` | label, team | `LABEL_GROUP_INVALID`, `COLOR_FORMAT`, `TEAM_ARCHIVED` | `UNIQUE_LABEL_NAME`, `LABEL_RETIRED` | — |
+| `create_label` | label, team | `LABEL_GROUP_INVALID`, `LABEL_NAME_EMPTY`, `COLOR_FORMAT`, `TEAM_ARCHIVED` | `UNIQUE_LABEL_NAME` | — |
+| `update_label` / `retire_label` / `restore_label` | label | `LABEL_AMBIGUOUS`, plus `LABEL_NAME_EMPTY` and `COLOR_FORMAT` on `update_label` | `UNIQUE_LABEL_NAME` (`update_label` only), `LABEL_RETIRED`, `LABEL_IN_USE`, `LABEL_NOT_RETIRED` | — |
 | `create_member` / `update_member` / `deactivate_member` | member | `MEMBER_EMAIL_INVALID`, `MEMBER_NAME_EMPTY` | `UNIQUE_MEMBER_EMAIL`, `MEMBER_ALREADY_INACTIVE` | — |
 | `create_project` | team, member | `DATE_RANGE_INVERTED`, `PROJECT_TEAM_MISMATCH` | — | — |
 | `update_project` / `archive_project` | project, team, member | `DATE_RANGE_INVERTED` | — | — |
@@ -1858,12 +2118,26 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `complete_cycle` | cycle | — | `CYCLE_ALREADY_COMPLETED` | — |
 | `add_issues_to_cycle` | cycle, issue | `CYCLE_COMPLETED`, `CYCLE_TEAM_MISMATCH` | — | — |
 | `issue_detail` / `list_*` / `agenda` / `search_issues` | issue, team, project, cycle, label, member | `INVALID_CURSOR`, `LIMIT_RANGE`, `ORDER_INVALID`, `INCLUDE_INVALID`, `DATE_RANGE_INVERTED`, `QUERY_EMPTY` | — | — |
+| `list_labels` | team | — | — | — |
+| `label_detail` | label | `LABEL_AMBIGUOUS` | — | — |
 | `list_blocked` | team | — | — | — |
 
-Payload shape: the one of SPEC-020 §6 (`{"error": {"code", "message", "details"}}`). `details` always
-includes `resource`/`key` in `NotFound`, `rule`/`field` in `Validation` and `rule` in `Conflict`. The
-errors of this layer carry no SQL, table names nor paths: that is REQ-S060-03 and it is verified with a
-forced-500 test.
+The two issue label verbs differ on exactly one input, and the difference is the vocabulary §2.2
+assigns: a **name** that resolves at neither level is `LABEL_NOT_FOUND` on `add_label` (exit 2; that
+verb is its only producer) and `NotFound(resource='label')` on `remove_label` (exit 3), which is also
+what both verbs answer for a ULID that exists nowhere. `LABEL_AMBIGUOUS` appears in two cells and
+nowhere else — the row of `update_label` / `retire_label` / `restore_label` (its `Validation` cell) and
+the row of `label_detail`; no issue-scoped reference and no list can raise it. `create_label` has a row
+of its own on purpose: it takes no `ref`, so its `Validation` cell names only the parent, the name, the
+color and the team, and `LABEL_AMBIGUOUS` is not among them.
+
+Payload shape: the envelope of the edge — SPEC-060 §6.3 for the API and SPEC-050 §2.4.5 for `--json` —
+`code`, `message`, `field` and `details`, with `details` `null` or a list of `{field, message}`. What this
+layer guarantees is the *accessor* those edges read: `NotFound.details` carries `resource`/`key`,
+`Validation.details` `rule`/`field` and `Conflict.details` `rule` (SPEC-020 §2.6, §6), and no
+member of that mapping is published as a nested payload — a 404 renders `"details": null` and the rule
+travels in `message` (D-062). The errors of this layer carry no SQL, table names nor paths: that is
+REQ-S060-03 and it is verified with a forced-500 test.
 
 ## 7. Acceptance Criteria
 
@@ -1945,6 +2219,93 @@ Feature: Application use cases
     When add_label is run with "bug" twice
     Then the issue has a single label "bug"
     And issue_history has a single row with field "label"
+
+  @REQ-F040-37
+  Scenario: a label of a singleSelect group replaces the sibling the issue carries
+    Given the group "Severity" of type singleSelect with the children "High" and "Low"
+    And ENG-1 with the label "High"
+    When add_label is run on ENG-1 with "Low"
+    Then AddLabelResult.replaced is the label "High"
+    And ENG-1 carries "Low" and does not carry "High"
+    And issue_history has two rows with field "label": first ("High", null) and then (null, "Low")
+    And the row of "High" in label still exists and is not retired
+
+  @REQ-F040-37
+  Scenario: re-adding the child a singleSelect group already holds is a no-op
+    Given the group "Severity" of type singleSelect with the children "High" and "Low"
+    And ENG-1 with the label "High"
+    When add_label is run on ENG-1 with "High"
+    Then AddLabelResult.replaced is null
+    And ENG-1 carries "High"
+    And no row was added to issue_history
+    And no clock was read
+
+  @REQ-F040-37
+  Scenario: a multiSelect group keeps every child
+    Given the group "Area" of type multiSelect with the children "Back" and "Front"
+    And ENG-1 with the label "Back"
+    When add_label is run on ENG-1 with "Front"
+    Then AddLabelResult.replaced is null
+    And ENG-1 carries "Back" and "Front"
+    And issue_history has a single row with field "label", (null, "Front")
+
+  @REQ-F040-38
+  Scenario: renaming a label keeps every link and changes no issue
+    Given ENG-1 and ENG-2 with the label "bug"
+    When update_label is run on "bug" with name "defect"
+    Then the label reads "defect" and keeps its color
+    And ENG-1 and ENG-2 still carry that label, found by its ULID
+    And no row of issue_history was added
+
+  @REQ-F040-38
+  Scenario: a label in use is not retired
+    Given ENG-1 with the label "bug", and ENG-1 archived
+    When retire_label is run on "bug"
+    Then Conflict is raised with rule "LABEL_IN_USE"
+    And label.retired_at is still null
+
+  @REQ-F040-38
+  Scenario: a label that is already retired is not retired again
+    Given the retired label "infra" with no link to any issue
+    When retire_label is run on "infra"
+    Then Conflict is raised with rule "LABEL_RETIRED"
+    And label.retired_at is the instant it already carried
+    And no row of label changed
+
+  @REQ-F040-38
+  Scenario: the undo of a retire clears retired_at and nothing else
+    Given the retired label "infra" with no link to any issue
+    When restore_label is run on "infra"
+    Then label.retired_at is null
+    And restore_label run again raises Conflict with rule "LABEL_NOT_RETIRED"
+
+  @REQ-F040-38
+  Scenario: a retired label is renamed by the name it resolves to
+    Given the retired label "infra" with no link to any issue
+    When update_label is run on "infra" with name "platform"
+    Then the label reads "platform"
+    And label.retired_at is the instant it already carried
+
+  @REQ-F040-38
+  Scenario: a name shared by two teams is ambiguous
+    Given the label "Bug" of the ENG team and the label "Bug" of the OPS team
+    When retire_label is run with the name "Bug"
+    Then Validation is raised with rule "LABEL_AMBIGUOUS" and field "ref"
+    And no row of label changed
+
+  @REQ-F040-26
+  Scenario: create_if_missing creates a label of the issue's team and links it
+    Given the ENG team without the label "infra"
+    When add_label is run on ENG-1 with "infra", create_if_missing true and color "#5E6AD2"
+    Then one row of label exists with name "infra", team_id ENG and that color
+    And ENG-1 carries "infra"
+
+  @REQ-F040-26
+  Scenario: create_label rejects a parent group from another team
+    Given the ENG team with the group label "area" and the OPS team
+    When create_label is run in the "OPS" team with parent "area" from the ENG team
+    Then Validation is raised with rule "LABEL_GROUP_INVALID" and field "parent"
+    And no row is inserted in label
 
   @REQ-F040-10
   Scenario: blocked_by is persisted inverted
@@ -2147,13 +2508,6 @@ Feature: Application use cases
     And no row is inserted in attachment
 
   @REQ-F040-26
-  Scenario: create_label rejects a parent group from another team
-    Given the ENG team with the group label "area" and the OPS team
-    When create_label is run in the "OPS" team with parent "area" from the ENG team
-    Then Validation is raised with rule "LABEL_SCOPE"
-    And no row is inserted in label
-
-  @REQ-F040-26
   Scenario: create_state rejects a type outside the state machine
     Given the ENG team
     When create_state is run with name "Blocked" and type "blocked"
@@ -2284,6 +2638,16 @@ Feature: Application use cases
   use case (REQ-N040-03) comes from counting the operations of §3.1.
 - **`comment` does not generate history**: author's decision, 2026-11-08: the comment is its own
   record; duplicating it in `issue_history` inflates the table without adding information.
+- **A `singleSelect` group replaces the previous label, and the replacement travels in the result**:
+  REQ-F024 of SPEC-001 asked for it from its first revision and this spec never carried it; the rule,
+  the history rows and `AddLabelResult` are D-061. The result object exists because the replacement is
+  an outcome of the *operation* and not a property of the issue: an edge that had to recompute it would
+  hold a second copy of the rule (P4), and the CLI's `--json` answer is the only place REQ-F024 asks
+  for it.
+- **`retire_label` refuses what is in use, and `restore_label` is its undo**: a retire that leaves live
+  issues carrying a label nothing can re-attach is the one state the catalogue cannot explain, and
+  `--undo` without a use case was a verb promising a function that did not exist (D-031's lesson). Both
+  halves are D-061.
 
 ## 10. Out of scope
 
@@ -2301,6 +2665,97 @@ Feature: Application use cases
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 30 (2026-11-20): **one spelling for the noun a move cannot find, and one statement of the
+  set (HIFA-14, D-062).** §5.2's declared raise for a `--state` that resolves to nothing spelled its noun
+  after the SQL table, and the two `raises:` lines of §2 (`move_issue`, `rebalance_board`) spelled it the
+  same way, while §2.2's `update_issue` line said `NotFound(issue|state|…)` for the same missing target,
+  §6's `NOT_FOUND` row listed `state` among its nouns, and SPEC-050 §2.5.3 published `field: "state"` for
+  that exact input — so one resource had two published spellings and the one a client would have read was
+  an implementation name. All three sites now say `state`, the noun the flag itself names and both edges
+  publish, and §6's row states that it is the one statement of the set: no edge and no `raises:` line
+  re-decides a noun. The same revision fixes the sentence under §6's table, which called the payload "the
+  one of SPEC-020 §6" and had that section list `resource`/`key` inside `details` — §6 now points at
+  SPEC-060 §6.3 and SPEC-050 §2.4.5 for the envelope and keeps only the accessor this layer guarantees
+  (D-062). `version` stays 5: no signature, no exception class, no rule and no envelope member of §2
+  changes — the name of a resource is not a signature, and the two edges already published `state`.
+
+- spec_revision 29 (2026-11-20): **the rename of a retired label has a scenario on this side too, and
+  this file stops saying "5" (HIFA-14, D-061, D-062).** Revision 28 made a retired row reachable by
+  name for the four catalogue verbs and stated it in §2.2, R22 and REQ-F040-38, but the only walks §7
+  pinned were the repeated retire and the undo of one: the rename was the third verb of the same clause
+  and had no step, so a rule of this layer rested on a count that said five and on a scenario of another
+  layer. §7 gains it under `@REQ-F040-38` — `update_label` on the name `infra` of a retired row reads
+  `platform` and leaves `retired_at` as it was — and REQ-F040-38 now counts six. The flag-level refusal
+  of `--clear-description` with `-d/--description` gets no scenario here on purpose: it is an
+  `InvalidOption` of SPEC-050 §2.5.4/§6, this layer never sees a flag, and §6 has no `rule` for it — the
+  pair is pinned where it is declared (`09-labels.feature`). `version` stays 5: no signature, no
+  exception class and no rule of §2 changes; a scenario and a count are §4.2 and §7.
+
+- spec_revision 28 (2026-11-20): **a catalogue verb sees the retired label it was asked to act on
+  (HIFA-14, D-061).** §4.1 R22, §2.2's `label_detail` comment and REQ-F040-38 said a catalogue-scoped
+  name resolves with `LabelRepo.list` and "no team filter", which is the read default
+  `include_retired=False` of §2.2 — that drops every retired row, so `label archive infra --undo` on a
+  retired label resolved `None` and answered `NotFound`/exit 3 where SPEC-050 §2.5.4 and
+  `09-labels.feature` say exit 0, and the double retire and the rename of a retired row were
+  unreachable by name for the same reason. The four catalogue verbs now resolve with
+  `LabelRepo.list(..., include_retired=True)`, stated identically in §2.2, R22 and REQ-F040-38, and
+  `LABEL_AMBIGUOUS` is judged over that same set: a retired `Bug` of one team and a live one of
+  another is ambiguous, while two rows with one name in the same team cannot exist because the partial
+  indexes count retired rows (SPEC-010 R6, D-010). The display default does not move — `list_labels`
+  still hides retired rows unless `--all`, and §2.2 now says in one sentence why a read that renders a
+  catalogue and a write that acts on one reference need different visibility. Also here: R22's lead
+  sentence names the three catalogue writes plus the read and keeps `create_label.parent` outside
+  them; the §6 matrix rows `create_label` alone, because it cannot raise `LABEL_AMBIGUOUS`;
+  `UNIQUE_LABEL_NAME`'s producer cell gains `add_label` under `create_if_missing`, which `# raises:`,
+  the `add_label` Conflict cell and SPEC-050 §2.5.3 already said. `version` stays at 5: no signature,
+  field or command changes — the four verbs already existed and their scope was always "the
+  catalogue".
+
+- spec_revision 27 (2026-11-20): **the label contract closes the loops revision 26 opened, and one of
+  them was a bug (HIFA-14, D-061).** (1) The `singleSelect` replacement no longer treats the incoming
+  label as its own sibling: §5.6 step 6 reads the group's rows with `l.id != label.id`, step 7 returns
+  the no-op when the label is already linked **and** no sibling is present, and R10's second bullet keeps
+  the cleanup case (an inconsistent row set writes the detach rows and answers the first sibling in
+  `label.name` ASC). (2) `validate_label_scope` raises `Conflict(rule='LABEL_RETIRED')` — SPEC-020 §2.5,
+  §6 and this §6 now say so, `create_issue`'s `Conflict` cell gains the code, and exit 4 / 409 is what
+  §2.2's table and SPEC-050 §2.5.3 already promised. (3) `remove_label` stops inheriting `add_label`'s
+  steps: a **name** that resolves nowhere is `NotFound(resource='label')` (exit 3) on `remove_label` and
+  stays `Validation(rule='LABEL_NOT_FOUND')` (exit 2) on `add_label`, and the asymmetry is stated per
+  verb in §2.2, §5.6 and the §6 matrix. (4) `ref` resolution is one rule per kind of reference —
+  issue-scoped (the issue's team, then the workspace, never ambiguous), catalogue-scoped (the whole
+  workspace, `LABEL_AMBIGUOUS` on two teams) and `create_label.parent` (resolved at the label's own
+  level) — and §2.2, R22 and REQ-F040-38 say the same thing. (5) The §6 matrix moves `LABEL_AMBIGUOUS`
+  off the reads that cannot raise it and gives `list_labels` and `label_detail` their own rows.
+  (6) `AddLabelResult` is declared as a block, not only in prose. (7) The double-retire refusal
+  (`Conflict(rule='LABEL_RETIRED')`) that REQ-F040-38 claimed now has the scenario §7 counts.
+  `version` stays at 5: no symbol, field or command appears that revision 26 did not name — the
+  corrections are the contract revision 26 meant.
+
+- spec_revision 26 (2026-11-20): **the label surface becomes a contract the code can be written from
+  (HIFA-14, D-061).** Every label function of §2.2 existed here and none of them could be implemented
+  without guessing. `add_label` returned an `Issue` and therefore had nowhere to report the
+  `singleSelect` replacement REQ-F024 has required since the first revision of the vertical: it now
+  returns `AddLabelResult(issue, replaced)`, performs the replacement in the same transaction
+  (detach rows first, then the insert, all in §5.6) and records it as its own `('label', <name>, NULL)`
+  history row. `CreateLabel` gained `group_type` — the flag `hifa label add --group` had no field to
+  land in, so a group could be created without the type the schema and the replacement rule both need —
+  and its `__post_init__` rule was inverted (it *required* a parent for a group, which the DDL `CHECK`
+  forbids); `UpdateLabel.color` stops accepting `None`, because the column cannot be NULL. `RestoreLabel`
+  and `restore_label` are new: `hifa label archive --undo` was published in SPEC-050 with no use case
+  behind it, the exact shape D-031 rejected for `team archive`. Four refusals joined §6 —
+  `LABEL_IN_USE` (retiring something an issue wears), `LABEL_NOT_RETIRED` (the undo of that),
+  `LABEL_NAME_EMPTY` and `LABEL_AMBIGUOUS` (a name two teams share, which the port has no team scope to
+  narrow) — and R22 states the catalogue in one place: what `create_label` defaults, what
+  `update_label` may and may not change, what "in use" means (`count_uses > 0`, any layer) and that
+  `create_if_missing` creates in the **issue's team**. R10 keeps its idempotency and gains the
+  replacement. Two smaller holes closed on the way: `add_label`/`remove_label` were declared under the
+  `issues.py` block of §2.2 while §2's symbol table gives them `labels`, and both now carry the
+  `ISSUE_TRASHED` refusal every other write of the row has. The §7 scenario that named a rule no table
+  contains (`LABEL_SCOPE`) now names `LABEL_GROUP_INVALID`. `version` 5: a return type, a command field,
+  a new command and four codes are the public contract. The dashboard half —
+  `POST|DELETE /_/issues/{identifier}/labels` — is **not** in this revision: it is HIFA-61, and the
+  parity rows that carry the debt are T-20.3's step.
 
 - spec_revision 25 (2026-11-17): **a comment is a write, so it obeys the two rules a write obeys (D-060).**
   This spec declared `comment_on_issue` and then said nothing about the two things that decide whether

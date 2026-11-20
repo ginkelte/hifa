@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 2
-spec_revision: 8
+version: 4
+spec_revision: 11
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/060-api-rest.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-13
+updated: 2026-11-20
 ---
 
 # SPEC-060 — REST API
@@ -646,10 +646,13 @@ Columns: `Request` = schema/params; `Response` = schema; `Errors` = error status
 such an endpoint would be a port with no function behind it. To leave the issue with a different set,
 N endpoints are called (the edge iterates, just like the CLI: SPEC-040 GAP-05). `add_label` is idempotent
 (SPEC-040 R10): repeating a label already present ⇒ 200 with no change and no history; `DELETE` of a label that is not
-linked ⇒ 404 `not_found` with `field: "label_link"`. The label is resolved the same way as `ref`:
-ULID first, name after (case-insensitive, within the issue's team); a label from another team ⇒ 422
-`label_team_mismatch`, a retired label ⇒ 409 `label_retired`. Neither route creates labels:
-`create_if_missing=False` always.
+linked ⇒ 404 `not_found` with `field: "label_link"`, and a **reference** that resolves nowhere ⇒ 404
+`not_found` with `field: "label"` — `field` is the `resource` of the `NotFound` (SPEC-020 §2.6), so the
+two 404s differ and the CLI publishes the same pair for the same input (SPEC-050 §2.4.5). The label is
+resolved the same way as `ref`: ULID first, name after (case-insensitive, within the issue's team); a
+label from another team ⇒ 422 `validation_error` (`rule='LABEL_TEAM_MISMATCH'`, SPEC-040 §6), a retired
+label ⇒ 409 `conflict` (`rule='LABEL_RETIRED'`). Neither route creates labels: `create_if_missing=False`
+always.
 
 Filter semantics (identical to SPEC-050 §2.5.3, translated to HTTP):
 
@@ -712,7 +715,10 @@ trashed = 0`) ⇒ 409 `conflict` (D7: no silent cascade).
 | PATCH | `/api/v1/members/{id}` | `MemberPatch` | 200 `MemberOut` | 404, 409, 422 |
 
 `DELETE /labels/{id}` retires the label (`retired_at`); it does not delete rows: `issue_label` would still
-point at it. If the label is in use (`issue_label` with ≥1 row and the issue not archived) ⇒ 409.
+point at it. If the label is in use ⇒ 409 `conflict` (`rule='LABEL_IN_USE'`), and in use means **any**
+`issue_label` row, whatever layer the issue is in — an archived or trashed issue counts, because a
+restored issue comes back wearing the chip and a retired label cannot be re-attached (SPEC-040 §4.1 R22,
+D-061). The `409` is the status it always was; what this revision settles is the set that triggers it.
 `DELETE /projects/{id}` archives (`archived_at`); it does not delete.
 
 #### 2.5.4 Search and meta
@@ -945,7 +951,7 @@ took_ms` —, not the list envelope of R3.
 ```console
 $ curl -si localhost:7777/api/v1/issues/ENG-999
 HTTP/1.1 404 Not Found
-{"error":{"code":"not_found","message":"issue 'ENG-999' does not exist","field":"ref","details":null}}
+{"error":{"code":"not_found","message":"issue 'ENG-999' does not exist","field":"issue","details":null}}
 ```
 
 ```console
@@ -1056,7 +1062,7 @@ Starlette returns a plain-text 500, breaking R3 and R14.
 ### 5.3 Exception-to-status mapping
 
 ```
-NotFound            -> 404  not_found
+NotFound            -> 404  not_found                (field = e.field, the `resource`)
 Conflict            -> 409  conflict
 Validation          -> 422  validation_error        (field = e.field)
 InvalidTransition   -> 409  invalid_transition      (field = e.field)
@@ -1075,7 +1081,7 @@ Exception           -> 500  internal_error
 | `error.code` | HTTP | When | `field` |
 |---|---|---|---|
 | `validation_error` | 422 | invalid payload/query, unknown field, null `title`, `limit` out of range, invalid cursor | yes |
-| `not_found` | 404 | nonexistent ref/resource | `ref` or the param name |
+| `not_found` | 404 | nonexistent ref/resource | the `resource` of the `NotFound` (`issue`, `label`, `label_link`, …) |
 | `conflict` | 409 | uniqueness, label in use, team with issues, member with open issues, duplicate relation | yes |
 | `invalid_transition` | 409 | writing an issue with `archived_at` not null (SPEC-040 §6, R20) | `ref` |
 | `forbidden` | 403 | `read_only=True` and a write method | `null` |
@@ -1117,7 +1123,7 @@ internal data. The exact text is contract: the tests assert it.
   "error": {
     "code": "not_found",
     "message": "issue 'ENG-999' does not exist",
-    "field": "ref",
+    "field": "issue",
     "details": null
   }
 }
@@ -1293,7 +1299,7 @@ Feature: hifa REST API
     Then the status is 404
     And the body has exactly the key "error"
     And error.code is "not_found"
-    And error.field is "ref"
+    And error.field is "issue"
     And error.details is null
 
   Scenario: no endpoint is async
@@ -1360,6 +1366,46 @@ Feature: hifa REST API
 - File upload: `attachments` are links (SPEC-000 §1).
 
 ## 11. Notes
+
+- spec_revision 10 (2026-11-20): **this edge publishes transport codes, and its 404s publish the
+  resource (HIFA-14, D-061).** (1) §2.5.3 named `label_team_mismatch` and `label_retired` in the
+  position where §6.1's catalog holds `error.code`, and that catalog has no such codes: the paragraph
+  now publishes 422 `validation_error` with `rule='LABEL_TEAM_MISMATCH'` and 409 `conflict` with
+  `rule='LABEL_RETIRED'` — the transport code in `error.code`, and the rule as the **name SPEC-040 §6
+  gives it**, quoted the way §2.5.3 already quotes `LABEL_IN_USE` and rendered to the client in
+  `error.message` (in `error.details[].message` when one refusal reports several). No section of this
+  document declares a `rule` member: §5.3 maps exception classes to statuses and codes, and §6.3's
+  envelope carries `code`, `message`, `field` and `details` — so the name travels as text, never as a
+  key. (2) The same paragraph published only
+  `field: "label_link"` for the labels subresource while SPEC-050 §2.4.5 declared both of its 404s with
+  `field: "label"`; the values are settled by **what is missing** — a reference that resolves nowhere
+  is `label`, a label the issue does not wear is `label_link` — and both edges read them from the
+  derived `NotFound.field` (SPEC-020 §2.6, §5.3) instead of choosing one. That makes `field` of a
+  missing issue the resource `issue` instead of the `ref` §6.1 used to publish, so §5.3, §6.1's
+  `not_found` row, §6.3's envelope sample and §7's 404 scenario say so. `version` 4: no route, status
+  code or schema changes, but §2.5.3's `error.code` for two inputs of `POST|DELETE
+  /api/v1/issues/{ref}/labels` moves — `label_team_mismatch` → `validation_error` and `label_retired` →
+  `conflict` — and a code a client branches on is §2 contract: that is the bump this entry owed and did
+  not take until revision 11.
+
+- spec_revision 11 (2026-11-20): **round 3 over this delta: the 404 example, the address of the rule and
+  the counts (HIFA-14, D-061, D-062).** (1) §7's "the 404 uses the error envelope" still asserted
+  `ref` as the `error.field` of `GET /api/v1/issues/ENG-999`, while §5.3, §6.1, §6.3 and §2.7 of this same
+  document — and SPEC-020 §2.6, which D-062 records — derive that value from the resource: the scenario
+  now asserts `issue`, and it was the one assertion the revision-10 cascade missed. The only `ref` this
+  document still publishes is §6.1's `invalid_transition` row, which is the explicit
+  `InvalidTransition(rule='ISSUE_ARCHIVED', field='ref')` of SPEC-040 §6 and not a 404. (2) The
+  revision-10 note said the rule name sat "where §5.3 and §6.3 put it" and neither section declares a
+  `rule`: the name is the one SPEC-040 §6 gives the rule and it reaches the client in `error.message`.
+  (3) `version` 4, for the reason the entry above now carries.
+
+- spec_revision 9 (2026-11-20): **"label in use" is the rule the use case applies, not a narrower one
+  (HIFA-14, D-061).** §2.5.3 said `issue_label` ≥ 1 row *and the issue not archived*, while
+  `retire_label` refuses when `LabelRepo.count_uses > 0` — every layer, archived and trashed issues
+  included (SPEC-040 R22). The parenthetical described a set the port cannot see and no use case
+  computes; it is gone, the `409` stays, and what the revision settles is the set that triggers it.
+  `version` 3: the condition of a published `409` is §2 contract, and a client that archived its issues
+  to free a label now learns it cannot.
 
 - spec_revision 8 (2026-11-13): **the cursor carries its direction, and the token is the one SPEC-030
   §2.6.2 defines.** §2.3 said the cursor "does not encode the direction" and that a `.asc`/`.desc` switch

@@ -6,7 +6,7 @@ regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Tem
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
 **11 approved specs and 1 draft** (SPEC-110, the release pipeline, at `version: 3` / `spec_revision: 6`
 after the engine change of D-039 and the governed outcome classifier of D-040). Accepted debt P-01…P-09 in
-[`DECISIONS.md`](./DECISIONS.md) (**60 decisions: D-001 … D-060**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
+[`DECISIONS.md`](./DECISIONS.md) (**62 decisions: D-001 … D-062**; P-12 closed by D-041). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035, D-058):** the canonical seed is
 `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · In Review(4.5) ·
@@ -26,6 +26,17 @@ because what happens to the issues that live in the state is undefined.
 `archive_team` is deferred with `update_team`, so SPEC-050 declares no row for it and SPEC-040 marks
 the function "declared, not implemented". The same decision settles the list envelope: collections
 are `{"items": [...]}` and the cursor keys exist only where the command paginates (`issue list`).
+
+**The label surface is contracted and unimplemented (D-061, HIFA-14):**
+`hifa label add|list|show|update|archive [--undo]` and `hifa issue label|unlabel [--create] [--color]`
+over the label use cases of SPEC-040 §2 (`create_label`, `update_label`, `retire_label`,
+`restore_label`, `list_labels`, `label_detail`, and `add_label`/`remove_label` on an issue), with the
+`singleSelect` replacement REQ-F024 has required since its first revision and the `{issue, replaced}`
+envelope it asks for. The dashboard half — `POST`/`DELETE /_/issues/{identifier}/labels` — is
+**HIFA-61**, and the seven capability rows of `scripts/check_edge_parity.py` land with the code, in the
+same PR (SPEC-050 §11) — three as `debt="HIFA-61"` (`issue.label`, `issue.unlabel`, `label.list`) and
+four as `debt="HIFA-62"` (`label.create`, `label.show`, `label.update`, `label.archive`, the dashboard's
+label administration page; D-061(g)).
 
 **Design principles P1-P9 (AGENTS.md §5) are normative since D-032; the web edge contract
 joined `.importlinter` in the same change.**
@@ -84,8 +95,8 @@ enforced for every other actor (D-036).
 
 ## Acceptance criteria
 
-`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 221 scenarios**
-(209 `Scenario` + 12 `Scenario Outline`, each outline counted once),
+`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 240 scenarios**
+(228 `Scenario` + 12 `Scenario Outline`, each outline counted once),
 all with exactly one `When` (verified by parsing every file with `gherkin-official`).
 The per-component Gherkin lives **inline** in each spec (§7); the individual `.feature` files are
 debt P-01 in `DECISIONS.md`.

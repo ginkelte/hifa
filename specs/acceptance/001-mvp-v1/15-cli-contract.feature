@@ -19,7 +19,7 @@ Feature: CLI contract with --json
     Then the exit code is 3
     And stdout is empty
     And the "error.code" field of stderr is "not_found"
-    And the "error.field" field of stderr is "ref"
+    And the "error.field" field of stderr is "issue"
     And the "error.message" field of stderr is not empty
 
   @REQ-F032 @smoke
