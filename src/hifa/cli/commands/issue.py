@@ -17,6 +17,7 @@ from __future__ import annotations
 import enum
 import os
 import sys
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -26,10 +27,22 @@ import typer
 from hifa.adapters.clock import SystemClock
 from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database
-from hifa.adapters.sqlite.reads import IssueListItem, IssuePage, ListFilters, OrderKey
+from hifa.adapters.sqlite.reads import (
+    IssueDetail,
+    IssueListItem,
+    IssuePage,
+    ListFilters,
+    OrderKey,
+)
 from hifa.adapters.sqlite.uow import Repos, UnitOfWork
 from hifa.app import members
-from hifa.app.boards import issue_detail, list_blocked, list_issues
+from hifa.app.boards import (
+    DETAIL_COLLECTIONS,
+    detail_collections,
+    issue_detail,
+    list_blocked,
+    list_issues,
+)
 from hifa.app.commands import (
     UNSET,
     Actor,
@@ -61,7 +74,7 @@ from hifa.cli import output
 from hifa.cli.context import CliContext, resolve_team
 from hifa.cli.errors import EXIT_NOT_FOUND, CliError, fail
 from hifa.config import ConfigError, resolve_config
-from hifa.domain.entities import Comment, Issue, Label, Member, Team
+from hifa.domain.entities import Comment, Issue, IssueHistory, Label, Member, Team
 from hifa.domain.errors import HifaError, NotFound
 
 issue_app = typer.Typer(
@@ -90,6 +103,26 @@ RELATION_EDGE_COLUMNS: tuple[str, ...] = ("id", "type", "issue_id", "related_iss
 
 #: Columns of the row `issue comment` prints.
 COMMENT_TABLE_COLUMNS: tuple[str, ...] = ("id", "issue", "author", "created", "body")
+
+#: `--with` values `issue show` prints, in the order the object carries them. `attachments` is a
+#: value of the flag that this version refuses: nothing can write an attachment row yet, so the
+#: payload has no key for one and the command says so instead of printing an empty list.
+SHOW_COLLECTIONS: tuple[str, ...] = ("comments", "relations", "history", "children")
+
+#: Section title of each collection and the columns of its table.
+SHOW_SECTIONS: dict[str, tuple[str, ...]] = {
+    "comments": ("id", "author", "created", "body"),
+    "relations": RELATION_TABLE_COLUMNS,
+    "history": ("when", "actor", "field", "from", "to"),
+    "children": ("identifier", "title"),
+}
+
+#: Columns of the key-value block of `issue show`: the widest key is 8 cells, so the two-space
+#: separator puts every value at column 11.
+SHOW_KEY_WIDTH = 10
+
+#: Empty cell of the block, as the table renderer draws it.
+EMPTY = "–"
 
 #: Priority -> single-cell glyph.
 PRIORITY_GLYPHS: dict[int, str] = {0: "–", 1: "U", 2: "H", 3: "M", 4: "L"}
@@ -408,6 +441,37 @@ def blocked_command(
     )
     if not rows and not json_mode and not quiet_mode:
         output.write_note("0 issues")
+
+
+@issue_app.command("show")
+def show_command(
+    ctx: typer.Context,
+    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    collections: list[str] | None = typer.Option(
+        None, "--with", help="comments, relations, history or children (repeatable)."
+    ),
+    db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
+    json_output: bool = typer.Option(False, "--json", help="JSON output."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
+    no_color: bool = typer.Option(False, "--no-color", help="No color."),
+) -> None:
+    """Show one issue: its summary block and, per `--with`, one collection after it."""
+    root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
+
+    try:
+        requested = _requested_collections(collections)
+        payload, detail = _run_show(
+            db_flag=db if db is not None else root.db, ref=ref, requested=requested
+        )
+    except (HifaError, ConfigError, CliError) as exc:
+        raise fail(exc) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - interactive
+        raise fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
+        raise fail(exc) from exc
+
+    _emit_show(payload, detail, requested)
 
 
 @issue_app.command("edit")
@@ -771,11 +835,13 @@ def _existing_db(db_flag: str | None) -> Path:
 
 
 def _run_relations(*, db_flag: str | None, ref: str) -> tuple[list[dict[str, Any]], list[dict]]:
-    """Every relation of one issue.
+    """Every relation of one issue, in the order the detail read publishes.
 
     The envelope carries the stored row and nothing else: which end of the row the asking
     issue is on, and therefore how the type reads from here, is derived from the issue and
-    the two halves of the row instead of travelling as a second copy of the same fact.
+    the two halves of the row instead of travelling as a second copy of the same fact. The
+    order is the one `issue_detail` produced, so this table and `issue show --with relations`
+    cannot disagree.
     """
     db_path = _existing_db(db_flag)
     detail = issue_detail(Database(db_path), ref)
@@ -783,17 +849,108 @@ def _run_relations(*, db_flag: str | None, ref: str) -> tuple[list[dict[str, Any
     rows: list[dict[str, Any]] = []
     items: list[dict] = []
     for relation, far in detail.relations:
-        seen = relation.type.name_as_seen("out" if relation.issue_id == asking else "in")
-        rows.append(
-            {
-                "reads as": seen,
-                "identifier": far.identifier,
-                "title": far.title,
-                "state": far.state_name,
-            }
-        )
+        rows.append(_relation_section_row(relation, far, asking_id=asking))
         items.append(_relation_item(relation))
     return rows, items
+
+
+def _requested_collections(values: list[str] | None) -> tuple[str, ...]:
+    """The `--with` values of one invocation, de-duplicated, in the order they were typed.
+
+    A value outside the four is a typo and the command refuses it before any read; `attachments`
+    is inside the flag's vocabulary and outside this version's payload, so it is refused with its
+    own sentence. Both are the edge's own refusals: no use case is called for a flag it cannot
+    receive, and `--json` answers with this edge's one error document like every other refusal.
+    """
+    requested: list[str] = []
+    for raw in values or []:
+        token = raw.strip()
+        if token == "attachments":
+            raise CliError(
+                "--with attachments has no payload in this version",
+                code="invalid_option",
+                field="with",
+            )
+        if token not in SHOW_COLLECTIONS:
+            raise CliError(
+                f"unknown --with value '{token}'; expected comments, relations, history,"
+                " children or attachments",
+                code="invalid_option",
+                field="with",
+            )
+        if token not in requested:
+            requested.append(token)
+    return tuple(requested)
+
+
+def _include_names(requested: tuple[str, ...]) -> frozenset[str]:
+    """The `include` names the read is called with: the requested collections it gates.
+
+    Only two of the four collections are gates of the read; `relations` and `children` are read on
+    every call and are not names of that set, so passing them would be refused as unknown.
+    """
+    return frozenset(name for name in requested if name in {"comments", "history"})
+
+
+def _run_show(
+    *, db_flag: str | None, ref: str, requested: tuple[str, ...]
+) -> tuple[dict[str, Any], IssueDetail]:
+    """Read one issue: the canonical object and, when asked for, the four collections.
+
+    The reference is resolved by the detail read and by nothing else, so the trash layer answers
+    for it once: a trashed identifier is not found, whatever `--with` carries. `--with` costs no
+    second read — one call answers the block and every collection — and the row itself is read
+    through the repositories, because the object every write publishes carries fields the detail
+    model does not.
+    """
+    db_path = _existing_db(db_flag)
+    detail = issue_detail(Database(db_path), ref, include=_include_names(requested))
+
+    uow = UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        with uow.read() as repos:
+            issue = repos.issues.get(detail.issue.id)
+            if issue is None:  # pragma: no cover - the detail read just answered this row
+                raise NotFound(resource="issue", key=ref)
+            payload = _canonical(repos, issue)
+    finally:
+        uow.close()
+
+    # `parent` and `milestone` come from the detail read: it is the read that answers `null` for a
+    # parent in the trash and the one that joins the milestone's name.
+    payload["parent"] = None if detail.parent is None else _identifier_ref(detail.parent)
+    payload["milestone"] = _milestone_ref(detail.issue)
+    if requested:
+        payload.update(_collections_payload(detail, requested))
+    return payload, detail
+
+
+def _collections_payload(
+    detail: IssueDetail, requested: tuple[str, ...]
+) -> dict[str, list[dict[str, Any]]]:
+    """The four collection keys of the payload, all of them, in the object's fixed order.
+
+    A collection that was not requested and a collection with no rows are both `[]`: the object has
+    one shape, and no key tells the two apart. The unrequested one is emptied even when the read
+    could fill it — `relations` and `children` are read on every call — because the object answers
+    what the caller asked for and nothing else.
+    """
+    return {
+        name: [_collection_item(name, value) for value in values] if name in requested else []
+        for name, values in detail_collections(detail).items()
+    }
+
+
+def _collection_item(name: str, value: Any) -> dict[str, Any]:
+    """One element of one collection, in the shape its object has everywhere else."""
+    if name == "comments":
+        return _comment_canonical(value)
+    if name == "relations":
+        relation, _far = value
+        return _relation_item(relation)
+    if name == "history":
+        return _history_item(value)
+    return _identifier_ref(value)
 
 
 def _run_blocked(*, db_flag: str | None, team: str | None) -> tuple[list[dict], list[dict]]:
@@ -845,6 +1002,38 @@ def _relation_item(relation: Any) -> dict[str, Any]:
         "related_issue_id": relation.related_issue_id,
         "type": str(relation.type),
         "created_at": _iso(relation.created_at),
+    }
+
+
+def _history_item(entry: IssueHistory) -> dict[str, Any]:
+    """The stored history row: the writer's field name and the two values as they were written."""
+    return {
+        "id": entry.id,
+        "issue_id": entry.issue_id,
+        "actor_id": entry.actor_id,
+        "field": entry.field,
+        "old_value": entry.old_value,
+        "new_value": entry.new_value,
+        "created_at": _iso(entry.created_at),
+    }
+
+
+def _relation_reading(relation: Any, far: IssueListItem, asking_id: str) -> str:
+    """How one stored row reads from `asking_id`: the type, or its inverse from the far end."""
+    return relation.type.name_as_seen("out" if relation.issue_id == asking_id else "in")
+
+
+def _relation_section_row(relation: Any, far: IssueListItem, *, asking_id: str) -> dict[str, Any]:
+    """One row of the relations table: the reading, then the far end it points at.
+
+    The cell renders the type name with its underscore as a space (`blocked by`): the name is one
+    word of the stored vocabulary, and the table is the human surface of it.
+    """
+    return {
+        "reads as": _relation_reading(relation, far, asking_id).replace("_", " "),
+        "identifier": far.identifier,
+        "title": far.title,
+        "state": far.state_name,
     }
 
 
@@ -1259,6 +1448,113 @@ def _emit_issue_replaced(
         json_obj={"issue": payload, "replaced": replaced},
         quiet_obj=payload["identifier"],
     )
+
+
+def _emit_show(payload: dict[str, Any], detail: IssueDetail, requested: tuple[str, ...]) -> None:
+    """One issue: the block always, then one section per requested collection that has rows.
+
+    A collection with no rows prints no section at all and one `0 <collection>` on `stderr`, the
+    diagnostic `issue list` and `issue relations` already use; the exit code stays `0`. `--quiet`
+    prints the identifier alone, whatever was requested, so a script that wants the collections
+    asks for `--json`.
+    """
+    current = output.options()
+    if current.json:
+        output.write_json(payload)
+        return
+    if current.quiet:
+        output.write_line(payload["identifier"])
+        return
+
+    for line in _show_block(payload):
+        output.write_line(line)
+    for name in DETAIL_COLLECTIONS:
+        if name not in requested:
+            continue
+        rows = _section_rows(name, detail)
+        if not rows:
+            output.write_note(f"0 {name}")
+            continue
+        output.write_line("")
+        output.write_line(name.upper())
+        output.write_line(output.render_table(rows, SHOW_SECTIONS[name]))
+
+
+def _show_block(payload: dict[str, Any]) -> list[str]:
+    """The summary block: the identifier and the title, then one `key  value` line per field.
+
+    The description is not one of the rows: a body is multi-line and arbitrarily long, and the
+    block is one line per field, so the record's whole content travels in `--json` only.
+    """
+    state = payload["state"] or {}
+    assignee = payload["assignee"] or {}
+    project = payload["project"] or {}
+    parent = payload["parent"] or {}
+    fields: tuple[tuple[str, Any], ...] = (
+        ("State", f"{state.get('name')} ({state.get('type')})" if state else None),
+        ("Priority", payload["priority_label"]),
+        ("Assignee", assignee.get("display_name")),
+        ("Project", project.get("name")),
+        ("Cycle", _cycle_label(payload["cycle"])),
+        ("Due", payload["due_date"]),
+        ("Estimate", payload["estimate"]),
+        ("Labels", ", ".join(label["name"] for label in payload["labels"]) or None),
+        ("Parent", parent.get("identifier")),
+        ("Created", payload["created_at"]),
+        ("Updated", payload["updated_at"]),
+    )
+    lines = [f"{payload['identifier']}  {payload['title']}"]
+    lines.extend(
+        f"{key:<{SHOW_KEY_WIDTH}}{EMPTY if value is None else value}" for key, value in fields
+    )
+    return lines
+
+
+def _cycle_label(cycle: dict[str, Any] | None) -> str | None:
+    """`Cycle N` when the row carries no name of its own, `None` when the issue has no cycle."""
+    if not cycle:
+        return None
+    return cycle.get("name") or f"Cycle {cycle['number']}"
+
+
+def _section_rows(name: str, detail: IssueDetail) -> list[dict[str, Any]]:
+    """The rows of one section, read from the model the block was built from.
+
+    The author and the actor are display names out of the model's member map, so a comment or a
+    history row costs no second query; a row without a member renders the empty cell.
+    """
+    if name == "comments":
+        return [
+            {
+                "id": comment.id,
+                "author": _member_name(detail.members, comment.author_id),
+                "created": _iso(comment.created_at),
+                "body": comment.body,
+            }
+            for comment in detail.comments
+        ]
+    if name == "relations":
+        return [
+            _relation_section_row(relation, far, asking_id=detail.issue.id)
+            for relation, far in detail.relations
+        ]
+    if name == "history":
+        return [
+            {
+                "when": _iso(entry.created_at),
+                "actor": _member_name(detail.members, entry.actor_id),
+                "field": entry.field,
+                "from": entry.old_value,
+                "to": entry.new_value,
+            }
+            for entry in detail.history
+        ]
+    return [{"identifier": child.identifier, "title": child.title} for child in detail.children]
+
+
+def _member_name(members: Mapping[str, str], member_id: str | None) -> str | None:
+    """Display name of one member, or `None` for a row that carries no member."""
+    return None if member_id is None else members.get(member_id)
 
 
 def _emit_comment(row: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -1853,10 +2149,25 @@ def _label_ref(label: Label) -> dict[str, Any]:
     return {"id": label.id, "name": label.name, "color": label.color}
 
 
+def _identifier_ref(issue: Any) -> dict[str, Any]:
+    """`{id, identifier, title}`: the shape `parent` and every `children` element share."""
+    return {"id": issue.id, "identifier": issue.identifier, "title": issue.title}
+
+
 def _parent_ref(parent: Issue | None) -> dict[str, Any] | None:
-    if parent is None:
+    return None if parent is None else _identifier_ref(parent)
+
+
+def _milestone_ref(item: IssueListItem) -> dict[str, Any] | None:
+    """`{id, name}` of the row's milestone, or `None` when the issue carries no milestone.
+
+    The name comes from the join the read carries, so a key this layer publishes has a producer in
+    the layer that read the row. No v1 write stores a milestone id, so this is `None` on every
+    issue the product can produce today.
+    """
+    if item.milestone_id is None:
         return None
-    return {"id": parent.id, "identifier": parent.identifier, "title": parent.title}
+    return {"id": item.milestone_id, "name": item.milestone_name}
 
 
 def _iso_date(value: date | None) -> str | None:
