@@ -199,6 +199,37 @@ def test_group_together_with_parent_is_a_group_refusal(cli: Cli) -> None:
     assert (error_json(result)["field"],) == ("parent",)
 
 
+def test_a_parent_the_level_spells_twice_is_refused_instead_of_picked(cli: Cli) -> None:
+    """Two spellings of one group is `LABEL_AMBIGUOUS` (`field: ref`), and no child is written."""
+    _group(cli, "Severity", "multiSelect")
+    cli.execute(
+        "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
+        " is_group, group_type, retired_at)"
+        " SELECT '01HZZZZZZZZZZZZZZZZZZZZZZ5', workspace_id, NULL, NULL, 'severity', '#6B6F76',"
+        " NULL, 1, 'multiSelect', NULL FROM label WHERE name = 'Severity'"
+    )
+
+    result = _add(cli, "High", "--parent", "severity", "--json")
+
+    assert result.exit_code == 2
+    error = error_json(result)
+    assert (error["code"], error["field"], error["details"]) == ("validation_error", "ref", None)
+    assert error["message"] == "label severity is ambiguous: 'Severity', 'severity'"
+    assert cli.rows("SELECT * FROM label WHERE name = 'High'") == []
+
+
+def test_a_parent_absent_at_the_level_is_still_the_group_refusal(cli: Cli) -> None:
+    """The two verdicts stay apart: a name the level spells twice is not a name the level lacks."""
+    _group(cli, "Severity", "multiSelect")
+
+    result = _add(cli, "High", "--parent", "Area", "--json")
+
+    assert result.exit_code == 2
+    error = error_json(result)
+    assert (error["code"], error["field"]) == ("validation_error", "parent")
+    assert cli.rows("SELECT * FROM label WHERE name = 'High'") == []
+
+
 # --- label list / show -----------------------------------------------------------------------
 
 
@@ -443,6 +474,60 @@ def test_a_retired_label_is_renamed_by_its_name(cli: Cli) -> None:
     assert _label(cli, "platform")["retired_at"] is not None
 
 
+def test_the_undo_refuses_to_bring_back_a_row_beside_a_live_spelling(cli: Cli) -> None:
+    """Clearing `retired_at` must not create the pair `label add` refuses: exit 4, no write."""
+    assert _add(cli, "Bug").exit_code == 0
+    retired_id = _label(cli, "Bug")["id"]
+    assert cli.run("label", "archive", retired_id).exit_code == 0
+    cli.execute(
+        "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
+        " is_group, group_type, retired_at)"
+        " SELECT '01HZZZZZZZZZZZZZZZZZZZZZZ3', workspace_id, NULL, NULL, 'bug', '#6B6F76',"
+        " NULL, 0, NULL, NULL FROM label WHERE name = 'Bug'"
+    )
+
+    result = cli.run("label", "archive", retired_id, "--undo", "--json")
+
+    assert result.exit_code == 4
+    error = error_json(result)
+    assert (error["code"], error["field"], error["details"]) == ("conflict", "name", None)
+    assert error["message"] == "label Bug cannot be restored: 'bug' is live at this level"
+    assert _label(cli, "Bug")["retired_at"] is not None
+    assert _label(cli, "bug")["retired_at"] is None
+
+
+def test_the_undo_of_a_row_beside_a_retired_spelling_is_allowed(cli: Cli) -> None:
+    """A retired sibling is not the pair the rule refuses: names resolve over the live set."""
+    assert _add(cli, "Bug").exit_code == 0
+    retired_id = _label(cli, "Bug")["id"]
+    assert cli.run("label", "archive", retired_id).exit_code == 0
+    cli.execute(
+        "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
+        " is_group, group_type, retired_at)"
+        " SELECT '01HZZZZZZZZZZZZZZZZZZZZZZ4', workspace_id, NULL, NULL, 'bug', '#6B6F76',"
+        " NULL, 0, NULL, '2026-11-19T00:00:00Z' FROM label WHERE name = 'Bug'"
+    )
+
+    result = cli.run("label", "archive", retired_id, "--undo")
+
+    assert result.exit_code == 0, result.stderr
+    assert _label(cli, "Bug")["retired_at"] is None
+    assert _label(cli, "bug")["retired_at"] == "2026-11-19T00:00:00Z"
+
+
+def test_a_lone_retired_label_still_restores(cli: Cli) -> None:
+    """The new refusal is about a live sibling and about nothing else."""
+    assert _add(cli, "infra").exit_code == 0
+    retired_id = _label(cli, "infra")["id"]
+    assert cli.run("label", "archive", retired_id).exit_code == 0
+
+    result = cli.run("label", "archive", retired_id, "--undo", "--json")
+
+    assert result.exit_code == 0, result.stderr
+    assert json_stdout(result)["retired_at"] is None
+    assert _label(cli, "infra")["retired_at"] is None
+
+
 # --- issue label -----------------------------------------------------------------------------
 
 
@@ -624,6 +709,27 @@ def test_a_name_in_two_spellings_is_refused_instead_of_attaching_one(cli: Cli) -
     assert (error["code"], error["field"]) == ("validation_error", "ref")
     assert "'Bug'" in str(error["message"]) and "'bug'" in str(error["message"])
     assert _labels_of(cli, identifier) == []
+
+
+def test_the_ambiguous_refusal_publishes_four_keys_and_a_null_details(cli: Cli) -> None:
+    """The names travel in `message`; the mapping is an accessor, never a payload."""
+    identifier = cli.create("wears nothing")
+    assert _add(cli, "Bug").exit_code == 0
+    cli.execute(
+        "INSERT INTO label (id, workspace_id, team_id, parent_id, name, color, description,"
+        " is_group, group_type, retired_at)"
+        " SELECT '01HZZZZZZZZZZZZZZZZZZZZZZ2', workspace_id, NULL, NULL, 'bug', '#6B6F76',"
+        " NULL, 0, NULL, NULL FROM label WHERE name = 'Bug'"
+    )
+
+    result = cli.run("issue", "label", identifier, "bug", "--json")
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    error = error_json(result)
+    assert tuple(error) == ("code", "message", "field", "details")
+    assert error["details"] is None
+    assert error["message"] == "label bug is ambiguous: 'Bug', 'bug'"
 
 
 def test_issue_label_json_of_a_plain_add_has_a_null_replaced(cli: Cli) -> None:
