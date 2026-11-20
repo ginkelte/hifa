@@ -163,7 +163,11 @@ def _remove_label_once(uow: UnitOfWork, cmd: RemoveLabel, actor: Actor) -> Issue
         if label is None:
             raise NotFound(resource="label", key=cmd.label)
         if label.id not in tx.issues.label_ids(issue.id):
-            raise NotFound(resource="label_link", key=cmd.label)
+            raise NotFound(
+                f"label '{cmd.label}' is not linked to this issue",
+                resource="label_link",
+                key=cmd.label,
+            )
 
         now = uow.clock.now()
         tx.issues.remove_label(issue.id, label.id)
