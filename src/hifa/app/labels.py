@@ -9,8 +9,11 @@ touches a sibling.
 
 Three reference scopes, and no fourth: an **issue-scoped** reference resolves a ULID directly and
 a name in the issue's team and then in the workspace; a **catalogue-scoped** reference resolves a
-ULID directly and a name over the whole workspace, retired rows included, and refuses a name two
-teams share; a **parent** is resolved at the level of the label being created.
+ULID directly and a name over the whole workspace, retired rows included, and refuses a name that
+names two rows; a **parent** is resolved at the level of the label being created.
+
+A name resolves case-insensitively in both scopes, and the catalogue refuses a second spelling of
+a name it already carries, so a reference never has to pick between two rows that read alike.
 
 Everything here opens exactly one `uow.write()` (or one read-only connection) and reads the clock
 at most once.
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass
 
 from hifa.adapters.clock import SystemClock
@@ -95,7 +99,8 @@ def _add_label_once(uow: UnitOfWork, cmd: AddLabel, actor: Actor) -> AddLabelRes
 
         label = _resolve_issue_label(tx.labels, workspace_id, issue.team_id, cmd.label)
         if label is None and cmd.create_if_missing:
-            label = tx.labels.insert(
+            label = _insert_label(
+                tx.labels,
                 Label(
                     id=uow.idgen.new(),
                     workspace_id=workspace_id,
@@ -107,7 +112,7 @@ def _add_label_once(uow: UnitOfWork, cmd: AddLabel, actor: Actor) -> AddLabelRes
                     is_group=False,
                     group_type=None,
                     retired_at=None,
-                )
+                ),
             )
         if label is None:
             # The two shapes of "it is not there": a ULID names a row, a name is an argument.
@@ -178,8 +183,9 @@ def create_label(uow: UnitOfWork, cmd: CreateLabel, actor: Actor) -> Label:
     """Create one catalogue entry: a workspace label, a team label, a group or a child.
 
     A blank name, a color outside `#RRGGBB` and a parent that is not a group of the label's own
-    level are refused before the insert; a repeated name at the same level is refused by the
-    uniqueness of the table, translated to `UNIQUE_LABEL_NAME`.
+    level are refused before the insert. A name the level already carries is refused whether it is
+    spelled the same or only the same case: the first is the uniqueness of the table, translated to
+    `UNIQUE_LABEL_NAME`, and the second is judged here because the index is case-sensitive.
 
     raises: `NotFound(team|label)`,
     `Validation(TEAM_ARCHIVED|LABEL_NAME_EMPTY|LABEL_GROUP_INVALID|COLOR_FORMAT)`,
@@ -198,6 +204,7 @@ def _create_label_once(uow: UnitOfWork, cmd: CreateLabel, actor: Actor) -> Label
         workspace_id = _workspace_id(tx)
         team_id = _resolve_team_id(tx, workspace_id, cmd.team)
         parent = _resolve_parent(tx, workspace_id, team_id, cmd.parent)
+        _refuse_case_variant(tx.labels, workspace_id, team_id, name)
         label = Label(
             id=uow.idgen.new(),
             workspace_id=workspace_id,
@@ -210,17 +217,15 @@ def _create_label_once(uow: UnitOfWork, cmd: CreateLabel, actor: Actor) -> Label
             group_type=group_type,
             retired_at=None,
         )
-        try:
-            return tx.labels.insert(label)
-        except Conflict as exc:
-            raise _unique_label_name(name, exc) from exc
+        return _insert_label(tx.labels, label)
 
 
 def update_label(uow: UnitOfWork, cmd: UpdateLabel, actor: Actor) -> Label:
     """Rename, recolor or re-describe one label; a command that changes nothing writes nothing.
 
     The level of a label (`team_id`, `parent_id`, `is_group`, `group_type`) and its `retired_at`
-    are not editable here. A retired label may be renamed: the row is its record.
+    are not editable here. A retired label may be renamed: the row is its record. The new name is
+    judged against its own level and against the level's other spellings of the same case.
 
     raises: `NotFound(label)`,
     `Validation(LABEL_NAME_EMPTY|LABEL_AMBIGUOUS|COLOR_FORMAT)`, `Conflict(UNIQUE_LABEL_NAME)`
@@ -243,6 +248,14 @@ def _update_label_once(uow: UnitOfWork, cmd: UpdateLabel, actor: Actor) -> Label
         candidate = label.model_copy(update=updates)
         if candidate == label:
             return label
+        if "name" in updates:
+            _refuse_case_variant(
+                tx.labels,
+                workspace_id,
+                label.team_id,
+                str(updates["name"]),
+                exclude_id=label.id,
+            )
         try:
             return tx.labels.update(candidate)
         except Conflict as exc:
@@ -390,17 +403,28 @@ def _resolve_issue_label(
 
     Retired rows are visible here: a retired match has to reach the scope rule so that attaching
     one answers `LABEL_RETIRED` instead of "not found", and detaching one has to stay possible.
+
+    A name matches case-insensitively, and one scope step that matches two rows is refused instead
+    of answered: the uniqueness of the table is case-sensitive, so a `Bug`/`bug` pair of one level
+    would otherwise resolve to whichever of the two the listing happened to return first. Each
+    step is decided on its own, so a unique match in the issue's team still wins over one in the
+    workspace, and only a step that leaves two candidates is ambiguous.
     """
     label = labels.get(ref)
     if label is not None:
         return label
     wanted = ref.casefold()
-    team_rows = labels.list(workspace_id, team_id=team_id, include_retired=True)
-    match = next((row for row in team_rows if row.name.casefold() == wanted), None)
-    if match is not None:
-        return match
-    shared = labels.list(workspace_id, team_id=None, include_retired=True)
-    return next((row for row in shared if row.name.casefold() == wanted), None)
+    for scope in (team_id, None):
+        matches = [
+            row
+            for row in labels.list(workspace_id, team_id=scope, include_retired=True)
+            if row.name.casefold() == wanted
+        ]
+        if len(matches) > 1:
+            raise _ambiguous_spellings(ref, matches)
+        if matches:
+            return matches[0]
+    return None
 
 
 def _resolve_catalogue_label(
@@ -408,8 +432,10 @@ def _resolve_catalogue_label(
 ) -> Label:
     """ULID, else the name anywhere in the workspace — retired rows included.
 
-    Two matches always mean two teams (the uniqueness of the table counts retired rows), so the
-    refusal names the teams instead of picking one.
+    One match is the label. None is `NotFound`. More than one is refused, in the two shapes the
+    name can collide in: rows of different teams are named by team key, because a key is what
+    narrows a reference, and two rows of one level are named by spelling, because that is the only
+    thing that tells them apart.
     """
     label = labels.get(ref)
     if label is not None:
@@ -423,23 +449,9 @@ def _resolve_catalogue_label(
     if not matches:
         raise NotFound(resource="label", key=ref)
     if len(matches) > 1:
-        keys = sorted(
-            {
-                team.key
-                for team in (teams.get(row.team_id) for row in matches if row.team_id)
-                if team is not None
-            }
-        )
-        if any(row.team_id is None for row in matches):
-            keys.append("the workspace")
-        raise Validation(
-            f"label {ref} is ambiguous: it exists in {', '.join(keys)}",
-            rule="LABEL_AMBIGUOUS",
-            field="ref",
-            value=ref,
-            details={"teams": keys},
-            code="LABEL_AMBIGUOUS",
-        )
+        if any(count > 1 for count in Counter(row.team_id for row in matches).values()):
+            raise _ambiguous_spellings(ref, matches)
+        raise _ambiguous_teams(ref, matches, teams)
     return matches[0]
 
 
@@ -540,17 +552,97 @@ def _label_not_found(ref: str) -> Validation:
     )
 
 
+def _ambiguous_spellings(ref: str, matches: list[Label]) -> Validation:
+    """The refusal of a name that one level carries in more than one spelling.
+
+    The uniqueness of the table is case-sensitive, so `Bug` and `bug` are two rows it accepts and
+    one name to a reader. The message spells both out: a team key would name the level twice and
+    explain nothing.
+    """
+    names = sorted({row.name for row in matches})
+    return Validation(
+        f"label {ref} is ambiguous: {', '.join(repr(name) for name in names)}",
+        rule="LABEL_AMBIGUOUS",
+        field="ref",
+        value=ref,
+        details={"labels": names},
+        code="LABEL_AMBIGUOUS",
+    )
+
+
+def _ambiguous_teams(ref: str, matches: list[Label], teams: TeamRepo) -> Validation:
+    """The refusal of a name more than one level carries, spelled by the keys that narrow it."""
+    keys = sorted(
+        {
+            team.key
+            for team in (teams.get(row.team_id) for row in matches if row.team_id)
+            if team is not None
+        }
+    )
+    if any(row.team_id is None for row in matches):
+        keys.append("the workspace")
+    return Validation(
+        f"label {ref} is ambiguous: it exists in {', '.join(keys)}",
+        rule="LABEL_AMBIGUOUS",
+        field="ref",
+        value=ref,
+        details={"teams": keys},
+        code="LABEL_AMBIGUOUS",
+    )
+
+
+def _refuse_case_variant(
+    labels: LabelRepo,
+    workspace_id: str,
+    team_id: str | None,
+    name: str,
+    *,
+    exclude_id: str | None = None,
+) -> None:
+    """Refuse a name the same level already carries in another spelling of the same case.
+
+    `bug` and `Bug` are two rows to a case-sensitive unique index and one name to a reader, and a
+    reference to that name would have to pick one of them. Creation and rename keep the second
+    from being written; retired rows count, exactly as the partial unique indexes count them.
+    """
+    wanted = name.casefold()
+    for row in labels.list(workspace_id, team_id=team_id, include_retired=True):
+        if row.id != exclude_id and row.name.casefold() == wanted:
+            raise _label_name_conflict(name, row.name)
+
+
 def _unique_label_name(name: str, cause: Conflict) -> Conflict:
     """The uniqueness the table enforces, in the vocabulary the edges publish."""
     if cause.rule != "DUPLICATE_LABEL":
         return cause
+    return _label_name_conflict(name)
+
+
+def _label_name_conflict(name: str, existing: str | None = None) -> Conflict:
+    """`UNIQUE_LABEL_NAME`: the level already carries this name, in this spelling or another."""
+    message = f"label {name} already exists at this level"
+    if existing is not None and existing != name:
+        message = f"{message} as {existing}"
     return Conflict(
-        f"label {name} already exists at this level",
+        message,
         rule="UNIQUE_LABEL_NAME",
         field="name",
         value=name,
         code="UNIQUE_LABEL_NAME",
     )
+
+
+def _insert_label(labels: LabelRepo, label: Label) -> Label:
+    """Insert one label, translating the table's duplicate to the code the edges publish.
+
+    Both callers resolve the name over the level just before this insert, so reaching the unique
+    index means another writer took the name in between: the caller gets `UNIQUE_LABEL_NAME` and
+    not the adapter's `DUPLICATE_LABEL`.
+    """
+    try:
+        return labels.insert(label)
+    except Conflict as exc:
+        raise _unique_label_name(label.name, exc) from exc
 
 
 def _require_issue(tx: Repos, ref: str) -> Issue:
