@@ -1,9 +1,9 @@
 """The `--json` error envelope: the four keys and the two shapes of `details`.
 
-SPEC-060 §6.3 declares `details` as `null` or a list of `{field, message}` and no third shape;
-SPEC-050 §2.4.5 renders the same four keys. The mapping an exception carries is its accessor
-(`exc.details`, SPEC-020 §6), which a domain consumer reads and no edge publishes — so a refusal
-that carries `rule`/`field`/`value` (`LABEL_AMBIGUOUS` and its `labels`/`teams` included) answers
+`details` is `null` or a list of `{field, message}` and has no third shape, and the API edge and
+the CLI render the same four keys. The mapping an exception carries is its accessor
+(`exc.details`), which a domain consumer reads and no edge publishes — so a refusal that carries
+`rule`/`field`/`value` (`LABEL_AMBIGUOUS` and its `labels`/`teams` included) answers
 `details: null` and says everything in `message`. These tests drive the renderer directly: the
 object it returns is what both edges publish.
 """
@@ -118,7 +118,7 @@ def test_a_list_that_is_not_the_aggregate_publishes_null() -> None:
 
 
 def test_the_human_line_is_unchanged_by_the_envelope_rule() -> None:
-    """Without `--json` a refusal is one sentence and the `(field: …)` suffix of §2.4.5."""
+    """Without `--json` a refusal is one sentence and closes with its `(field: …)` suffix."""
     exc = Validation(
         "label not found: infra",
         rule="LABEL_NOT_FOUND",
