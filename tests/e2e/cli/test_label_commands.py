@@ -700,6 +700,14 @@ def test_json_and_quiet_are_mutually_exclusive_on_every_label_verb(cli: Cli) -> 
         assert error_json(result)["code"] == "invalid_option"
 
 
+def test_an_empty_update_refuses_before_opening_the_database(tmp_path) -> None:
+    """`no_changes` is decided from the flags alone, so a missing file cannot preempt it."""
+    result = cli_run_with_db(tmp_path / "absent.db", "label", "update", "Bug", "--json")
+
+    assert result.exit_code == 2
+    assert error_json(result)["code"] == "no_changes"
+
+
 def test_a_missing_database_is_exit_three_for_the_label_group(tmp_path, monkeypatch) -> None:
     missing = tmp_path / "absent.db"
     result = cli_run_with_db(missing, "label", "list", "--json")
