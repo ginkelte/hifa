@@ -245,15 +245,19 @@ def _resolve_parent(tx: Repos, ref: str | None, team: Team, child_id: str) -> Is
 
 
 def _resolve_labels(tx: Repos, workspace_id: str, team: Team, refs: tuple[str, ...]) -> list[Label]:
-    """Deduplicates by id preserving order and validates each label's scope."""
+    """Deduplicates by id preserving order and validates each label's scope.
+
+    `-l/--label` of `issue create` is one of the three attach paths, so it resolves with the same
+    helper as `add_label` and `remove_label`: a ULID, else a name case-insensitively in the team
+    and then in the workspace, and a level that holds two spellings is refused instead of guessed
+    at. The import is local because `labels.py` imports this module's layer refusals.
+    """
+    from hifa.app.labels import _resolve_issue_label  # local: labels.py imports this module
+
     resolved: list[Label] = []
     seen: set[str] = set()
     for ref in refs:
-        label = (
-            tx.labels.get(ref)
-            or tx.labels.get_by_name(workspace_id, team.id, ref)
-            or tx.labels.get_by_name(workspace_id, None, ref)
-        )
+        label = _resolve_issue_label(tx.labels, tx.teams, workspace_id, team.id, ref)
         if label is None:
             raise Validation(
                 f"label not found: {ref}",
