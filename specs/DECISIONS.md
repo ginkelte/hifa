@@ -4007,3 +4007,261 @@ SPEC-080 §2.1.1's `tx.labels` row (which consumed `get_by_name`) with R10's mis
 `Touches:` adds SPEC-080 §2.1.1 and §4.1 and the `INDEX.md` rows of the five revisions above; the specs
 themselves were already named by the second block. `specs/INDEX.md` still counts **70 decisions**: this
 block resolves nothing new, it corrects a decision already numbered.
+
+---
+
+## D-071 — `issue show --with` is the detail read, and a payload with no producer is not a payload
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.6 (the owner of the set `include` gates: `comments`,
+`attachments`, `history`, and "any other name" is `INCLUDE_INVALID`) and SQL-7 rows 8–12 (which
+collections run always, which are gated, and in which order they come back); SPEC-040 §2.2's
+`issue_detail(db, ref, *, include, include_trashed)` and its `DETAIL_INCLUDE` constant, §3.1 ("the only
+use case that writes `attachment` is `add_attachment`, and only INSERT") and §6's `INCLUDE_INVALID` row;
+SPEC-060 §2.2's `IssueDetail(IssueOut)` and `ParentRef`; SPEC-050 §2.5.3's `issue show` row and its
+"`show --with relations` stays GAP-06" note · **Touches:** SPEC-050 §2.3, §2.3.1, §2.4.1, §2.4.2,
+§2.5.3, §2.5.3.2 (new), §2.7, §7, §8, §11; SPEC-040 §2.2, §6, `Notes`;
+`specs/acceptance/001-mvp-v1/07-hierarchy-relations.feature` (one prose comment); `specs/INDEX.md`;
+this file
+
+**The situation.** `hifa issue show HIFA-14` answers `No such command 'show'`: the verb is declared in
+§2.5.3 and absent from the tree, and its `--with` payloads were parked in GAP-06 of §2.3.1 as "detail
+reads beyond `issue_detail`". There are no such reads. `issue_detail` returns the children, the
+relations, the comments, the history and the attachments of one issue, gates the three heavy ones with
+`include`, and has been the panel's and the detail page's read since D-027/D-029. So the gap was not a
+missing use case; it was an undeclared payload, and the corpus said twice that it would emit one "when
+it lands" without ever saying what.
+
+**1. The flag is a projection of one read, and the accepted names are the constant's.** `--with` maps
+onto `issue_detail`'s `include`: `comments` and `history` enter it, `relations` and `children` do not
+and must not — SQL-7 rows 8 and 9 run on every call, so those two are never gated, and a mapping that
+passed them would raise `INCLUDE_INVALID` on a read the verb has to support. SPEC-040's `raises:` line
+and §6 row said the five names did, which was false against that spec's own constant; both are corrected
+(spec_revision 36) and SPEC-050 §2.5.3.2 declares the mapping value by value. No use case is added:
+SPEC-040 §2.2, §3.1 and §6 do not move for the four values that land, which is the whole point of the
+gap having been mis-filed.
+
+**2. `attachments` is re-gapped as GAP-07, not shipped empty.** The read exists (SQL-7 row 12) and
+nothing can write a row for it to read: `add_attachment` is declared in SPEC-040 §2.2 and implemented
+nowhere, it is the only writer of `attachment`, and `issue attach` is unimplemented for the same reason.
+The tempting shortcut — accept the value, always answer `[]` — declares a payload whose only possible
+value is the empty one, and a caller cannot tell "this issue has no attachments" from "this version has
+no attachments". The flag therefore refuses the value with exit **2** `invalid_option`, `field: "with"`,
+in this edge's own envelope, and §2.3.1 carries GAP-07 in its one-row format for the revision that lands
+`AddAttachment`. A refusal that names the gap is a contract; an always-empty list is a lie with a shape.
+
+**3. The envelope is SPEC-060's `IssueDetail`, flat, with all five collection keys.** The collections are
+appended after `updated_at` on the 33 keys of `Issue` — `comments`, `relations`, `attachments`, `history`,
+`children` — never nested under an `issue` member and never omitted when unrequested. That is R2's own
+sentence ("the `--with` variants append at the end, never reorder") made concrete, and it is what keeps
+one read model's two edges one shape: a client that reads `GET /api/v1/issues/{ref}` and one that reads
+`hifa issue show REF --json` parse the same object. The cost is stated rather than hidden: `[]` means
+"none" **or** "not asked for", and no key distinguishes them, which is exactly the property SPEC-060's
+`IssueDetail(IssueOut)` already has with its five defaulted lists. The alternative — a nested
+`{issue: …, comments: …}` envelope that only ever prints the requested keys — would have made the CLI
+and the API two shapes for one read, and would have re-introduced the branch "one shape, one source, no
+branch" that §2.5.3 promised away.
+
+**4. `--with` is a set, and the order is the object's, not the flags'.** Repeating a value is one
+collection (de-duplicated before the read, the convention `issue label` applies to a repeated name), and
+the sections render in the fixed order of §2.4.2 whatever order the flags were typed in, so two
+invocations with the same set print the same bytes (REQ-N050-05). A value outside the five is exit 2
+`invalid_option` with `field: "with"` — the bucket `issue relate` already uses for a `TYPE` outside its
+five tokens — and it is refused by the command rather than by the parser, so `--json` prints this edge's
+one error document instead of a usage line.
+
+**5. The table grows sections, and the block it grows them from was off by one.** Each requested
+collection with rows prints after the key-value block as a titled section with the columns of the verb
+that owns it (`COMMENTS` drops `ISSUE`, because the block's header is that column repeated once;
+`RELATIONS` is `issue relations`' four columns; `HISTORY` is `WHEN  ACTOR  FIELD  FROM  TO`; `CHILDREN`
+is `IDENTIFIER  TITLE`, the three keys of the element minus the ULID). An empty collection prints no
+section and one `0 <collection>` on `stderr`, the convention `issue list`'s `0 issues` and `issue
+relations`' `0 relations` already use. Two drifts died here: §2.4.1 declared the key field of the block
+as **9** columns while its own sample printed 10 — arithmetically impossible with `Priority` and
+`Assignee` at 8 cells and the two-space separator — and the §2.7 sample printed 7 of the 11 declared
+keys with no `…` to say so. `HISTORY`'s `FROM`/`TO` print the **stored** strings, so a `state_id` change
+shows two ULIDs; rendering them as names is the timeline's rule (SPEC-070 §2.3.4) whose CLI half is
+**HIFA-46**, and this decision neither fixes nor pre-empts it.
+
+**What this does not do.** It does not add a verb, a flag or a use case to SPEC-040; it does not touch
+the label surface (D-070) or the search surface (D-063/D-064/D-067); it does not change `issue
+relations`, `issue list --parent` or `issue_detail`'s read (SPEC-030's SQL-7 and its totals do not
+move); and it declares no attachment payload. `issue show` without `--with` keeps the eleven-key block
+of §2.4.1 and the 33-key `Issue` of §2.4.2 exactly as declared — the verb was missing, not the
+contract, so the only change to it is the `include` argument of the call it makes.
+
+**What it supersedes in the record.** D-046's entry says twice that the hierarchy is read by `issue list
+--parent` and `issue show --with children` "(§2.5.3, GAP-06)" and that "`--with relations` is GAP-06 and
+the base `Issue` object is closed". Those sentences described the corpus of 2026-11-13 and are
+**superseded here, not edited**: this file is append-only, and the record of what was true then is what
+makes the drift visible. What is true now is §2.5.3.2: `--with children` and `--with relations` are
+contracted, and the base `Issue` is still closed — the collections ride on `IssueDetail`, which is a
+different object, emitted only when a `--with` asks for it.
+
+---
+
+## Amendment to D-071 (second review round, 2026-11-20)
+
+Appended, not rewritten, for the reason the block above gives: D-071 was reviewed against the corpus and
+not against its own prose, and three of its four rules survived review with a hole in the sentence that
+stated them.
+
+**D-071 §2, applied to the envelope it shipped in.** §2 refused a payload whose only possible value is
+the empty one, and then §3 assembled `IssueDetail` with `attachments` in it and required that key to be
+`[]` on **every** object, because `add_attachment` is declared in SPEC-040 §2.2 and implemented nowhere.
+The rule was right and its own envelope contradicted it: a caller could not tell "this issue has no
+attachments" from "this version has no attachments", which is precisely the property §2 called a lie
+with a shape. The key is gone from v1's `IssueDetail` on both edges (SPEC-050 §2.4.2, SPEC-060 §2.4.2),
+the object is **33 + 4 = 37 keys**, the `Attachment` element and `issue attach`'s payload cell are gone
+with it, and the collection and its element come back — with the `include` name at both edges — in the
+revision that lands `AddAttachment`. A decision that forbids an always-empty list must not publish one, and the second
+review round is where that was found: the corpus is the place a rule is checked, and the rule's own
+`Touches:` list was the place it was not.
+
+**D-071 §4, the bucket that was cited backwards.** §4 justified `invalid_option` for a `--with` value
+outside the five as "the same bucket `issue relate` uses for a `TYPE` outside its five tokens". It is
+not: `relate_issues` refuses that token with `Validation(COMMAND_FIELD)` (SPEC-040 §6, §2.2), raised in
+the use case's `__post_init__`, and `COMMAND_FIELD` is the corpus's code for a command field that does
+not convert — the opposite of an edge-level `invalid_option`. The refusal stands, on its own ground: it
+happens in the command before any use case is called, so no `Validation` of SPEC-040 applies, and
+`invalid_option` is the code §6's row already carries for the tokens this edge refuses itself. A
+precedent is a claim about another document; §4's was a claim about a code that document does not use.
+
+**D-071 §1 and §2, the include set of the third edge.** §1 said `--with`'s mapping is "the
+`DETAIL_INCLUDE` constant and nothing else", while §2 removed the only value of that constant the CLI
+could not honour. The constant still names `attachments` — SPEC-030 §2.6 and SPEC-040 §2.2 are right to,
+the read gates it (SQL-7 row 12) — and neither v1 edge passes the name, because neither envelope carries
+a key for it: the CLI refuses it at exit 2, and SPEC-060 §2.5.1's route publishes `{comments, history}`
+and answers 422 for the rest. What §1 should have said, and what both edges now say, is that the flag's
+vocabulary and the read's constant are two sets, and the smaller one is the envelope's.
+
+## Amendment to D-071 (third review round, 2026-11-20)
+
+Appended, not rewritten, for the reason the block above gives. The second amendment corrected §1, §2 and §4
+and left §3 standing: the rule it states is right, and the envelope it describes is not the one either edge
+publishes.
+
+**D-071 §3 is dead as written: the envelope has four collection keys, not five.** §3 said the collections
+are `comments`, `relations`, `attachments`, `history`, `children` — "flat, with all five collection keys" —
+and that no key distinguishes "none" from "not asked for", "which is exactly the property SPEC-060's
+`IssueDetail(IssueOut)` already has with its **five defaulted lists**". Three clauses, and the third is the
+one that survives: `attachments` is gone from both edges for the reason §2 gives (SPEC-050 §2.4.2,
+SPEC-060 §2.4.2 — **33 + 4 = 37 keys**), because `add_attachment` is implemented nowhere and the key could
+only ever be `[]`. "Five defaulted lists" is a count of the object §3 was assembling, and the object every
+edge publishes today has **four**. What §3 was defending — a collection that was not asked for and one with
+no rows are both `[]`, and no key tells them apart — is intact and unchanged, of four lists instead of five.
+
+The fifth key returns with `AddAttachment`, beside the `include` name that gates SQL-7 row 12 and the
+subresource whose rows were never writable; §3's `Touches:` list, not its `Wins:` list, is what the corpus
+follows until then. A decision that refuses a payload with no producer must not describe its own envelope
+as carrying one, and the sentence in §3 is **superseded here, not edited**: this file is append-only, and
+the record of what was claimed is what makes the correction legible.
+
+**What this does not change.** §1 (the flag is a projection of one read, and `relations`/`children` are not
+`include` names), §2 (a list whose only possible value is `[]` is a lie with a shape), §4 (`--with` is a
+set, the order is the object's, and the refusal is `invalid_option` on this edge's own ground) and §5 (the
+sections of the table and the two drifts it killed) stand as written, with the second amendment of the same
+date. Nothing else of D-071 moves.
+
+## D-072 — An order, a visibility and a key are produced where the payload is assembled, and each one names its producer
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.6 (SQL-4's projection, the `LEFT JOIN project_milestone`
+in it, SQL-7 rows 1, 8 and 9, and the 12/8 totals, which neither the join nor the two predicates move),
+§2.6's
+`IssueListItem`; SPEC-040 §2.2 (`issue_detail`: the order of `relations`, the visibility of `children`
+and `relations`) · **Touches:** SPEC-030 §2.5, §2.6, `Notes`; SPEC-040 §2.2, `Notes`; SPEC-050 §2.4.1,
+§2.4.2, §2.5.3, §2.5.3.2, §7, §8, §11; SPEC-060 §2.4.2, §2.5.1, §7, §8, §11; `specs/INDEX.md`; this file
+
+**The situation.** Three published facts of one read had no producer. `relations` was declared in a total
+order (`READS AS` rank, then the far end's `identifier`) that no statement produced: SQL-7 row 9 selects
+from `issue_relation` on both ends and carries no `ORDER BY`, so `issue relations` printed the fetch
+order and the §7 scenario passed because its fixture was inserted in the order the prose predicted. The
+children and the far ends came back with no `trashed` predicate, so a verb that hides a trashed issue as
+`REF` listed a trashed child and a trashed neighbour. And `milestone` — the 33rd key of `Issue` — was
+publishable and unloadable: `issue.milestone_id` is writable, no statement read `project_milestone`, and
+the key could only ever be `null`. The three are one defect a layer apart: each was a value a document
+published and a layer that could not compute it.
+
+**1. A published order names its producer, and the producer is the layer that holds the fact.** The
+order of `relations` cannot come from SQL-7 row 9 as the read is declared: the statement returns rows
+from both ends (`issue_id = ? OR related_issue_id = ?`) and **which name a row reads as** is a function
+of the asking issue — `RelationType.name_as_seen`, SPEC-020 §2.1 — so the sort key needs the row *and*
+its far end, which is the pair the use case already holds and the statement does not. `issue_detail`
+therefore sorts the tuple in Python, on `(rank(name_as_seen(direction)), far_end.identifier)`, and
+returns the ordered tuple; SPEC-030's statements do not grow an `ORDER BY` and the two totals do not
+move. Every caller inherits the order because there is one call: `issue relations` reads through
+`issue_detail`, `issue show --with relations` reads through the same call, and neither sorts again — one
+order, one producer, no branch. The alternative that was rejected is the tempting one: an `ORDER BY` on
+row 9 would have to sort by a column that does not exist in the row (`blocked_by` is a reading, not a
+stored type) and would have moved the order into a layer that cannot see the direction.
+
+**2. The trash is a visibility of the row, and a collection does not inherit the reader's.**
+`include_trashed` is a keyword about the issue the read returns (D-059); it says nothing about the
+neighbours a collection carries. The corpus nevertheless had two answers for one level of the hierarchy:
+`issue list --parent` hid a trashed child through SQL-4's `i.trashed = 0`, and `issue show --with
+children` listed it, because the children statement bound no predicate. SQL-7 rows 8 and 9 now carry
+`AND i.trashed = 0` **unconditionally** — a trashed child is absent, and a trashed far end is absent even
+on the one read that may see a trashed `ref` — so the two readers of one level list the same set. The
+header's predicate is untouched, the keyword keeps its single meaning, and no count moves: a predicate is
+not a statement. `comments` and `history` need no such rule and get none: neither table has a `trashed`
+column, so there is no visibility to declare.
+
+**3. A key with no loader is the defect a list with no writer is, one field wide.** D-071 §2 refused a
+list whose only possible value is `[]`; a `{id, name}` that can only be `null` is the same refusal with
+a different sign. `milestone` is now loaded where its siblings already are: SQL-4's projection — the one
+SQL-7 row 1 reuses — selects `i.milestone_id` and `pm.name AS milestone_name` from `LEFT JOIN
+project_milestone pm ON pm.id = i.milestone_id`, and `IssueListItem` carries both, appended with
+defaults. No statement is added, so §2.5's **12**/**8** totals and R5 do not move, and the listing
+carries the same two columns because it runs the same projection: one projection, both reads. What this
+does **not** do is contract a milestone surface — no verb, no route, no `milestone` filter; `issue edit
+--milestone` writes the column it always wrote, and this revision only lets a read say what it wrote.
+
+**What this does not do.** It adds no use case, verb, flag, route, exit code or HTTP status; it does not
+touch the label surface (D-070) or the search surface (D-063/D-064/D-067); it does not add an `ORDER BY`
+to any statement of SPEC-030, so the "no `ORDER BY` assembled from user input" rule of §2.6.1 is not in
+question; and it does not move the two statement totals of SQL-7. It does **demand code**, listed in the
+three specs' notes and not written for this ticket: the sort in `src/hifa/app/boards.py` (here,
+because the `(row, far end)` pair is here), the join, the two columns and the two `AND i.trashed = 0`
+predicates in `src/hifa/adapters/sqlite/reads.py`, and `milestone` in the CLI's `Issue` payload
+builders. Until that lands the spec is ahead of the tree, which is the state a spec delta is allowed to
+be in and the state it must say out loud.
+
+**What it supersedes in the record.** SPEC-050 §2.5.3's sentence "Rows are ordered by that name … and
+then by `IDENTIFIER` ASC" was written before this decision and had no producer for three revisions: it is
+not superseded but **backed**, and its citation of SQL-7 row 9 as the producer of that order is corrected
+to the use case.
+SPEC-050's rev 36 note, which counted "two drifts" in §2.4.1, is corrected there: a third stood one row
+away in `label show`. Nothing else of D-046's or D-060's record is touched: the relation is still the row
+as stored, the thread is still flat.
+
+---
+
+## Amendment to D-072 (2026-11-20)
+
+Appended, not rewritten, for the same reason as the blocks above: two of D-072's three rules stated a fact
+about a neighbour that the corpus cannot support, and the third named a write path that does not exist.
+
+**D-072 §2 — "the two readers of one level list the same set" is false, and the parent pointer was the
+third row that needed the predicate.** Two separate defects were folded into one sentence. First, the
+equality: `issue list --parent` applies its default `--open` (`is_open = 1`, SPEC-050 §2.5.3) on top of the
+trash predicate, and `issue_detail` has no open axis at all, so a **closed** child is listed by the listing
+and absent from `children` — the two readers do not list the same set and never did. What they share is the
+**trash visibility**, which is all SPEC-030 §2.6 now claims: a trashed child is absent from `children`.
+Second, SQL-7 row 7 — the pointer that resolves `parent_id` — carried no `i.trashed = 0` while rows 8 and 9
+did, so a trashed parent was *shown* by the object that hid the same row one key below. Row 7 now carries
+the same predicate and answers `null`; the rule is stated **once**, in SPEC-030 §2.6, and SPEC-040 §2.2 and
+SPEC-050 §2.4.2/§2.5.3.2 point at it instead of restating it.
+
+**D-072 §3 — `milestone_id` is not writable, so the key is `null` on every object in v1.** §3 said
+`issue.milestone_id` "is writable (SPEC-040 §5.1)" and that the key "could only ever have been `null`"
+before the join gave it a loader. The join is real and stands — SQL-4's projection selects `i.milestone_id`
+and `pm.name AS milestone_name`, `IssueListItem` carries both, no statement is added and the 12/8 totals do
+not move. What does not exist is the write: `src/hifa/app/issues.py` raises `HifaError(NOT_IMPLEMENTED)` for
+**any non-null** `project_id`/`milestone_id`/`cycle_id`, and clearing them to `NULL` is the only accepted
+form. A loader is not a producer. In v1 `milestone` is therefore `null` on every object a read can produce,
+the key becomes real the day the projects write path lands, and until then SPEC-050 §2.3.1 carries
+**GAP-08** for that path in the table's one-row format.
+
+**What this does not change.** §1 stands as written: the order of `relations` is produced by `issue_detail`
+in Python on `(rank(name_as_seen(direction)), far_end.identifier)`, every caller inherits it, and no
+statement of SPEC-030 grows an `ORDER BY`. Neither correction adds or removes a statement, so the 12/8
+totals, R5 and the §7 counts of SPEC-030 hold. Nothing else of D-072 moves.

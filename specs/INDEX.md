@@ -8,8 +8,9 @@ regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Tem
 the Status column of the Map below repeats (SPEC-110, the release pipeline, is the draft, at `version: 3`
 / `spec_revision: 9` after the engine change of D-039, the governed outcome classifier of D-040 and the
 three revisions that followed it).
-Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md) (**70 decisions: D-001 … D-070**; P-12 closed
-by D-041). Reports in [`reviews/`](./reviews/).
+Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md) (**72 decisions: D-001 … D-072**; P-12 closed
+by D-041, and D-071's third amendment block and D-072's correct decisions already numbered — they resolve
+nothing new, so the count stands). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035, D-058):** the canonical seed is
 `Triage(1.0) · Todo(2.0, is_default=1) · Backlog(3.0) · In Progress(4.0) · In Review(4.5) ·
@@ -62,7 +63,11 @@ its message, C4's **state** clause loses the same uniqueness premise its label c
 version bumps the earlier rounds declined are taken. The specs go to `version: 8` / `spec_revision: 35`
 (SPEC-040), `version: 10` / `spec_revision: 35` (SPEC-050), `version: 8` / `spec_revision: 16`
 (SPEC-060), `version: 2` / `spec_revision: 8` (SPEC-080), `spec_revision: 17` (SPEC-030) and
-`spec_revision: 14` (SPEC-100, whose §2 does not move).
+`spec_revision: 14` (SPEC-100, whose §2 does not move). Four of those numbers have moved again since:
+SPEC-030 to `version: 7` / `spec_revision: 20`, SPEC-040 to `version: 10` / `spec_revision: 38`,
+SPEC-050 to `version: 13` / `spec_revision: 39` and SPEC-060 to `version: 10` / `spec_revision: 18`,
+by D-071, its second amendment, D-072 and the fourth round of this delta; SPEC-080 and SPEC-100 stay
+where that list put them. The rows of the Map below carry the current numbers.
 
 **The search surface is contracted and the page is no longer a stub (HIFA-7, D-063, D-064, D-067):**
 `hifa search` (SPEC-090 §2.5, SPEC-050 §2.5.1) and `GET /search` (SPEC-070 §2.1.8) are the two edges of
@@ -87,6 +92,31 @@ palette (`GET /_/palette`, T-20.4) is **not** part of this change and keeps the 
 it inherits is R21's rule for every edge that composes a query, and only for the day it ships. The listing's
 `q` (`GET /api/v1/issues?q=`) is the **title filter of D-025** on every edge and is not the search: no
 `MATCH`, no `backend`, no ranking, no effect on `order` (SPEC-060 §2.5.1, rev 13).
+
+**`hifa issue show` is contracted, and its `--with` payloads are the detail read (HIFA-49, D-071, D-072).**
+The verb was declared in SPEC-050 §2.5.3 and absent from the tree (`No such command 'show'`), with its
+payloads parked in GAP-06 of §2.3.1 as "detail reads beyond `issue_detail`" — and there are none:
+`issue_detail(db, ref, *, include=…)` has returned the children, the relations, the comments and the
+history since long before. §2.5.3.2 now maps each `--with` value onto that read (`comments` and `history`
+enter its `include`; `relations` and `children` are read on every call and are **not** `include` names,
+which is what SPEC-040 §2.2's `DETAIL_INCLUDE` always said) and §2.4.2 declares the object:
+**`IssueDetail`**, **37 keys** — the 33 of `Issue` with `comments`, `relations`, `history` and `children`
+appended after `updated_at`, flat and never nested — SPEC-060 §2.4.2's `IssueDetail(IssueOut)` key for
+key, so the CLI and the API print one shape for one read. **`attachments` is not one of the four**: the
+read exists (SQL-7 row 12) and nothing can write a row for it (`add_attachment` is declared in SPEC-040
+§2.2, implemented nowhere, and is the only writer of `attachment`), so the key would be `[]` on every
+object and could not be told from "none" — `--with attachments` is refused with exit 2, `GET /issues/{ref}`
+answers 422 `field: "include"` for it, and `issue attach` waits with it (GAP-07). The rule that selects the
+accepted names is **the names of `DETAIL_INCLUDE` whose collection the envelope carries** — three accepted
+by the read, two carried by `IssueDetail` — and not "the names that reach a key", which would have accepted
+`children` and `relations`, keys of the object that are nobody's `include` name. The order of
+`relations` and the visibility of `children`/`relations`/`parent` are produced by the use case and by the
+read (D-072): SQL-7 row 9 returns an unordered set, and rows 7, 8 and 9 hide what the trash layer holds —
+the trash predicate is all the detail shares with `issue list --parent`, whose default also binds
+`is_open = 1`. `milestone` is `null` on every object in v1: the read loads it and no write stores an id
+(`src/hifa/app/issues.py` raises `NOT_IMPLEMENTED`, GAP-08). The two sentences
+that had `show --with` "staying GAP-06 until it lands" are past tense, and the note in SPEC-040 that
+claimed GAP-01…GAP-06 were closed names the gap that was still open.
 
 **Design principles P1-P9 (AGENTS.md §5) are normative since D-032; the web edge contract
 joined `.importlinter` in the same change.**
@@ -116,11 +146,11 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
 | 001 | **Vertical v1 spec (MVP)** | [001-mvp-v1.md](./001-mvp-v1.md) + [tasks](./001-mvp-v1.tasks.md) | the whole MVP (scope + AC) | 000…100 | review |
 | 010 | Data model | [010-data-model.md](./010-data-model.md) | `adapters/sqlite/migrations/*.sql`, `migrate.py`, `connection.py` | 000 | approved |
 | 020 | Domain core | [020-domain-core.md](./020-domain-core.md) | `domain/**`, `tests/unit/domain/**` | 000, 010 | review |
-| 030 | SQLite adapter | [030-sqlite-adapter.md](./030-sqlite-adapter.md) | `adapters/sqlite/**`, `ports.py`, `tests/integration/db/**` | 010, 020 | review (`spec_revision: 17`: `LabelRepo.get_by_name` is documented as an **exact** read with **no caller** in the tree — the seed resolves case-insensitively and `hifa import` has no implementation — and a user-supplied name must go through SPEC-040 R22 instead, D-070) |
-| 040 | Application services | [040-application-services.md](./040-application-services.md) | `app/**`, `tests/integration/app/**` | 020, 030 | review (`version: 8`, `spec_revision: 35`: `LABEL_AMBIGUOUS` on every reference that resolves a name, the case-variant refusal of `create_label`/`update_label`/`restore_label`, the ambiguity names in `message` with the wire `details` `null`, the edge conversion named, and the `LABEL_NOT_FOUND` row's two producers, D-070) |
-| 050 | CLI | [050-cli.md](./050-cli.md) | `cli/**`, `tests/e2e/cli/**` | 040 | review (`version: 10`, `spec_revision: 35`: the three attach paths — `issue create -l`, `issue label`, `issue unlabel` — share one resolution rule, the `replaced` of an N-name call is the **last non-null** replacement of the call (`High` for `high low` on `Medium`, `Medium` for `high other`, `null` only when nothing was displaced), and `label archive --undo` can answer exit 4, D-070) |
-| 060 | REST API | [060-api-rest.md](./060-api-rest.md) | `api/**`, `tests/e2e/api/**` | 040 | review (`version: 8`, `spec_revision: 16`: C4's two uniqueness claims are gone — a label name is refused with 422 `LABEL_AMBIGUOUS` when a level spells it twice, and a state name is read within its own team instead of being called unique — and §6.3 keeps `details` to `null`/list, naming the ambiguity in `message`, D-070) |
-| 070 | Web dashboard | [070-web-dashboard.md](./070-web-dashboard.md) | `web/**`, `tests/e2e/web/**` | 040, 060 | **review** — partial delivery. Stage 1 delivered: read-only board/list/detail + quick add + `/healthz`; read contract closed by D-025…D-028, write paths contracted by D-053…D-056, the write guard of §2.1.7 by D-057, the two routes that read through the trash — detail and panel with `Restore` alone, §2.1.1/R29 — by D-059, and the `/search` page with its four states — §2.1.8, D-063) |
+| 030 | SQLite adapter | [030-sqlite-adapter.md](./030-sqlite-adapter.md) | `adapters/sqlite/**`, `ports.py`, `tests/integration/db/**` | 010, 020 | review (`version: 7`, `spec_revision: 20`: `LabelRepo.get_by_name` is documented as an **exact** read with **no caller** in the tree (D-070); the item projection SQL-4 shares with SQL-7 row 1 carries `LEFT JOIN project_milestone pm` with `i.milestone_id`/`pm.name`, the loader of a `milestone` key no v1 write can fill (GAP-08); and SQL-7 rows **7, 8 and 9** hide what the trash layer holds — one sentence, with 040/050 pointing at it — while the claim that the detail and `issue list --parent` list the same set is withdrawn, D-072 amended; and `HistoryRepo.record`'s `field` is stated in the two families SPEC-050 §2.4.2 owns — a column's name, or the noun of the write for `created`/`relation`/`label` — with `created` no longer missing from the list, round four) |
+| 040 | Application services | [040-application-services.md](./040-application-services.md) | `app/**`, `tests/integration/app/**` | 020, 030 | review (`version: 10`, `spec_revision: 38`: `include` accepts the `DETAIL_INCLUDE` names and nothing else — `relations` and `children` are read on every call, not gated — and the note that claimed GAP-01…GAP-06 of SPEC-050 §2.3.1 were closed names the gap that was still open (D-071); §2.2 declares what only the use case can produce: `relations` sorted on `(READS AS rank, far-end identifier)` because SQL-7 row 9 returns an unordered set, and `children`/`relations`/`parent` with no row the trash layer holds — SPEC-030 §2.6's sentence, pointed at, with the "same set as `issue list --parent`" claim withdrawn, D-072 amended) |
+| 050 | CLI | [050-cli.md](./050-cli.md) | `cli/**`, `tests/e2e/cli/**` | 040 | review (`version: 13`, `spec_revision: 39`: `issue show --with` is contracted — §2.5.3.2 maps the four values onto `issue_detail`, §2.4.2 declares the flat `IssueDetail` with its **four** appended collections (**37** keys) and the `HistoryEntry` object whose `field` is the writer's vocabulary (`created`, `relation`, `label`), GAP-06 closes and `attachments` is re-gapped as GAP-07 with exit 2 and no key, the milestone write path is GAP-08 (`milestone` is `null` in v1) and the refused `--with` values have their two contract messages — D-071, D-072 amended; and round four makes the §2.7 sample print §6's own sentence for `--with attachments`, drops the claim that GAP-07 is the only row of its kind, and marks R15/REQ-S050-04 as GAP-07's, with no §7 scenario to run them) |
+| 060 | REST API | [060-api-rest.md](./060-api-rest.md) | `api/**`, `tests/e2e/api/**` | 040 | review (`version: 10`, `spec_revision: 18`: C4's two uniqueness claims are gone and §6.3 keeps `details` to `null`/list, naming the ambiguity in `message` (D-070); the detail route publishes the names of `DETAIL_INCLUDE` whose collection the envelope carries — `{comments, history}` — because v1's `IssueDetail` is **33 + 4 = 37** keys and `attachments` has no key until GAP-07, which is not "the names that reach a key" (that rule accepted `children`); `AttachmentOut` is one declaration with no producer and the two subresource rows are gone, D-071's second and third amendments) |
+| 070 | Web dashboard | [070-web-dashboard.md](./070-web-dashboard.md) | `web/**`, `tests/e2e/web/**` | 040, 060 | **review** — partial delivery. Stage 1 delivered: read-only board/list/detail + quick add + `/healthz`; read contract closed by D-025…D-028, write paths contracted by D-053…D-056, the write guard of §2.1.7 by D-057, the two routes that read through the trash — detail and panel with `Restore` alone, §2.1.1/R29 — by D-059, the `/search` page with its four states — §2.1.8, D-063 — and `spec_revision: 29` removes the attachment surface: `issue_vm` carries no `attachments` key, the detail passes the two `include` names the envelope carries, R16/REQ-S070-05 and §7's attachment scenario are withdrawn (GAP-07) |
 | 080 | Import / export | [080-transfer-csv-json.md](./080-transfer-csv-json.md) | `app/transfer.py`, `adapters/sqlite/transfer_sql.py` | 040 | review (`version: 2`, `spec_revision: 8`: R10 resolves a label name one level at a time and rejects a twice-spelled level with the `ambiguous_label` row verdict instead of preferring the team's row, §2.1.1 consumes `list` + the `casefold` compare instead of `get_by_name`, and B21 carries the case with its message, D-070) |
 | 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | review (`version: 4`, `spec_revision: 8`: promoted by HIFA-7 — the one entry point `search_issues(db, query, *, now)` in §2.3, `parse_query` as the text parser the edges compose over, the page's consumption in §2.6 (D-063/D-064), the two `like` forms (§5.3) with the `TextPredicate` that carries the negated terms across the port and the NULL-safe `NOT` of both of them (D-067, R14)) |
 | 100 | Config and bootstrap | [100-config-bootstrap.md](./100-config-bootstrap.md) | `config.py`, `app/teams.py::bootstrap`, `cli/commands/db.py` | 010, 040 | review (`spec_revision: 14`: the seed resolves its four label names case-insensitively and writes no second spelling, R11bis, D-070) |

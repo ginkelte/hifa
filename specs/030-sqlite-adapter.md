@@ -3,8 +3,8 @@ id: SPEC-030
 title: SQLite adapter
 component: persistence
 status: review
-version: 5
-spec_revision: 17
+version: 7
+spec_revision: 20
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -477,9 +477,13 @@ tuples: always a domain entity (validated by Pydantic) or `None`.
 
 `record` uses `executemany` (§2.5 SQL-8). The serialization of values to TEXT is fixed:
 `Priority` → `str(int)`, `bool` → `"1"`/`"0"`, `date` → `YYYY-MM-DD`, `datetime` → ISO-8601 `Z`,
-`None` → `NULL`, `str` → as is. `field` is the exact column name
-(`state_id`, `assignee_id`, `priority`, `due_date`, `title`, `description`, `estimate`,
-`project_id`, `cycle_id`, `parent_id`, `label`, `relation`, `archived_at`, `trashed`).
+`None` → `NULL`, `str` → as is. `field` is the writer's vocabulary in the two families
+**SPEC-050 §2.4.2** owns, and this table adds no name to them: a change to a column of `issue`
+carries that column's name (`state_id`, `assignee_id`, `priority`, `due_date`, `title`,
+`description`, `estimate`, `project_id`, `cycle_id`, `parent_id`, `archived_at`, `trashed`), and a
+record event that is not a column carries the noun of the write — `created` (the row
+`create_issue` writes when it inserts the issue, SPEC-040 §5.1 step 16), `relation`
+(`relate_issues`/`unrelate_issues`) and `label` (`add_label`/`remove_label`).
 
 ### 2.5 SQL of the critical operations
 
@@ -554,7 +558,8 @@ SELECT i.id, i.identifier, i.title, i.priority, i.priority_label,
        i.state_id, s.name AS state_name, s.type AS state_type,
        i.team_id, t.key AS team_key,
        i.assignee_id, m.display_name AS assignee_name,
-       i.project_id, i.cycle_id, i.due_date, i.estimate, i.parent_id,
+       i.project_id, i.cycle_id, i.milestone_id, pm.name AS milestone_name,
+       i.due_date, i.estimate, i.parent_id,
        i.updated_at, i.is_open, i.visible,
        COALESCE((
          SELECT json_group_array(json_object(
@@ -568,6 +573,7 @@ FROM v_issue i
 JOIN workflow_state s ON s.id = i.state_id
 JOIN team t          ON t.id = i.team_id
 LEFT JOIN member m   ON m.id = i.assignee_id
+LEFT JOIN project_milestone pm ON pm.id = i.milestone_id
 WHERE i.team_id = :team_id
   AND (:include_archived = 1 OR :archived_only = 1 OR :trashed_only = 1
        OR i.archived_at IS NULL)   -- trash is the deeper layer: trashed_only opens this axis
@@ -673,15 +679,15 @@ of row 1 instead of adding a statement; no statement of this read is a `COUNT(*)
 
 | # | Statement | Result | Runs when |
 |---|---|---|---|
-| 1 | `SELECT <the SQL-4 projection> FROM v_issue i JOIN workflow_state s ON s.id = i.state_id JOIN team t ON t.id = i.team_id LEFT JOIN member m ON m.id = i.assignee_id WHERE (i.identifier = :ref OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)` | header (`IssueListItem`); the archive columns are not in this projection | always |
+| 1 | `SELECT <the SQL-4 projection> FROM v_issue i JOIN workflow_state s ON s.id = i.state_id JOIN team t ON t.id = i.team_id LEFT JOIN member m ON m.id = i.assignee_id LEFT JOIN project_milestone pm ON pm.id = i.milestone_id WHERE (i.identifier = :ref OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)` | header (`IssueListItem`), `milestone_id`/`milestone_name` included; the archive columns are not in this projection | always |
 | 2 | `SELECT * FROM issue WHERE id = ?` | the entity row: `description`, `archived_at`, `trashed` | always |
 | 3 | `SELECT * FROM team WHERE id = ?` | `team` | always |
 | 4 | `SELECT * FROM workflow_state WHERE id = ?` | `state` | always |
 | 5 | `SELECT * FROM project WHERE id = ?` | `project` | the row has a `project_id` |
 | 6 | `SELECT * FROM cycle WHERE id = ?` | `cycle` | the row has a `cycle_id` |
-| 7 | statement 1's projection with `WHERE i.id = :parent` | `parent` | the row has a `parent_id` |
-| 8 | statement 1's projection with `WHERE i.parent_id = :parent ORDER BY i.sub_issue_sort_order, i.number` | `children` | always |
-| 9 | `SELECT * FROM issue_relation WHERE issue_id = ? OR related_issue_id = ?`, then statement 1's projection `WHERE i.id = :other` **once per relation row** | `relations` | always; one statement when the issue has no relation |
+| 7 | statement 1's projection with `WHERE i.id = :parent AND i.trashed = 0` | `parent`; `null` when the pointer names a row the trash layer holds | the row has a `parent_id` |
+| 8 | statement 1's projection with `WHERE i.parent_id = :parent AND i.trashed = 0 ORDER BY i.sub_issue_sort_order, i.number` | `children` | always |
+| 9 | `SELECT * FROM issue_relation WHERE issue_id = ? OR related_issue_id = ?`, then statement 1's projection `WHERE i.id = :other AND i.trashed = 0` **once per relation row** — the first in fetch order, the read returning it **unordered** | `relations` | always; one statement when the issue has no relation |
 | 10 | `SELECT * FROM comment WHERE issue_id = ? ORDER BY created_at, id` | `comments` | `comments` ∈ `include` |
 | 11 | `SELECT * FROM issue_history WHERE issue_id = ? ORDER BY created_at DESC, id DESC LIMIT 100` | `history` | `history` ∈ `include` |
 | 12 | `SELECT * FROM attachment WHERE issue_id = ? ORDER BY created_at` | `attachments` | `attachments` ∈ `include` |
@@ -696,6 +702,23 @@ revision added row 16). With `include=frozenset()`: **8 statements** (7 before).
 add one each only when the row carries the id they look up, and row 9 adds one per relation: those are
 the only statements the data can add, and R5 counts them. Labels add none — they ride in statement 1's
 projection as a `json_group_array` subselect, so there is no `issue_label` statement to enumerate.
+`milestone` adds none either: it is not a row but a join, `LEFT JOIN project_milestone pm ON pm.id =
+i.milestone_id` with `pm.name` beside `i.milestone_id` in the same projection, so the key SPEC-050
+§2.4.2 publishes on every `Issue` has a producer and the two totals above do not move (HIFA-49,
+D-072 §3). The join is in **SQL-4's** projection, which is why the listing carries the same two columns:
+one projection, both reads.
+
+**Rows 7, 8 and 9 carry the trash predicate, and row 1 stays the header's only visibility test.** A row
+the trash layer holds is absent from `children` (row 8), from `relations` (row 9) and from `parent`
+(row 7, which answers `null`), which is **the** rule and is stated here once: it is the visibility
+`issue list --parent` applies to the same children through SQL-4's `i.trashed = 0`. That predicate is
+also the **whole** of what the two readers share — the listing's default view additionally binds
+`is_open = 1` (`--open`, SPEC-050 §2.5.3), an axis this read does not have, so a **closed** child is
+listed by one reader and not by the other and no sentence of this corpus claims the two list the same
+set. The three filters are **unconditional**: they do not follow `include_trashed`, which is about the
+issue the read returns and not about its neighbours — a trashed far end is absent even on the one read
+that may see a trashed `ref`, and so is a trashed parent. A predicate is not a statement either, so the
+totals hold.
 
 **The keyword moves neither total, and the default answers exactly as row 1 did.** `include_trashed` is a
 keyword-only argument of `issue_detail` with a default (§2.6, D-059). `False` — the default — binds
@@ -706,8 +729,9 @@ binds `1`, the `OR` short-circuits and the trash predicate drops: still one stat
 never an extra one. **No count moves, because a predicate is not a statement**, and no other row of this
 table is reached by the keyword.
 
-**Row 1 is the read's only visibility test, which is why the keyword is a predicate and not a second
-read.** The header's projection is not pre-filtered: `v_issue` computes `visible` as a *column*
+**Row 1 is the read's only visibility test on the issue it returns, which is why the keyword is a
+predicate and not a second read.** The header's projection is not pre-filtered: `v_issue` computes
+`visible` as a *column*
 (SPEC-010 §3), so this read inherits no trash filter it would have to work around — `i.trashed = 0` in row
 1 is the whole exclusion, and dropping it is the whole change (D-059). Its "Runs when" stays **always**: a
 trashed issue is the only row the default cannot reach, not a row of a different shape. Two surfaces do
@@ -1113,6 +1137,9 @@ class IssueListItem:
     sort_order: float = 0.0  # issue.sort_order: backlog order (order="manual")
     board_order: float = 0.0  # issue.board_order: board column order
     created_at: datetime | None = None  # issue.created_at
+    # --- additive since spec_revision 18, defaulted (HIFA-49, D-072 §3) ---
+    milestone_id: str | None = None  # issue.milestone_id, from the column itself
+    milestone_name: str | None = None  # project_milestone.name, JOIN `pm` on i.milestone_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -1232,6 +1259,11 @@ def issue_detail(
     `include` gates the heavy collections (`comments`, `history`, `attachments`): empty means
     base only, which is what the row/card fragments ask for; the panel asks for the comments too
     (D-027, D-029). Any other name is `Validation(field="include", rule="INCLUDE_INVALID")`.
+    `children`, `relations` and `parent` are neither gated nor ordered here: rows the trash layer
+    holds are absent from all three — `parent` answers `None` (SQL-7 rows 7, 8 and 9, D-072 §2 as
+    amended) — and the order `relations` is published in is the caller's, because it is a function
+    of the asking end and of the far end's identifier
+    (SPEC-040 §2.2, D-072 §1) — this function returns the set, unordered.
     `states` always carries the team's **non-archived** workflow states, ordered by
     `position, name` — the set and the order `TeamRepo.states` returns (§2.4), the same statement
     as SQL-7 row 16 — so an edge renders the state `<select>` from this model instead of reading
@@ -1978,6 +2010,70 @@ Feature: SQLite adapter
   shows a `SCAN`, the solution is a new index in a migration, not a change in the adapter.
 
 ## Notes
+
+- spec_revision 20 (2026-11-20): **the `field` a history row carries is stated in the two families, and
+  `created` is one of them (HIFA-49, round four).** `version` stays 7: no signature, column list,
+  statement, count or §7 scenario moves — the note beside `HistoryRepo.record` now repeats the vocabulary
+  SPEC-050 §2.4.2 owns instead of publishing a third list of its own.
+  (1) **The note said "the exact column name" and then listed two names that are not columns of
+  `issue`.** `field` is a column's name for a column change and the noun of the write for the record
+  events that are not columns; `label` and `relation` sat in a list introduced as column names, and
+  `created` — the row `create_issue` writes and SPEC-040 §7 asserts — was missing from it. The paragraph
+  now names both families, enumerates the three non-column nouns v1's tree writes (`created`,
+  `relation`, `label`) with the use case behind each, and points at SPEC-050 §2.4.2 as the one owner of
+  the rule. No name is added to either family and this spec declares no fourth noun.
+
+- spec_revision 18 (2026-11-20): **the item projection learns `milestone`, and the two collections the
+  detail returns learn the trash (HIFA-49, D-072 §2–§3).** `version` 5 → 6: §2.6's `IssueListItem` gains
+  two fields and SQL-4/SQL-7 change — the listing's row and the detail's rows are the read model this
+  layer publishes, so this is a change of §2 and not of a comment.
+  (1) **`milestone` had no producer in the corpus.** SPEC-050 §2.4.2 publishes `milestone: {id, name}` on
+  every `Issue` (33 keys) and nothing read `project_milestone`: `issue.milestone_id` is writable
+  (SPEC-040 §5.1) and the key could only ever have been `null`. *(Corrected at `spec_revision` 19:
+  `milestone_id` is **not** writable. `src/hifa/app/issues.py` raises `HifaError(NOT_IMPLEMENTED)` for
+  any non-null `project_id`/`milestone_id`/`cycle_id` and accepts only `NULL`, so the read below loads a
+  key no write can fill and `milestone` is `null` on every object v1 can produce — see rev 19 and
+  SPEC-050 §2.3.1's GAP-08.)* SQL-4's projection — the one SQL-7 row 1
+  reuses — now selects `i.milestone_id` and `pm.name AS milestone_name` from `LEFT JOIN project_milestone
+  pm ON pm.id = i.milestone_id`, and `IssueListItem` carries `milestone_id`/`milestone_name`, appended
+  with defaults so no positional construction changes. No statement is added (the join rides a projection
+  both reads already run), so §2.5's **12/8** totals and R5 do not move.
+  (2) **`children` and `relations` had no visibility rule.** `_ITEM_QUERY` binds no `trashed` predicate,
+  so SQL-7 rows 8 and 9 returned a trashed child and a trashed far end while SQL-4's `i.trashed = 0` hid
+  the same rows from `issue list --parent`, and a trashed `ref` answered `None`. Rows 7, 8 and 9 now carry
+  `AND i.trashed = 0`, **unconditionally**: the keyword `include_trashed` is about the issue the read
+  returns, not about its neighbours, so a trashed parent leaves `parent` `null` on an object whose
+  `parent_id` is set. Row 1 is untouched, so `include_trashed=True` still reaches a trashed
+  issue; the two counts do not move, because a predicate is not a statement.
+  (3) **What this demands of the code:** `src/hifa/adapters/sqlite/reads.py` — the join and the two
+  columns in `_ITEM_COLUMNS` and in the listing's `_SQL`, `milestone_id`/`milestone_name` on
+  `IssueListItem`, and `AND i.trashed = 0` in the parent, the children and the far-end `WHERE` (never the
+  header's). The order of `relations` is **not** this layer's: SQL-7 row 9 returns an unordered set and
+  SPEC-040 §2.2 sorts it (D-072 §1), so no `ORDER BY` is added here.
+
+- spec_revision 19 (2026-11-20): **the trash rule covers the parent too, and the key this revision gives a
+  loader is one no write can fill (HIFA-49, round three).** `version` 6 → 7: §2.6's SQL-7 row 7 changes
+  its `WHERE` — the statement this layer executes and the one a regeneration transcribes — and the
+  paragraph that declared the visibility is the read model's contract; no signature, column list, count
+  or §7 scenario moves.
+  (1) **Row 7 had no `trashed` predicate, so a trashed parent was shown where the same row was hidden as
+  a child.** Rows 8 and 9 were fixed and the pointer that resolves `parent_id` was not, which left the
+  same row visible through one key and absent through the other two, in one object. Row 7 now carries
+  `AND i.trashed = 0` and answers `null` for a parent the trash layer holds. The rule is stated **once**,
+  in §2.6, and SPEC-040 §2.2 and SPEC-050 §2.4.2/§2.5.3.2 point at it instead of restating it.
+  (2) **"The two readers of one level list the same set" was false and is gone.** `issue list --parent`
+  applies its default `--open` (`is_open = 1`, SPEC-050 §2.5.3) on top of the trash predicate, and
+  `issue_detail` has no open axis at all: a **closed** child is listed by one reader and not by the
+  other. What the two share is the **trash visibility** — a trashed child is absent from `children` —
+  and that is all §2.6 now claims.
+  (3) **`milestone` is loaded by this layer and written by nobody.** The `LEFT JOIN` of rev 18 stands;
+  what rev 18 got wrong is the other half of the sentence. `src/hifa/app/issues.py` raises
+  `HifaError(NOT_IMPLEMENTED)` for **any non-null** `project_id`/`milestone_id`/`cycle_id` (clearing them
+  to `NULL` is accepted), and that path is not part of this delta, so in v1 `milestone` is `null` on
+  every object this read produces. The key is real the day the projects write path lands; until then
+  SPEC-050 §2.3.1 carries **GAP-08** for it, in that table's one-row format, and the seventh file of this
+  delta's code list is `src/hifa/app/issues.py` (the `NOT_IMPLEMENTED` raise, replaced by the repository
+  write). No statement and no count moves for any of the three.
 
 - spec_revision 17 (2026-11-20): **the two callers that justified `get_by_name` do not exist, and
   the note now names none (HIFA-14, round three, D-070's third amendment).** `version` stays 5: the

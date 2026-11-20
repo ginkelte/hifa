@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 8
-spec_revision: 28
+version: 9
+spec_revision: 29
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -266,8 +266,8 @@ from SPEC-040 §2.2, with that spec's signature and without its own adapters. Th
 |---|---|---|
 | `GET /{team}/board` | `app.boards.list_board(db, *, team=key, filters=ListFilters(...), group_by="state", limit_per_group=N)` | `N` in `1..200`, default 50 (D-011); `team` by key or ULID; filters — `q` included — travel in **one** `ListFilters`, never as loose kwargs (D-027) |
 | `GET /{team}/list`, `GET /_/issues?view=list` | `app.boards.list_issues(db, ListFilters(team_id=..., order=..., limit=..., cursor=..., offset=...))` | returns `IssuePage` (`items`, `next_cursor`, `has_more`) — owner SPEC-030 §2.6 |
-| `GET /{team}/issue/{identifier}` | `app.boards.issue_detail(db, ref, include=app.boards.DETAIL_INCLUDE, include_trashed=True)` | `NotFound(issue)` ⇒ `404`, **except** for an issue the trash holds, which the keyword returns so the page can render it with `Restore` alone (§2.1.1, D-059); the constant is declared in SPEC-040 §2.2 (D-027) |
-| `…/panel` | `app.boards.issue_detail(db, ref, include=app.boards.DETAIL_INCLUDE, include_trashed=True)` | the panel renders the comments, so it pays for them: one extra read in an explicit user action, never in a board render (D-029); the same keyword, so the panel of a trashed issue is `200` too (`Restore` alone, §2.1.1, D-059) |
+| `GET /{team}/issue/{identifier}` | `app.boards.issue_detail(db, ref, include=frozenset({"comments", "history"}), include_trashed=True)` | `NotFound(issue)` ⇒ `404`, **except** for an issue the trash holds, which the keyword returns so the page can render it with `Restore` alone (§2.1.1, D-059). The two names are the ones of SPEC-040 §2.2's `DETAIL_INCLUDE` whose collection `IssueDetail` carries (SPEC-060 §2.5.1, SPEC-050 §2.5.3.2): the constant's third name is `attachments`, no v1 envelope has a key for it (GAP-07), and passing the whole constant would run SQL-7 row 12 for a collection this layer does not render (D-027) |
+| `…/panel` | `app.boards.issue_detail(db, ref, include=frozenset({"comments", "history"}), include_trashed=True)` | the panel renders the comments, so it pays for them: one extra read in an explicit user action, never in a board render (D-029); the same set and the same keyword, so the panel of a trashed issue is `200` too (`Restore` alone, §2.1.1, D-059) |
 | `/_/issues/{id}/row` | `app.boards.issue_detail(db, ref)` | empty `include`: only the base `IssueDetail` — the constant is deliberately **not** the default (D-027) — and **no** `include_trashed`, so a trashed identifier is `404` here while its page answers `200` (§2.1.1, D-059) |
 | `GET /search`, `GET /_/palette` | the `SearchQuery` composed from `app.search.parse_query(q)` + the route's parameters, then `app.search.search_issues(db, query, now=…)` (SPEC-090 §2.3) | the web layer does **not** declare its own search flags or envelope (D-016, D-064); `/search` passes `count=False` and the `now` its read model already uses (§2.3.5), and renders the four states of §2.1.8 |
 | `GET /` and the sidebar of **every** page | `app.teams.list_teams(db)` | called per request, never once in `create_app` nor memoized on `app.state` (R23, D-030): the CLI is a second writer to the same file. The team counts come from `v_team_progress`, not from a query written here |
@@ -762,15 +762,6 @@ issue_vm = {
             "state_name": "Todo",
         }
     ],
-    "attachments": [
-        {
-            "id": "…",
-            "title": "Network log",
-            "subtitle": None,
-            "url": "file:///tmp/hifa.log",
-            "host_label": "local file",
-        }
-    ],
     "history": [
         {
             "field": "state_id",
@@ -930,7 +921,6 @@ def render_markdown(text: str | None) -> str:
 | `{{ issue.state.name }}` (domain object) | only plain dicts with the keys declared above |
 | `{{ x\|safe }}` on user text | only exceptions: `description_html`/`body_html` (R15) and `snippet_html` (R17), already escaped by the server |
 | `<script>` in child templates | CSP `script-src 'self'` (R14) |
-| `{{ url }}` without a scheme check in `attachments` | `javascript:` in an `href` (R16) |
 | a sentence of §6 written as a literal or assembled with `{% if %}` | the catalogue's strings have one builder, `refusal_sentence` (§6): a template prints the `form_error` it is given and never composes one |
 
 #### 2.3.8 `team_picker_vm` (team_picker.html)
@@ -1853,7 +1843,7 @@ reads a counter of the connection and touches no table: there is nothing of it t
 | `base.html` | `team` | SELECT (team list, active team) |
 | `board.html`, `/_/issues?view=board` | `workflow_state`, `v_issue`, `issue_label`, `label`, `member` | SELECT |
 | `list.html`, `/_/issues?view=list` | `v_issue`, `issue_label`, `label`, `member`, `workflow_state` | SELECT (one query with `GROUP_CONCAT` of labels, no N+1: REQ-N008) |
-| `issue_detail.html`, `/_/issues/{id}/panel` | `v_issue`, `comment`, `issue_relation`, `attachment`, `issue_history`, `issue_label`, `workflow_state`, `member` | SELECT |
+| `issue_detail.html`, `/_/issues/{id}/panel` | `v_issue`, `comment`, `issue_relation`, `issue_history`, `issue_label`, `workflow_state`, `member` | SELECT |
 | `search.html`, `/_/palette` | `issue_fts`, `issue`, `workflow_state`, `member`, `team`, `label`, `issue_label` | SELECT — the tables of SPEC-090 §3.2, read by `reads.search` and not by a query issued here |
 | `POST /{team}/issue`, `/_/issues` | `issue`, `issue_history` | INSERT (use case) |
 | `PATCH /_/issues/{id}` | `issue`, `issue_history` | UPDATE |
@@ -1898,7 +1888,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R13** | **One read model per entity.** The panel and the detail page use the same `issue_vm`; the row and the card share `row_vm`/`card_vm` with the same derived keys (`priority_glyph`, `due_label`, `is_overdue`). → **REQ-F070-03** |
 | **R14** | **Strict CSP without `unsafe-eval`.** `script-src 'self'` forces the Alpine CSP build (`Alpine.data()` registered in `app.js`); `x-data="{…}"` with expressions is forbidden and so is inline `<script>`. → **REQ-S070-02**, **REQ-S070-03** |
 | **R15** | **Own HTML already escaped before `\|safe`.** `description_html` and `body_html` leave the server already escaped and with a tag allowlist (`p, br, strong, em, code, pre, ul, ol, li, a[href], blockquote, h1-h3`); `a[href]` only `http(s):`/`mailto:`. `snippet_html` leaves the server **escaped and with `MARK_START`/`MARK_END`** (R17, SPEC-090 R15). `\|safe` is applied **only** to those three fields. → **REQ-S070-01**, **REQ-S070-04** |
-| **R16** | **URL scheme in attachments.** `attachments[].url` is validated in the read model: `http`, `https`, `file`; any other scheme is shown as text without an `href`. → **REQ-S070-05** |
+| **R16** | **No attachment surface in v1.** `issue_vm` carries no `attachments` key, because nothing can write an `attachment` row (`add_attachment` is declared in SPEC-040 §2.2 and implemented nowhere, GAP-07) and a list that can only be `[]` is what D-071 §2 refuses. The URL-scheme rule for `attachments[].url` — `http`, `https`, `file`, any other scheme rendered as text without an `href` — returns with the key, in the revision that lands `AddAttachment`. → (no requirement until then) |
 | **R17** | **Search: escape every piece and keep the marker pair.** The snippet arrives from SPEC-090 already wrapped in `<mark>`/`</mark>` and unescaped (REQ-S090-03): the read model splits it on that pair, escapes **each piece between two markers** and rejoins them around the literal `<mark>`/`</mark>`, so the only markup `snippet_html` carries is the pair that was already there and the text around it is escaped exactly once, here. Escaping the whole string first and marking afterwards cannot be done at this edge — the markers already exist, and escaping before them would have to re-find the terms — and handing the raw snippet to `\|safe` would let an issue title put executable markup in the page. `build_search_vm` is the only producer of `snippet_html` and §2.1.8's page is its only consumer. → **REQ-S070-04** |
 | **R18** | **Read-only is visible.** With `can_write=False` no write `<form>` and no drag control are rendered; only reading remains. A `POST` in that mode ⇒ `403`, with `error.html` from a page route and `partials/fragment_error.html` from a `/_/` route. → **REQ-F070-04** |
 | **R19** | **Palette in two phases.** With an empty `q` the server responds with **actions only** and does not query the database; with a non-empty `q` it adds up to 8 issues. The list is a `<ul role="listbox">` with `aria-activedescendant`; `Enter` navigates with `location.assign` (not `hx-get`) so the URL stays in the history. → **REQ-F070-07** |
@@ -1926,7 +1916,6 @@ Component-specific requirements:
 | **REQ-S070-02** | Header `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`. | header test on `/ENG/board` |
 | **REQ-S070-03** | No inline `<script>` and no `on*=` in the served HTML; Alpine CSP build. | test that scans the rendered HTML |
 | **REQ-S070-04** | See R17. | test with a term containing `<` |
-| **REQ-S070-05** | See R16. | test with `javascript:alert(1)` as attachment `url` |
 
 ## 5. Flow
 
@@ -2687,12 +2676,6 @@ Feature: hifa web dashboard
     Then the HTML does not contain "<script>alert(1)</script>"
     And the HTML does not contain "javascript:alert(1)"
 
-  Scenario: an attachment with a dangerous scheme generates no link
-    Given an issue with an attachment url "javascript:alert(1)"
-    When GET /ENG/issue/ENG-13 is requested
-    Then the HTML does not contain an href "javascript:alert(1)"
-    And the attachment title is shown as text
-
   Scenario: read-only renders no write forms
     Given the app created with read_only true
     When GET /ENG/list is requested
@@ -2845,7 +2828,7 @@ Feature: hifa web dashboard
 7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (67 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (72 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).
@@ -2889,6 +2872,38 @@ Feature: hifa web dashboard
   §2.6.9; the whole-page floor is T-19.
 
 ## 11. Notes
+
+- spec_revision 29 (2026-11-20): **the detail page stops publishing a collection nothing can fill, and its
+  `include` stops naming it (HIFA-49, round three).** `version` 8 → 9: `issue_vm` loses a key, §2.1.4's
+  two detail rows pass a different `include` set, R16 is rewritten and REQ-S070-05 withdrawn, and §7 loses
+  one scenario — the read model and the acceptance surface of this layer, which is the ground rev 28 stood
+  on for 7 → 8.
+  (1) **`attachments` left `issue_vm`.** The key was built from `IssueDetail.attachments`, which v1 no
+  longer carries (SPEC-060 §2.4.2 is **37 keys**, four collections) and which nothing can fill:
+  `add_attachment` is declared in SPEC-040 §2.2 and implemented nowhere (SPEC-050 §2.3.1's GAP-07). A
+  template branch on an always-empty list is the payload D-071 §2 refuses, one layer down — the list was
+  `[]` on every issue and the `<section class="attachments">` never rendered.
+  (2) **The detail stops passing the whole constant.** §2.1.4 passed
+  `include=app.boards.DETAIL_INCLUDE`, whose third name is `attachments`: that gate runs SQL-7 row 12 for a
+  collection no envelope carries, and this layer drops the result. The two rows now pass
+  `frozenset({"comments", "history"})` — **the names of `DETAIL_INCLUDE` whose collection `IssueDetail`
+  carries**, the same set SPEC-060 §2.5.1's route publishes and SPEC-050 §2.5.3.2's flag maps, and the
+  same rule, not a fourth formulation of it. `/_/issues/{id}/row` keeps the empty `include`.
+  (3) **R16's rule had no subject and REQ-S070-05 had no test.** `attachments[].url` limited to `http`,
+  `https`, `file` is a rule about a key this layer does not carry; both are withdrawn — R16 now says there
+  is no attachment surface in v1 and names the revision that returns it, and REQ-S070-05 leaves §4 with
+  the row that pointed at it. The prohibition row of §2.3.7 ("`{{ url }}` without a scheme check") and §7's
+  scenario go with them: a scenario whose `Given` cannot be built is not a contract, it is a fixture
+  nobody can write.
+  (4) **§4's table stops claiming a table.** The detail's row listed `attachment` among the tables the
+  page reads; with the key and the include name gone, nothing on that page reaches it.
+  (5) **Counts.** §7 goes **73 → 72** (the attachment scenario leaves) and §8 says **72**: it said 67
+  while §7 carried 73, a drift this revision had to touch because it moves the number anyway.
+  (6) **What this demands of the code**, none of it written here: `src/hifa/web/readmodels.py`
+  (`build_issue_vm` drops the `attachments` list and `_attachment_url`), `src/hifa/web/views.py` (the two
+  detail routes pass the two names, not the constant) and `templates/issue_detail.html` (the
+  `<section class="attachments">` block). Until that lands the tree and this document disagree about one
+  key, and the document is the contract.
 
 - spec_revision 28 (2026-11-20): **a hit carries no colour, and the one rule the palette inherits is
   named where it is decided (HIFA-7, second review round).** `version` 7 → 8, because §2.1.8's results
@@ -3258,7 +3273,9 @@ Feature: hifa web dashboard
   `IssueDetail`: the panel renders the comment list (§2.3, `issue_panel.html`), so its route passes
   `include=app.boards.DETAIL_INCLUDE`; `/_/issues/{id}/row` keeps the empty `include`. The constant
   is the one that fixes the set, the board and the rows stay collection-free, and the extra read
-  happens in an explicit user action (D-029). (2) R3's ban on defensive `default()` is now checked:
+  happens in an explicit user action (D-029). *(Superseded at `spec_revision` 29: the panel passes the
+  two names of that constant `IssueDetail` carries — §2.1.4 — because the constant's third name is
+  `attachments`, which no v1 envelope carries.)* (2) R3's ban on defensive `default()` is now checked:
   the static template test rejects `|default(` as well as `|length`, and the quick-add form and the
   rows fragment receive `form_oob`, `form_error` and `form_errors` from every route that renders
   them, so a missing key breaks the test instead of silently rendering the wrong HTML.

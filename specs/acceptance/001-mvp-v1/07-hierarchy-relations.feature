@@ -3,7 +3,8 @@ Feature: Hierarchy and relations
 
   # Sub-issues with bounded depth and directional relations.
   # The hierarchy is created with `issue create --parent` and read with `issue list --parent`; there is
-  # no tree verb in SPEC-050 and `issue show --with children` stays GAP-06. The CLI reads an edge with
+  # no tree verb in SPEC-050, and `issue show --with children` reads it as a collection of the detail
+  # (SPEC-050 §2.5.3.2, D-071). The CLI reads an edge with
   # `issue relations REF` (SPEC-050 §2.5.3), which prints the stored `Relation` row whose `type` is never
   # `blocked_by` (SPEC-050 §2.4.2, D-046), and answers "what is stuck" with `issue blocked` — the read of
   # the directed verdict (SPEC-020 §4.1 R7, D-048).
