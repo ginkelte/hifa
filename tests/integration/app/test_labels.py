@@ -801,6 +801,50 @@ def test_a_name_one_level_carries_in_two_spellings_is_ambiguous_on_every_catalog
     assert _label_named(seed, "bug")["retired_at"] is None
 
 
+def test_a_name_two_teams_share_prints_the_refusal_it_always_did(seed: Seed) -> None:
+    """The two-team case is byte-identical: the levels were already all it had to say."""
+    other = seed.other_team()
+    _make(seed, "shared", team_id=seed.team.id)
+    _make(seed, "shared", team_id=other.id)
+
+    with pytest.raises(Validation) as caught:
+        label_detail(Database(seed.path), "shared")
+
+    assert caught.value.message == f"label shared is ambiguous: it exists in {seed.team.key}, OPS"
+    assert caught.value.details["teams"] == [seed.team.key, "OPS"]
+    assert "labels" not in caught.value.details
+
+
+def test_a_mixed_set_names_both_spellings_and_every_level(seed: Seed) -> None:
+    """`Bug` workspace + `Bug` ENG + `bug` ENG + `Bug` OPS: four rows, one name, three levels.
+
+    The spellings alone tell a reader the name is undecidable and hide the two levels a narrower
+    reference could use; the levels alone hide that one level spells it twice. The refusal carries
+    both, and the row the spellings-only message dropped stays accounted for.
+    """
+    other = seed.other_team()
+    _make(seed, "Bug")
+    _make(seed, "Bug", team_id=seed.team.id)
+    _make(seed, "Bug", team_id=other.id)
+    _insert_second_spelling(seed, "bug", team_id=seed.team.id)
+
+    with pytest.raises(Validation) as caught:
+        label_detail(Database(seed.path), "Bug")
+
+    message = caught.value.message
+    assert "'Bug'" in message and "'bug'" in message
+    for level in (seed.team.key, other.key, "the workspace"):
+        assert level in message
+    assert caught.value.details["labels"] == ["Bug", "bug"]
+    assert caught.value.details["teams"] == [seed.team.key, other.key, "the workspace"]
+    assert (caught.value.rule, caught.value.field, caught.value.exit_code) == (
+        "LABEL_AMBIGUOUS",
+        "ref",
+        2,
+    )
+    assert _count(seed, "label") == 4
+
+
 def test_an_unknown_reference_is_not_found_by_name_and_by_ulid(seed: Seed) -> None:
     uow = _uow(seed)
     try:
