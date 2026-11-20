@@ -4,7 +4,7 @@ title: Configuration and bootstrap
 component: support
 status: review
 version: 7
-spec_revision: 13
+spec_revision: 14
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/config.py
@@ -398,7 +398,7 @@ Human output of `doctor`: a `CHECK | SEVERITY | COUNT | DETAIL` table and a foot
 | `workspace` | 1 | `id = ULID`, `name = opts.workspace_name or title(basename(cwd))`, `url_key = slugify(name)`, `created_at = clock.now()` |
 | `team` | 1 | `key = opts.team_key`, `name = opts.team_name`, `icon = opts.icon`, `color = opts.color`, `timezone = opts.timezone`, `visibility = 'public'`, `cycles_enabled = 0`, `cycle_duration = 2`, `cycle_start_day = 1`, `issue_estimation_type = 'fibonacci'`, `triage_enabled = 0`, `parent_id = NULL`, `archived_at = NULL` |
 | `workflow_state` | 7 | the 7 tuples of `DEFAULT_STATES`, in that `position`; exactly one with `is_default = 1` (Todo) |
-| `label` | 4 or 0 | the 4 from `DEFAULT_LABELS` with `team_id = NULL` (workspace scope, SPEC-010 R6); 0 if `--no-labels` |
+| `label` | 4 or 0 | the 4 from `DEFAULT_LABELS` with `team_id = NULL` (workspace scope, SPEC-010 R6); 0 if `--no-labels`. A name the workspace already carries **in another case** is not written a second time: the step resolves case-insensitively, keeps the row it found and reports `label:<seed name>` as skipped (R11bis, SPEC-040 R22) |
 | `member` | 1 or 0 | `name = member_name`, `display_name = member_name`, `email = member_email`, `initials` = first 2 letters uppercased, `timezone = opts.timezone`, `is_admin = 1`, `is_active = 1`, `created_at = clock.now()`; 0 if `--no-member` |
 | `team_membership` | 1 or 0 | `(team_id, member_id, is_owner = 1, sort_order = 0)`; 0 if `--no-member` |
 
@@ -484,6 +484,16 @@ Invariants that `hifa init` guarantees on completion:
   by `display_name` if not, `team_membership` by `(team_id, member_id)`. Existing ones are added
   to `skipped` and are **not** updated. A second run with the same flags returns
   `created=[]`, `already_initialized=True` and exit 0.
+- **R11bis — The seed writes no second spelling of a label name (D-070).** The `label` step of R11 is the
+  one natural key of the seeding that is **not** an exact match: the four names of `DEFAULT_LABELS` are
+  resolved **case-insensitively** over the rows with `team_id IS NULL`, because SPEC-040 R22 refuses a
+  second spelling of a name at one level and this seed is a writer of that table. A row that matches a
+  seed name in another case **is** that entry: it keeps its own spelling, is not updated, and the entry
+  joins `skipped` under the seed's own string (`label:Bug`). The seed therefore **skips and never
+  refuses** — a database whose labels are legal must not make `init` fail, and a refusal here would
+  answer exit `4` on a file `init` had seeded itself after a legal rename, an outcome R9's order and the
+  exit set `0,2,4` do not describe. The third behaviour is the one forbidden: writing `Bug` beside
+  `bug`.
 - **R12 — `--force` (REQ-F100-12).** It runs the seeding again to create whatever is missing (for
   example, a state deleted by hand, or the labels if the first run used `--no-labels`), **without**
   touching existing rows and **without** deleting issues. Inside a work tree it also rewrites
@@ -801,7 +811,8 @@ the `team`/`cli`/`web` values come from it; if not, from the defaults.
        get-or-create workspace  (by url_key)
        get-or-create team       (by workspace_id, key)
        get-or-create 7 workflow_states (by team_id, name)
-       get-or-create 4 labels   (by workspace_id, NULL, name)   if seed_labels
+       get-or-create 4 labels   (by workspace_id, NULL, name — case-insensitively, R11bis)
+                                                                    if seed_labels
        get-or-create member     (by email | display_name)       if seed_member
        get-or-create team_membership
     COMMIT
@@ -975,6 +986,14 @@ Feature: Configuration, bootstrap and database diagnostics
     Then the exit code is 0
     And the label count is 4
     And the issue count did not change
+
+  Scenario: the seed does not write a second spelling of a workspace label
+    Given a directory initialized with "hifa init" whose workspace label "Bug" was renamed to "bug"
+    When "hifa init --force --json" is executed
+    Then the exit code is 0
+    And the report has an empty created
+    And the label count is still 4
+    And the workspace label is still named "bug"
 
   Scenario: --db wins over HIFA_DB and over the file
     Given a .hifa.toml with db ".hifa/hifa.db"
@@ -1222,6 +1241,22 @@ Feature: Configuration, bootstrap and database diagnostics
 - Installing shell completions, `systemd` units or scheduled tasks.
 
 ## 11. Notes
+
+- **spec_revision 14 (2026-11-20): the seed is a writer of the `label` table, and it now resolves the
+  four names case-insensitively (HIFA-14, review of the label implementation, D-070).** `version` stays
+  7: no signature, no constant, no flag and no exit code of §2 moves — `bootstrap`'s declaration and
+  `DEFAULT_LABELS` are the ones this revision found, and what changes is the rule §4.2 and §5.2 state
+  about them.
+  SPEC-040 R22 refuses a second spelling of a label name at one level (`Bug` beside `bug`), and this
+  seeding step looked its names up **exactly**, so `init` on a workspace whose seeded `Bug` had been
+  legally renamed to `bug` wrote `Bug` back beside it — the one writer of the table the label rule had
+  not counted. R11bis now says how the step resolves (case-insensitively, over `team_id IS NULL`), what
+  a case variant does (**skipped**, under the seed's own string, the row keeping its spelling) and why it
+  is not a refusal: `init` answering exit `4` because a label of its own database is spelled `bug` is an
+  outcome R9's order and the exit set `0,2,4` do not describe, and skipping is also what keeps the flag
+  idempotent. §3.1's `label` row and §5.2's step 8 say the same thing. §7 goes 31 → **32** inline
+  scenarios (the renamed-then-reseeded workspace); the `.feature` corpus does not move — 17 files and
+  240 scenarios.
 
 - **spec_revision 13 (2026-11-20): one class and one code per verdict, an exit set that admits its own `4`,
   and a probe that closes on every path (HIFA-7, fifth review round, D-069).** `version` 6 → 7: §2.7's

@@ -3714,3 +3714,161 @@ foreign-file scenario; SPEC-050 §5.3's handler and §6's exit-4 row; and the pr
 measured with — `open_probe` against a missing path, a file of garbage, a WAL database in a `0500`
 directory and a file carrying `CREATE VIEW workspace`, with the connection count before and after each
 call — which is what the two classes and the two sets are asserted against.
+
+## D-070 — A name can be ambiguous inside one level, and no write may create one
+
+**Date:** 2026-11-20 · **Wins:** SPEC-040 §4.1 R22 ("`LABEL_AMBIGUOUS` always means two teams and never
+one team twice", "No ambiguity is possible, because the issue's team is the tie-breaker" and "This is the
+only place `LABEL_AMBIGUOUS` can be raised"), R22's lead sentence that names **four** writers of the
+`label` table, §4.2 REQ-F040-38 ("can never fire on `add_label`/`remove_label`"), §2.2's `label_detail`
+bullet ("never ambiguous, because the issue's team is the tie-breaker"), the `raises:` lines of
+`add_label`, `remove_label`, `create_label` and `create_issue` and `create_label`'s `NotFound(team|label)`,
+§6's `LABEL_AMBIGUOUS` and `create_label` rows, its `UNIQUE_LABEL_NAME` row ("repeated
+`(workspace_id, team_id, name)` on create or on rename") and the note under its matrix ("appears in two
+cells and nowhere else … no issue-scoped reference and no list can raise it"), §5.6's "one row ⇒
+`('label', <name>, NULL)` and no clock read", and §5.1 step 10's `get_by_name` resolution; SPEC-050
+§2.5's label-`NAME` convention (which named two of the three paths that resolve one), §2.5.3's "the
+issue's team is the tie-breaker, so no name is ever ambiguous here" and the exit lists of `issue label`
+and `issue unlabel`, the `-l/--label` clause of the `issue create` row, §2.5.4's `UNIQUE_LABEL_NAME`
+sentences and its `--parent` sentence, and §2.4.3's silence on the `replaced` of an invocation with
+several names; SPEC-100 §4.2 R11, §3.1's `label` row and §5.2 step 8 (the exact `(workspace_id, NULL,
+name)` lookup of the seed); and D-061(f)'s "two rows with one name in the **same** team cannot arise …
+so the code always means two teams and never one team twice" together with D-061(h)'s count of "the six
+sites" of `Validation(rule='LABEL_AMBIGUOUS', field='ref')` · **Touches:** SPEC-040 §2.2, §4.1 (R22),
+§4.2 (REQ-F040-38), §5.1, §5.6, §6, §7, `Notes`; SPEC-050 §2.4.3, §2.5, §2.5.1, §2.5.3, §2.5.4, §7,
+§11; SPEC-100 §3.1, §4.2 (R11bis), §5.2, §7, §11; `specs/INDEX.md`; this file
+
+**The situation.** The label implementation is complete and its behaviour is right, and an adversarial
+review of it found the corpus wrong or silent in six places. This decision is the corpus half: it does
+not decide a behaviour the code does not have, except where §4 below says the delta is the directive —
+and it is a `spec_revision` bump on three specs rather than an edit to the code, because `AGENTS.md §3`
+says a spec is not edited so that the code fits it.
+
+**1. A name that fits more than one row of one scope step is `LABEL_AMBIGUOUS`.** Every verb that
+resolves a label **by name** reads its candidates in **one step** — the issue's team, the workspace, or
+`create_label`'s own level for a `parent` — and a step that matches **more than one row** is
+`Validation(rule='LABEL_AMBIGUOUS', field='ref', value=<the reference as typed>)`, never a silent pick.
+The refusal names the **spellings** it found, `details={"labels": ["Bug", "bug"], "rule":
+"LABEL_AMBIGUOUS", "field": "ref", "value": "bug"}`, in `name` ASC order; when the colliding rows sit in
+**different levels** instead (two teams, or a team and the workspace, which only a catalogue reference
+can see) the message and `details` keep the team keys (`details={"teams": [...]}`), and a set that holds
+both shapes carries both keys. A **ULID** never reaches the rule: it names one row.
+
+The set of verbs is `add_label`, `remove_label`, `create_issue` (the `-l/--label` path of
+`issue create`), `create_label`'s `parent`, and the four catalogue references `update_label`,
+`retire_label`, `restore_label` and `label_detail`. SPEC-040 §6 carries the cell in each of their rows and
+says why `list_labels` (no label reference at all), `update_issue` (no label field) and every ULID-only
+reference are outside it.
+
+**Why the universal was false, and what it cost.** R22 said the code "always means two teams and never one
+team twice", with the reason that `uq_label_team` and `uq_label_ws` "count retired rows too". They do — and
+they compare **binary**, while every resolution of a name compares case-insensitively. `Bug` and `bug` are
+two rows that both satisfy both indexes, so the premise of the universal was a property of the *index*
+("one name in one team") applied to a *name* whose equality the corpus defines as casefolded. Measured on
+a migrated database carrying that pair: `hifa issue label ENG-1 bug` attached **`Bug`**, the wrong row, and
+answered as if nothing had happened; `hifa label show bug` answered `LABEL_AMBIGUOUS` while naming **one**
+team, a message that described a condition the reader could not see. The schema cannot forbid what the
+rule allowed, because fixing it there is the migration §2 of this decision rejects — so the refusal lives
+where the guess was made.
+
+**Why the refusal names the spellings and the levels separately.** They are two different questions.
+Several spellings of one name inside one level is a **data defect** the user has to repair — one of the
+two rows must be renamed — and the only way to repair it is to know which rows exist, which is what
+`details.labels` is for. Several levels holding one name is a **choice** the caller can make: two teams'
+`Bug` is exactly what a catalogue-scoped reference cannot decide and what its `--team`-less surface
+already refused with the team keys. Collapsing the two into one message would have made the first
+condition look like the second, and `hifa label list --json --all` — the documented way to a ULID — would
+have been the only advice, for a case where a ULID is a workaround and not a fix.
+
+**2. A second spelling is refused at the write, and the refusal is a rule of the use case.** The window
+§1 describes is closed going forward: `create_label` refuses a `name` that a row of its **own level**
+carries in another case, and `update_label` refuses a rename onto one, both as
+`Conflict(rule='UNIQUE_LABEL_NAME', field='name')` — the code the exact repeat already answers with —
+compared case-insensitively over the rows with the same `workspace_id` and the same `team_id`, **retired
+rows included**, because the indexes count them and a spelling freed by a retire is not free. A rename
+that changes only the row's **own** case (`Bug` → `BUG`) is allowed: the row is not a second spelling of
+itself, and refusing it would make a cosmetic fix take two renames. A case variant at **another** level
+is a second label and no conflict — a team `bug` beside a workspace `Bug` is the shape §1's resolution is
+built on.
+
+**Why not the index.** `name` carries no collation, so both partial unique indexes compare binary and
+`Bug`/`bug` pass them; the rule as an index is `COLLATE NOCASE` inside `uq_label_team` and `uq_label_ws`,
+and an applied migration is never rewritten (SPEC-010 R5.4; D-006: the checksum aborts it). That is a
+schema migration plus a rebuild of every `label` table, for a refusal that one read of the level decides
+in the transaction that already holds the row. The index keeps the exact repeat and stays the safety net;
+the use case owns the spelling. The corpus pays for the choice in one place: `UNIQUE_LABEL_NAME` now has
+two producers — the adapter's `DUPLICATE_LABEL` and the use case's own comparison — and SPEC-040 §6 says
+so in the row rather than leaving a reader to infer that the code means the index fired.
+
+**3. Every writer of the table obeys 2, and `init` is a writer of it.** `create_label`, `update_label`,
+`add_label`'s `create_if_missing` (which cannot write a second spelling at all, because a name that
+resolves at either level is used and nothing is created) and `hifa init`'s seed — plus `hifa import`,
+whose own rule already resolves names casefolded (SPEC-080 R10). The seed was the one that did not:
+`teams.bootstrap` looked its four names up **exactly**, so an `init` run after a legal rename (`Bug` →
+`bug`) wrote `Bug` back beside `bug`, and the database the corpus promised could not exist was produced by
+the command the corpus tells a user to run first. SPEC-100 R11bis is the rule: the step resolves
+case-insensitively over `team_id IS NULL`, and a case variant is **skipped** — the row keeps its spelling,
+the entry joins `skipped` under the seed's own string (`label:Bug`), and `created` stays empty on a second
+run. **Why skipped and not refused:** a database whose labels are legal must not make `init` fail, the
+exit set `0,2,4` of §2.7 has no row for it, and skipping is the same shape every other step of R11 has —
+which is what keeps `init` idempotent.
+
+**4. `issue create -l` resolves the way `issue label` does, and the corpus now says it in one place.**
+SPEC-050 §2.5 already called a label name case-insensitive "resolved in the command's team and then in the
+workspace", while the build resolved `-l/--label` with an exact lookup and `issue label` case-insensitively:
+one name, two behaviours, and the two verbs disagreed about `-l BUG` on a team carrying `bug`. The three
+paths that attach or detach a label by name — `issue create -l`, `issue label`, `issue unlabel` — now
+share one rule (§2.5's conventions, stated once and referenced from the three rows): ULID first, else a
+case-insensitive match in the **issue's team** and then in the workspace, and the refusal of §1 when the
+level that answered holds two spellings. This is the one part of this decision the implementation PR
+lands **after** this one: the spec is the directive, and the PR that follows makes `-l` obey it.
+
+**5. The `replaced` of an invocation with several names is the last replacement performed.** `issue label`
+is N `AddLabel` calls, one transaction each (R18/GAP-05), and each can replace a `singleSelect` sibling
+while the envelope has room for one. `replaced` is the **last non-null** `AddLabelResult.replaced` of the
+call — `issue label ENG-1 high low` on an issue wearing `Medium` of `Severity` performs two replacements
+and answers `Low` — and `null` means no label of the call replaced anything, which with one name is
+exactly "that label replaced nothing". The reason is the count: each label is its own transaction and the
+printed `issue` is the row after the final write, so the envelope describes the state the caller is left
+with and not the history of the call. The alternative — buffering the first replacement, or the union of
+all of them under a list — was rejected: a list would break the one shape D-061 fixed for both label
+verbs, and a first-wins rule would describe a state the issue is no longer in.
+
+**6. §5.6's "no clock read" was unsatisfiable, and the sentence is restated.** `remove_label`'s detach
+bullet said "one row ⇒ `('label', <name>, NULL)` and no clock read". A history row cannot be written
+without a `now`: `HistoryRepo.record(…, *, now: datetime)` has no default (SPEC-030 §2.5, unchanged from
+base), so a use case that records the detach *must* read the clock — and the implementation does. What the
+sentence meant, and now says, is that the **DELETE stamps no timestamp**: `issue_label` is the pair and
+nothing else (SPEC-010 §3), unlike `trash_issue`, which moves `updated_at` on the issue it parks. The
+no-op guard's "no write, no clock" is a different sentence about a different path — it returns before the
+clock — and it stands, because it is satisfiable.
+
+**What it does not change.** No signature, no dataclass field, no command, no flag and no exit set of the
+three edges: every number they publish is the one they published, and the only additions are refusals
+inside existing buckets (`Validation` → exit 2 / `422`). The schema does not move: SPEC-010's two partial
+unique indexes, their binary comparison and D-010 stand, and no migration is written. `LABEL_AMBIGUOUS`
+keeps its class, its code, its exit and its HTTP status; `field='ref'` stays the field of every one of its
+sites, `create_label`'s parent included, `parent` being the field the **group** refusals carry. The
+catalogue resolution — whole workspace, `include_retired=True` — is unchanged, and so is `list_labels`'
+display rule. `issue list --label` keeps the scope §2.5 gave it and is not decided here: it is a filter
+over a set, not a reference, and no refusal is published for it (see the paragraph below). The
+`.feature` corpus stays at 17 files and 240 scenarios, and no checkbox of any task moves.
+
+**The one thing this decision leaves open, and says so.** `issue list --label` resolves a name in the
+command's team and then in the workspace (SPEC-050 §2.5, D-061(f)) and, with two spellings present in that
+team, has no published behaviour: it selects a set, and §1's refusal is written for a reference that
+picks one row. No behaviour for it is stated in the corpus — §2.5.3.1 declares the scope and stops there
+— and this delta does not invent one: a refusal on a filter would be a seventh change, and the six above
+are the ones review measured. It is named here so that the next revision of the label surface finds it,
+and it is not fixed silently in a docs-only commit.
+
+**Verification.** SPEC-040 §7's four new scenarios (two spellings inside one team refused by `add_label`,
+`remove_label` and `label_detail`; the case-variant refusal of `create_label` and of a rename, with the
+row's own case allowed; a case variant at another level read as a second label; an ambiguous `parent`),
+plus REQ-F040-38's count going to nine; SPEC-050 §7's four (the `-l` path resolving like `issue label`;
+the three attach paths refusing; `label add` refusing a second spelling and `label update` changing its own
+case; the two-name `replaced` reporting `Low`); SPEC-100 §7's one (a seeded `Bug` renamed to `bug`, then
+`init --force` writing nothing). The measured inputs behind §1 are the migrated database with the
+`Bug`/`bug` pair, on which `hifa issue label ENG-1 bug` attached `Bug` and `hifa label show bug` answered
+`LABEL_AMBIGUOUS` naming one team; §4's two behaviours were measured on the same build (`-l` exact,
+`issue label` insensitive); and §3's `init` wrote `Bug` beside `bug` after the rename.
