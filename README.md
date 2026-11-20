@@ -39,6 +39,7 @@ ENG-1       H  Todo   –         Fix the SSO login redirect  Bug     2026-11-15
 - [What you get](#what-you-get)
 - [CLI surface](#cli-surface)
 - [Teams and workflow states](#teams-and-workflow-states)
+- [Search](#search)
 - [Dashboard](#dashboard)
 - [How it is built](#how-it-is-built)
 - [Design principles](#design-principles)
@@ -152,7 +153,7 @@ gap-free and never reused — not even after an issue is trashed.
 | **Optional dashboard** | board, list, issue detail, quick add, draggable columns. FastAPI + Jinja2 + htmx + Alpine, all vendored: offline, no Node, strict CSP |
 | **One-command bootstrap** | `hifa init` seeds workspace, team, states, labels and your local user. Idempotent |
 | **Yours to move** | one file. `cp`, `rsync`, `git`, or drop it on a USB stick. WAL mode so a read never blocks a write |
-| **Tested like a product** | 1625 collected tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
+| **Tested like a product** | 1776 collected tests, import contracts enforced by `lint-imports`, spec↔DDL drift checked in CI, signed commits |
 
 ## CLI surface
 
@@ -167,6 +168,8 @@ Shipped and covered by tests:
 | `hifa label add\|list\|show\|update\|archive` | the label catalogue: levels, groups, rename and a reversible retire |
 | `hifa issue label\|unlabel REF LABEL...` | the label chips of one issue; `--create` mints the label in the issue's team |
 | `hifa issue comment REF [BODY]` | one comment: `--body-file`, `--parent` to reply, `--quiet` prints its id |
+| `hifa search QUERY` | full-text search over the workspace: `fts` when the index answers, `like` when it cannot; `--count` fills `total` |
+| `hifa db reindex` | rebuild the full-text index in one transaction, on a file it probes first |
 | `hifa serve` | the dashboard |
 
 Exit codes are a contract, not a mood: `0` ok · `2` usage or validation · `3` not found ·
@@ -232,6 +235,38 @@ between the neighbours and delegates to the same use case the drag uses, so the 
 can never disagree. Deleting a state is deliberately not offered yet (D-035): what happens to the
 issues living in it is a product decision, not a formatting one.
 
+## Search
+
+One verb and one grammar. Everything narrows in the query itself — free words, `"a phrase"`,
+`prefix*`, `-negation` and `field:value` — so the flags only override what the text already said:
+
+```bash
+hifa search "login sso"                       # IDENTIFIER P STATE UPDATED TITLE MATCH
+hifa search "login -palette"                  # a negated term excludes, it does not require
+hifa search state:Todo priority:none          # filters alone are a search, not a refusal
+hifa search "deploy" --team ENG --sort updated --limit 20 --offset 40
+hifa search "login" --json                    # {hits, total, has_more, backend, took_ms}
+hifa db reindex                               # rebuild the index: the one repair it has
+```
+
+The filters are `team:`, `state:`, `assignee:` (`me` or `none`), `label:`, `priority:` (`none`,
+`urgent`, `high`, `medium`, `low` or `0`–`4`), `due:` (`none`, `overdue`, `today`, `week`, a date,
+`>DATE`, `<DATE`) and `is:` (`open`, `closed`, `archived`, `trashed`, `all`); a leading `-` negates
+any of them. A flag wins over the same filter written in the text, so
+`hifa search "deploy state:Done" --state "In Progress"` searches `In Progress`.
+
+The answer names the backend that produced it: `fts` when the index answered, `like` when the query
+carried no positive term or FTS5 refused the expression, `none` when there was no text at all.
+Diacritics fold, an operator is a literal word, and trashed and archived issues stay out unless
+`is:` asks for them. `--count` fills `total` with the whole filtered set — not the page — while
+`has_more` says whether another page exists. A query the component refuses (empty, longer than 512
+characters, more than 16 terms, or a term longer than 128) is exit `2` with its code, and the
+dashboard answers `422` with the same sentence instead of an empty page.
+
+`hifa db reindex` is the repair for the one thing that can drift from the rows: it recreates the
+index and its three triggers in a single transaction, so a failure leaves the previous index in
+place, and it refuses a file that is not a hifa database before it opens a writable connection.
+
 ## Dashboard
 
 ```bash
@@ -247,6 +282,7 @@ Dark, keyboard-driven, and it opens no socket to anywhere but `127.0.0.1`.
 | `GET /{team}/board` | board grouped by `workflow_state`; filters `state`, `assignee`, `label`, `cycle`, `project`, `q` |
 | `GET /{team}/list` | dense keyset table (`sort`, `cursor`, `offset`, `limit`), same filters |
 | `GET /{team}/issue/{identifier}` | full detail; a ULID or lowercase identifier answers `303` to the canonical URL. An archived or trashed issue answers `200` with `Restore` and nothing else |
+| `GET /search` | workspace search: `q` and the one `team` filter; a refused query answers `422` with the sentence and the query kept in the box |
 | `GET /_/issues?view=list\|board` | htmx fragment (requires `HX-Request: true`, else `400`) |
 | `GET /_/issues/{id}/row\|card\|panel` | one row, one card, or the detail panel |
 | `POST /_/issues` | quick add: `201` with the new `<tr>` and `HX-Trigger: issue-created` |
@@ -325,8 +361,8 @@ resulting conflicts are recorded instead of silently resolved.
 | | |
 |---|---|
 | **18** documents | [`specs/`](specs/) — one contract per component plus the vertical spec |
-| **101** Gherkin scenarios | executable acceptance criteria, [`specs/acceptance/`](specs/acceptance/) |
-| **39** decisions | [`specs/DECISIONS.md`](specs/DECISIONS.md) — who wins on a conflict, and why |
+| **240** Gherkin scenarios | executable acceptance criteria, [`specs/acceptance/`](specs/acceptance/) — 228 `Scenario` + 12 `Scenario Outline` |
+| **70** decisions | [`specs/DECISIONS.md`](specs/DECISIONS.md) — who wins on a conflict, and why |
 | **0** silent drifts | `scripts/spec_contract_check.py --all` compares the spec's DDL with `sqlite_master` in CI |
 
 | File | Contents |
@@ -353,7 +389,7 @@ git clone https://github.com/ginkelte/hifa && cd hifa
 uv sync --extra web --extra test
 
 ruff check . && ruff format --check .   # style
-pytest                                  # 1625 tests collected: unit, integration, e2e (CLI and web)
+pytest                                  # 1776 tests collected: unit, integration, e2e (CLI and web), perf
 lint-imports                            # the A1/A2 contracts
 python scripts/spec_contract_check.py --all   # spec ↔ code drift
 python scripts/check_edge_parity.py     # CLI vs web capability parity
@@ -478,10 +514,10 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 
 | | |
 |---|---|
-| Tests | **1625** collected by `pytest` (1624 passing, 1 skipped): unit, integration, e2e CLI and web |
-| Code | ~16.5k lines in `src/`, ~22.7k in `tests/` |
+| Tests | **1776** collected by `pytest` (1776 passing, 0 skipped): unit, integration, e2e CLI and web, plus one perf budget over 10 000 rows |
+| Code | ~18.5k lines in `src/` (18 502), ~25.4k in `tests/` (25 449), Python only |
 | Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 70 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
-| Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `serve` (board, list, detail, quick add, drag) |
+| Shipped | `init`, `issue create`, `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `search`, `db reindex`, `serve` (board, list, detail, search, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |
 
