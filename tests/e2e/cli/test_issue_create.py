@@ -217,6 +217,14 @@ def test_unknown_label_exits_2(initialized: SimpleNamespace) -> None:
     assert result.exit_code == 2
 
 
+def test_the_label_flag_is_case_insensitive(initialized: SimpleNamespace) -> None:
+    """`-l BUG` is `-l Bug`: `issue label` and `issue list -l` already answered it."""
+    result = run("issue", "create", "Shouting", "--label", "BUG", "--json")
+    assert result.exit_code == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert [label["name"] for label in payload["labels"]] == ["Bug"]
+
+
 def test_missing_database_exits_3(sandbox: SimpleNamespace) -> None:
     result = run("issue", "create", "No db")
     assert result.exit_code == 3

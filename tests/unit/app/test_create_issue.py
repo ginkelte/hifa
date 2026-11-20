@@ -26,6 +26,9 @@ NOW = FrozenClock().now()
 #: Milestone columns of `issue`, in order.
 _MILESTONES: tuple[str, ...] = ("started_at", "completed_at", "canceled_at")
 
+#: The "no team filter" sentinel of `LabelRepo.list`, which the fakes below mirror.
+_ALL = object()
+
 
 def _workspace() -> Workspace:
     return Workspace(id="WS", name="Hifa", url_key="hifa", created_at=NOW)
@@ -99,6 +102,8 @@ class _States:
 
 
 class _Labels:
+    """In-memory `LabelRepo`: `get`, `get_by_name` and the `list` the name resolution reads."""
+
     def __init__(self, labels: list[Label]) -> None:
         self._labels = labels
 
@@ -109,6 +114,20 @@ class _Labels:
         return next(
             (lbl for lbl in self._labels if lbl.name == name and lbl.team_id == team_id), None
         )
+
+    def list(
+        self, workspace_id: str, *, team_id: object = _ALL, include_retired: bool = False
+    ) -> list[Label]:
+        """`_ALL` = every label of the workspace, `None` = the workspace ones, str = a team's."""
+        if team_id is _ALL:
+            rows = list(self._labels)
+        elif team_id is None:
+            rows = [lbl for lbl in self._labels if lbl.team_id is None]
+        else:
+            rows = [lbl for lbl in self._labels if lbl.team_id == team_id]
+        if not include_retired:
+            rows = [lbl for lbl in rows if lbl.retired_at is None]
+        return sorted(rows, key=lambda lbl: lbl.name)
 
 
 class _Members:
