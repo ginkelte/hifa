@@ -1,8 +1,9 @@
 """`HistoryRepo.list_for_issue`: the read's window, its order and the rank a move wrote.
 
 The rule under test is the one the row itself carries: a `board_order` row is dropped when the
-history row immediately before it, by `id`, is a `state_id` row. Nothing here filters in Python —
-the assertion is about the rows the statement returns.
+history row the same issue wrote immediately before it, by `id`, is a `state_id` row **of the same
+instant** — one `record` batch, the move and the rank it wrote. Nothing here filters in Python — the
+assertion is about the rows the statement returns.
 """
 
 from __future__ import annotations
