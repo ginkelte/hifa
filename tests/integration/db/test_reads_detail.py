@@ -13,11 +13,18 @@ import pytest
 
 from helpers_world import World, make_issue
 from hifa.adapters.sqlite.connection import Database
-from hifa.adapters.sqlite.reads import DETAIL_INCLUDE, IssueDetail, issue_detail
+from hifa.adapters.sqlite.reads import (
+    DETAIL_INCLUDE,
+    IssueDetail,
+    ListFilters,
+    issue_detail,
+    list_view,
+)
 from hifa.app import boards
 from hifa.app.commands import Actor, ArchiveIssue
 from hifa.app.issues import archive_issue
-from hifa.domain.entities import Comment, Label
+from hifa.domain.entities import Comment, IssueRelation, Label
+from hifa.domain.enums import RelationType
 from hifa.domain.errors import NotFound, Validation
 
 #: Not statements of a read: the transaction boundary and the connection's own PRAGMAs.
@@ -311,3 +318,145 @@ def test_the_detail_states_leave_an_archived_state_out(world) -> None:
     assert names == ["Triage", "Backlog", "Todo", "In Progress", "Canceled", "Alfa", "Zulu"]
     assert "Done" not in names
     assert detail.states == tuple(listed)
+
+
+def test_the_header_carries_the_milestone_the_join_loads(world) -> None:
+    """The id and the name come from the same projection, so the key has a producer.
+
+    No v1 write stores a `milestone_id`, so the row is written by hand here: drop the join and
+    the id is still selected while the name is gone, which is the state the payload's `milestone`
+    key cannot be built from.
+    """
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        issue = make_issue(tx, world)
+        conn = tx.issues.connection  # type: ignore[attr-defined]
+        conn.execute(
+            "INSERT INTO project (id, workspace_id, team_id, name, created_at, updated_at)"
+            " VALUES ('proj-1', ?, ?, 'Q4 hardening', ?, ?)",
+            (world.workspace.id, world.team.id, now.isoformat(), now.isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO project_milestone (id, project_id, name) VALUES ('ms-1', 'proj-1', 'Beta')"
+        )
+        conn.execute("UPDATE issue SET milestone_id = 'ms-1' WHERE id = ?", (issue.id,))
+        assert issue.milestone_id is None
+
+    with world.uow.read() as tx:
+        detail = issue_detail(tx.issues.connection, "ENG-1")
+        page = list_view(tx.issues.connection, ListFilters(team_id=world.team.id, limit=10))
+
+    assert detail is not None
+    assert detail.issue.milestone_id == "ms-1"
+    assert detail.issue.milestone_name == "Beta"
+    assert page.items[0].milestone_id == "ms-1"
+    assert page.items[0].milestone_name == "Beta"
+
+
+def test_the_milestone_is_absent_from_a_row_that_carries_no_id(world) -> None:
+    """A row without the column answer `None` twice: the key is null, not an empty object."""
+    with world.uow.write() as tx:
+        make_issue(tx, world)
+
+    with world.uow.read() as tx:
+        detail = issue_detail(tx.issues.connection, "ENG-1")
+
+    assert detail is not None
+    assert detail.issue.milestone_id is None
+    assert detail.issue.milestone_name is None
+
+
+def test_a_trashed_child_is_absent_from_the_children(world) -> None:
+    """The listing of children carries the trash visibility of the listing it mirrors.
+
+    The stored pointer of the trashed child is read beside the answer, so the test pins the
+    predicate: without `i.trashed = 0` on that statement the row is a child again.
+    """
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        parent = make_issue(tx, world)
+        live = make_issue(tx, world, parent_id=parent.id)
+        gone = make_issue(tx, world, parent_id=parent.id)
+        tx.issues.trash(gone.id, now)
+
+    with world.uow.read() as tx:
+        stored = tx.issues.connection.execute(
+            "SELECT COUNT(*) FROM issue WHERE parent_id = ?", (parent.id,)
+        ).fetchone()
+        detail = issue_detail(tx.issues.connection, "ENG-1")
+
+    assert stored is not None and stored[0] == 2
+    assert detail is not None
+    assert [child.identifier for child in detail.children] == [live.identifier]
+
+
+def test_a_trashed_parent_answers_no_parent(world) -> None:
+    """The pointer resolves to nothing while the row still names it: absent, not reparented."""
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        parent = make_issue(tx, world)
+        make_issue(tx, world, parent_id=parent.id)
+
+    with world.uow.read() as tx:
+        assert issue_detail(tx.issues.connection, "ENG-2") is not None
+        before = issue_detail(tx.issues.connection, "ENG-2")
+
+    with world.uow.write() as tx:
+        tx.issues.trash(parent.id, now)
+
+    with world.uow.read() as tx:
+        after = issue_detail(tx.issues.connection, "ENG-2")
+        stored = tx.issues.connection.execute(
+            "SELECT parent_id FROM issue WHERE identifier = 'ENG-2'"
+        ).fetchone()
+
+    assert before is not None and before.parent is not None
+    assert before.parent.identifier == "ENG-1"
+    assert after is not None
+    assert after.parent is None
+    assert stored is not None and stored[0] == parent.id
+
+
+def test_a_trashed_far_end_is_absent_from_the_relations(world) -> None:
+    """One edge is stored and hidden; the other is stored and read. Both rows exist."""
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        asking = make_issue(tx, world)
+        live = make_issue(tx, world)
+        gone = make_issue(tx, world)
+        for other in (live, gone):
+            tx.issues.add_relation(
+                IssueRelation(
+                    id=world.idgen.new(),  # type: ignore[attr-defined]
+                    issue_id=asking.id,
+                    related_issue_id=other.id,
+                    type=RelationType.RELATED,
+                    created_at=now,
+                )
+            )
+        tx.issues.trash(gone.id, now)
+
+    with world.uow.read() as tx:
+        stored = tx.issues.connection.execute("SELECT COUNT(*) FROM issue_relation").fetchone()
+        detail = issue_detail(tx.issues.connection, "ENG-1")
+
+    assert stored is not None and stored[0] == 2
+    assert detail is not None
+    assert [far.identifier for _relation, far in detail.relations] == [live.identifier]
+
+
+def test_the_trash_predicates_do_not_follow_the_include_trashed_keyword(world) -> None:
+    """The keyword is about the issue the read returns, never about its neighbours."""
+    now = world.clock.now()  # type: ignore[attr-defined]
+    with world.uow.write() as tx:
+        asking = make_issue(tx, world)
+        gone = make_issue(tx, world, parent_id=asking.id)
+        tx.issues.trash(asking.id, now)
+        tx.issues.trash(gone.id, now)
+
+    with world.uow.read() as tx:
+        detail = issue_detail(tx.issues.connection, "ENG-1", include_trashed=True)
+
+    assert detail is not None
+    assert detail.trashed is True
+    assert detail.children == ()
