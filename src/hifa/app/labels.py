@@ -97,7 +97,7 @@ def _add_label_once(uow: UnitOfWork, cmd: AddLabel, actor: Actor) -> AddLabelRes
         issue = _require_issue(tx, cmd.issue)
         workspace_id = _workspace_id(tx)
 
-        label = _resolve_issue_label(tx.labels, workspace_id, issue.team_id, cmd.label)
+        label = _resolve_issue_label(tx.labels, tx.teams, workspace_id, issue.team_id, cmd.label)
         if label is None and cmd.create_if_missing:
             label = _insert_label(
                 tx.labels,
@@ -159,7 +159,7 @@ def _remove_label_once(uow: UnitOfWork, cmd: RemoveLabel, actor: Actor) -> Issue
     with uow.write() as tx:
         issue = _require_issue(tx, cmd.issue)
         workspace_id = _workspace_id(tx)
-        label = _resolve_issue_label(tx.labels, workspace_id, issue.team_id, cmd.label)
+        label = _resolve_issue_label(tx.labels, tx.teams, workspace_id, issue.team_id, cmd.label)
         if label is None:
             raise NotFound(resource="label", key=cmd.label)
         if label.id not in tx.issues.label_ids(issue.id):
@@ -397,7 +397,7 @@ def _read_team(conn: sqlite3.Connection, ref: str) -> Team:
 
 
 def _resolve_issue_label(
-    labels: LabelRepo, workspace_id: str, team_id: str, ref: str
+    labels: LabelRepo, teams: TeamRepo, workspace_id: str, team_id: str, ref: str
 ) -> Label | None:
     """ULID, else the name in the issue's team, else the name in the workspace.
 
@@ -421,7 +421,7 @@ def _resolve_issue_label(
             if row.name.casefold() == wanted
         ]
         if len(matches) > 1:
-            raise _ambiguous_spellings(ref, matches)
+            raise _ambiguous_spellings(ref, matches, teams)
         if matches:
             return matches[0]
     return None
@@ -450,7 +450,7 @@ def _resolve_catalogue_label(
         raise NotFound(resource="label", key=ref)
     if len(matches) > 1:
         if any(count > 1 for count in Counter(row.team_id for row in matches).values()):
-            raise _ambiguous_spellings(ref, matches)
+            raise _ambiguous_spellings(ref, matches, teams)
         raise _ambiguous_teams(ref, matches, teams)
     return matches[0]
 
@@ -552,26 +552,51 @@ def _label_not_found(ref: str) -> Validation:
     )
 
 
-def _ambiguous_spellings(ref: str, matches: list[Label]) -> Validation:
-    """The refusal of a name that one level carries in more than one spelling.
+def _ambiguous_spellings(ref: str, matches: list[Label], teams: TeamRepo) -> Validation:
+    """The refusal of a name one level carries in more than one spelling.
 
     The uniqueness of the table is case-sensitive, so `Bug` and `bug` are two rows it accepts and
     one name to a reader. The message spells both out: a team key would name the level twice and
-    explain nothing.
+    explain nothing. A set that reaches past one level carries its levels too — the spellings alone
+    tell a reader that the name is undecidable and leave out every row of the other levels and every
+    key a narrower reference could use.
     """
     names = sorted({row.name for row in matches})
+    message = f"label {ref} is ambiguous: {', '.join(repr(name) for name in names)}"
+    details: dict[str, object] = {"labels": names}
+    levels = _levels(matches, teams)
+    if len(levels) > 1:
+        details["teams"] = levels
+        message = f"{message} — it exists in {', '.join(levels)}"
     return Validation(
-        f"label {ref} is ambiguous: {', '.join(repr(name) for name in names)}",
+        message,
         rule="LABEL_AMBIGUOUS",
         field="ref",
         value=ref,
-        details={"labels": names},
+        details=details,
         code="LABEL_AMBIGUOUS",
     )
 
 
 def _ambiguous_teams(ref: str, matches: list[Label], teams: TeamRepo) -> Validation:
     """The refusal of a name more than one level carries, spelled by the keys that narrow it."""
+    keys = _levels(matches, teams)
+    return Validation(
+        f"label {ref} is ambiguous: it exists in {', '.join(keys)}",
+        rule="LABEL_AMBIGUOUS",
+        field="ref",
+        value=ref,
+        details={"teams": keys},
+        code="LABEL_AMBIGUOUS",
+    )
+
+
+def _levels(matches: list[Label], teams: TeamRepo) -> list[str]:
+    """The levels a match set reaches: sorted team keys, then `the workspace` when it is one.
+
+    A level is what narrows a reference, so it is spelled the way a reference spells it: a team's
+    key, and the workspace for `team_id IS NULL`.
+    """
     keys = sorted(
         {
             team.key
@@ -581,14 +606,7 @@ def _ambiguous_teams(ref: str, matches: list[Label], teams: TeamRepo) -> Validat
     )
     if any(row.team_id is None for row in matches):
         keys.append("the workspace")
-    return Validation(
-        f"label {ref} is ambiguous: it exists in {', '.join(keys)}",
-        rule="LABEL_AMBIGUOUS",
-        field="ref",
-        value=ref,
-        details={"teams": keys},
-        code="LABEL_AMBIGUOUS",
-    )
+    return keys
 
 
 def case_variant_at_level(
