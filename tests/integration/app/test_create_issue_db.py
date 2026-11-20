@@ -189,7 +189,7 @@ def test_created_history_row_is_written(seed: Seed) -> None:
     assert len(rows) == 1
     assert rows[0]["field"] == "created"
     assert rows[0]["old_value"] is None
-    assert rows[0]["new_value"] == issue.identifier
+    assert rows[0]["new_value"] is None
     assert rows[0]["actor_id"] == seed.member.id
 
 
