@@ -3,8 +3,8 @@ id: SPEC-030
 title: SQLite adapter
 component: persistence
 status: review
-version: 2
-spec_revision: 12
+version: 3
+spec_revision: 13
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -16,7 +16,7 @@ implements:
 acceptance: specs/acceptance/030-sqlite-adapter.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-17
+updated: 2026-11-20
 ---
 
 # SPEC-030 — SQLite adapter
@@ -57,7 +57,7 @@ that feed the CLI, the API and the dashboard (board, list, detail, agenda).
 |---|---|---|---|
 | `Clock`, `IdGen` | `ports` (`src/hifa/ports.py`) | Protocols | yes |
 | `SystemClock`, `UlidGen` | `adapters.clock` / `adapters.idgen` | classes | yes |
-| `connect`, `Database`, `PRAGMAS`, `is_migrated` | `connection` | functions / class | yes |
+| `connect`, `Database`, `PRAGMAS`, `is_migrated`, `FTS5_ENABLED_SQL`, `require_fts5` | `connection` | functions / class / constants | yes |
 | `UnitOfWork`, `Repos`, `RetryPolicy`, `UNSET`, `Unset` | `uow` | classes / sentinel | yes |
 | `migrate`, `current_version`, `pending_migrations`, `backup_database`, `MigrationResult` | `migrate` | functions / dataclass | yes |
 | `TeamRepo`, `IssueRepo`, `LabelRepo`, `ProjectRepo`, `CycleRepo`, `CommentRepo`, `HistoryRepo` | `*_repo` | classes | yes |
@@ -95,6 +95,20 @@ def is_migrated(conn: sqlite3.Connection, *, expected: int) -> bool:
     """PRAGMA user_version == expected and the issue table exists."""
 
 
+FTS5_ENABLED_SQL: str = "SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'"
+
+
+def require_fts5(conn: sqlite3.Connection) -> None:
+    """Raise Fts5Unavailable when this connection's SQLite has no FTS5 module.
+
+    One statement, `FTS5_ENABLED_SQL`, over the `pragma_compile_options` table-valued function
+    (SQLite ≥ 3.16, and the corpus requires ≥ 3.35 for RETURNING): no `PRAGMA` is executed whose
+    output a caller could read twice, no virtual table is created to find out, and the check works
+    on a read-only connection. `Fts5Unavailable(code='fts5_unavailable')` is the only error it
+    raises; exit 6 and HTTP 500 (§6).
+    """
+
+
 class Database:
     """Connection factory for a path. It keeps no pool and no open connection."""
 
@@ -116,6 +130,16 @@ class Database:
 | `temp_store` | `MEMORY` | the `ORDER BY`s of the read models do not touch disk. |
 | `cache_size` | `-8000` | 8 MiB of page cache per connection; it fits in the RSS budget of REQ-N001. |
 | `row_factory` | `sqlite3.Row` | column-name access, no magic indexes. |
+
+**`require_fts5` runs in exactly two places, and `connect` is not one of them.** The check is
+`FTS5_ENABLED_SQL`, one `SELECT` over `pragma_compile_options`: it executes **before the first `BEGIN` of
+a migration set** (`migrate()`, when `pending_migrations()` is non-empty — `001_init.sql` creates the
+`issue_fts` virtual table, and a build without the module would otherwise fail inside the transaction with
+`no such module: fts5`) and as the **first statement of `reindex(conn)`** (SPEC-100 R21), which is the one
+command whose whole job is to write the index. It is deliberately **not** in `connect()`: a database
+whose index cannot be read is still searchable through the `like` path (SPEC-090 R14), so a connection
+that refused to open would take the rows away from the reader as well. `Fts5Unavailable` is the single
+producer of `fts5_unavailable` (D-065), and no other module raises that code.
 
 ### 2.2 `uow.py`
 
@@ -270,6 +294,11 @@ Migrator rules:
   table nor version remain.
 - `do_backup=True` and a non-empty `pending_migrations()` ⇒ the backup happens **before** the first
   `BEGIN`. If the backup fails, the database is not touched (fail closed).
+- `require_fts5(conn)` runs **before the backup and before the first `BEGIN`**, and only when
+  `pending_migrations()` is non-empty: the v1 schema creates the `issue_fts` virtual table (SPEC-010 §3.4),
+  so a build whose SQLite carries no `ENABLE_FTS5` cannot apply it. Failing there gives one named error
+  (`Fts5Unavailable`, `fts5_unavailable`, exit 6) instead of `no such module: fts5` escaping from inside a
+  transaction, and it leaves the database untouched.
 - Database already up to date ⇒ `MigrationResult(from=n, to=n, applied=(), backup_path=None)` and zero writes.
 - The migrator opens its own connection in write mode (`connect(path)`) and closes it in `finally`.
 - `migrate()` is not called on its own: `hifa db migrate` (SPEC-050) or `hifa init` (SPEC-100) invoke it.
@@ -1377,6 +1406,7 @@ logical: `trashed = 1` / `archived_at = <ts>` / `retired_at = <ts>` (rule R11).
 | **REQ-F030-20** | `HistoryRepo.record` inserts all the changes of a use case with a single `executemany` |
 | **REQ-F030-21** | No adapter operation executes `DELETE FROM issue`; `trash`/`archive` are UPDATEs |
 | **REQ-F030-22** | The repos return validated domain entities (`Issue`, `Team`, …) and `None`, never `sqlite3.Row` nor tuples |
+| **REQ-F030-23** | `require_fts5(conn)` answers from `FTS5_ENABLED_SQL` alone — one `SELECT` over `pragma_compile_options` — raises `Fts5Unavailable(code='fts5_unavailable')` when the module is absent, is called by `migrate()` before the first `BEGIN` and by `reindex` as its first statement, and is **not** called by `connect()` (§2.1, D-065) |
 
 ### 4.3 Non-functional requirements (REQ-N)
 
@@ -1473,6 +1503,7 @@ deadlock.
 1. conn = connect(db_path)                       # PRAGMAs, WAL
 2. v0 = current_version(conn)                    # PRAGMA user_version
 3. files = pending_migrations(conn)              # 0 if up to date -> return (no backup)
+3a. if files: require_fts5(conn)                 # no ENABLE_FTS5 -> Fts5Unavailable, nothing written
 4. backup_database(db_path, now=clock.now())     # sqlite3 backup API + verification
 5. for f in files:                               # numeric order
      BEGIN IMMEDIATE
@@ -1545,6 +1576,13 @@ Mapping rules:
   work; the CLI distinguishes it by `code`, not by class.
 - Domain errors that already come from the repos (`NotFound`, `Conflict`, `Validation`) are **not**
   re-wrapped.
+- **`Fts5Unavailable` is raised, not translated.** It is not a `sqlite3.Error` mapping: no message of the
+  driver produces it. Its one producer is `require_fts5` (§2.1), which reads `FTS5_ENABLED_SQL` and raises
+  `Fts5Unavailable(code='fts5_unavailable')` when the connection's SQLite carries no `ENABLE_FTS5`; exit
+  `6` and HTTP `500`, the internal class of D-014, because the binary is what is missing and nothing the
+  user typed caused it. The two commands that call it are declared where they run: `migrate()` (§2.3,
+  §5.1 step 3a) and `reindex(conn)` (SPEC-100 R21). SPEC-050 §6 publishes the code and composes no
+  sentence for it; D-065 records the producer.
 
 ## 7. Acceptance Criteria
 
@@ -1562,6 +1600,18 @@ Feature: SQLite adapter
     And PRAGMA synchronous returns 1
     And connection.row_factory is sqlite3.Row
     And connection.isolation_level is None
+
+  @REQ-F030-23
+  Scenario: the FTS5 module check passes on a build that has the module
+    Given a connection to a migrated database
+    When require_fts5(conn) is run
+    Then no exception is raised
+    And connect() itself never runs the check
+
+  Scenario: a build without FTS5 is refused by name, before it writes anything
+    Given a connection whose FTS5_ENABLED_SQL returns no row
+    When require_fts5(conn) is run
+    Then Fts5Unavailable is raised with code "fts5_unavailable"
 
   @REQ-F030-02
   Scenario: a read-only connection rejects writes
@@ -1821,8 +1871,11 @@ Feature: SQLite adapter
 
 - The DDL contents, the indexes, the views and the version policy (SPEC-010).
 - Business rules and semantic validations (SPEC-020 / SPEC-040).
-- FTS5 search and its triggers (SPEC-090): the adapter only exposes the `issue_fts` table as
-  existing.
+- FTS5 **search** and its triggers (SPEC-090): the adapter only exposes the `issue_fts` table as
+  existing, and the query, the ranking and the snippet are not its business. The one FTS5 question this
+  layer does answer is whether the module is compiled into the binary (`require_fts5`, §2.1), and it
+  answers it for the two callers that cannot work without the module — the migration that creates the
+  virtual table and `hifa db reindex` (SPEC-100 R21).
 - CSV/JSON import/export (SPEC-080).
 - Replication, device synchronization, encryption at rest, scheduled backups.
 - Connection pool, ORM, query builder, "down" migrations.
@@ -1831,6 +1884,22 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 13 (2026-11-20): **`fts5_unavailable` gets the one producer it was missing (HIFA-7 review
+  round, D-065).** SPEC-050 §6 and SPEC-100 R21 published the code and sent the reader here for the check,
+  and this document declared neither the class nor the test — §10 said the adapter "only exposes the
+  `issue_fts` table as existing". `version` 2 → 3, because §2 gains a function: `require_fts5(conn)`, over
+  the constant `FTS5_ENABLED_SQL` — `SELECT 1 FROM pragma_compile_options WHERE compile_options =
+  'ENABLE_FTS5'`, one statement, no `PRAGMA` read twice and no virtual table created to find out — which
+  raises `Fts5Unavailable(code='fts5_unavailable')` (§6) when the connection's SQLite carries no FTS5.
+  §2.1 declares **where it runs and where it does not**: before the first `BEGIN` of a non-empty migration
+  set (the schema creates a virtual table, so a build without the module would fail inside the
+  transaction) and as `reindex(conn)`'s first statement; **not** in `connect()`, because a database whose
+  index cannot be read is still searchable through the `like` path of SPEC-090 R14, and a connection that
+  refused to open would take the rows away too. §5.1 gains the step, §6 gains the paragraph that says the
+  error is *raised* and not translated (its cause is the binary, not a driver message), §10 stops denying
+  the layer knows anything about FTS5 while keeping the search itself out of it, and §7 gains two
+  scenarios and REQ-F030-23. No other signature, statement or count moves; §7 goes 23 → **25** inline
+  scenarios.
 - spec_revision 12 (2026-11-17): **the read carries the trash as a keyword, and the spec that owns the
   read says so (D-059).** `issue_detail` gains `include_trashed: bool = False` — keyword-only, defaulted,
   additive (§2.6) — and SQL-7 row 1's `WHERE` becomes `… AND (:include_trashed = 1 OR i.trashed = 0)`

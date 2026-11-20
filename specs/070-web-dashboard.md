@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 6
-spec_revision: 26
+version: 7
+spec_revision: 27
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -86,8 +86,9 @@ not the search grammar of SPEC-090: no `field:value`, no negation, no ranking, n
 comment matching. Workspace search is `GET /search` (and `/_/palette`), which is **a different route
 with a different contract** (SPEC-090 §2). An empty or blank `q` means "no filter" and never a `400`
 here; `/search` does not answer `400` for an empty `q` either — it renders its empty state (§2.1.8,
-D-063), and the only `400`s of this layer are the `/_/` family without `HX-Request` (R5) and the
-cross-site write guard (R28).
+D-063), and the only `400` of this layer is the `/_/` family without `HX-Request` (R5). The cross-site
+write guard answers **`403`** (R28, §6), not `400`, and the two are different refusals: a missing header is
+a malformed client, an origin from elsewhere is a refused one.
 
 #### 2.1.2 Forms (full page, they work without JS)
 
@@ -268,7 +269,7 @@ from SPEC-040 §2.2, with that spec's signature and without its own adapters. Th
 | `GET /{team}/issue/{identifier}` | `app.boards.issue_detail(db, ref, include=app.boards.DETAIL_INCLUDE, include_trashed=True)` | `NotFound(issue)` ⇒ `404`, **except** for an issue the trash holds, which the keyword returns so the page can render it with `Restore` alone (§2.1.1, D-059); the constant is declared in SPEC-040 §2.2 (D-027) |
 | `…/panel` | `app.boards.issue_detail(db, ref, include=app.boards.DETAIL_INCLUDE, include_trashed=True)` | the panel renders the comments, so it pays for them: one extra read in an explicit user action, never in a board render (D-029); the same keyword, so the panel of a trashed issue is `200` too (`Restore` alone, §2.1.1, D-059) |
 | `/_/issues/{id}/row` | `app.boards.issue_detail(db, ref)` | empty `include`: only the base `IssueDetail` — the constant is deliberately **not** the default (D-027) — and **no** `include_trashed`, so a trashed identifier is `404` here while its page answers `200` (§2.1.1, D-059) |
-| `GET /search`, `GET /_/palette` | `app.search.parse_query(q)` + `app.search.search_issues(db, query)` (SPEC-090 §2.3) | the web layer does **not** declare its own search flags or envelope (D-016, D-064); `/search` passes `count=False` and renders the four states of §2.1.8 |
+| `GET /search`, `GET /_/palette` | the `SearchQuery` composed from `app.search.parse_query(q)` + the route's parameters, then `app.search.search_issues(db, query, now=…)` (SPEC-090 §2.3) | the web layer does **not** declare its own search flags or envelope (D-016, D-064); `/search` passes `count=False` and the `now` its read model already uses (§2.3.5), and renders the four states of §2.1.8 |
 | `GET /` and the sidebar of **every** page | `app.teams.list_teams(db)` | called per request, never once in `create_app` nor memoized on `app.state` (R23, D-030): the CLI is a second writer to the same file. The team counts come from `v_team_progress`, not from a query written here |
 | `POST …/move`, `POST /_/issues/{id}/move` | `app.issues.move_issue(uow, MoveIssue(issue=ref, target_state=..., position=..., before_id=..., after_id=...), Actor(..., source="web"))` | §2.6.4 |
 | `POST …/move` in the same state | `app.issues.reorder_issue(uow, ReorderIssue(issue=ref, before=..., after=..., scope="board"), Actor(...))` | the rebalance is decided by the server (R10) |
@@ -415,7 +416,7 @@ declares nothing of its own beyond the render model of §2.3.5 (D-016):
 |---|---|
 | Route | `GET /search` — a **page** (R1): no `/_/` prefix, no `HX-Request` guard, no htmx attribute, no `hx-get` anywhere on it |
 | Query | `q` (optional, the raw text of SPEC-090 §2.3 — free text, `"phrase"`, `prefix*`, `field:value`, `-term`) and `team` (optional; the `team:KEY` filter, and **the only filter this page exposes as a parameter**). Both travel in the query string, never in a body and never in a cookie (R21) |
-| Use case | `app.search.parse_query(q)` + `app.search.search_issues(db, query)` with `count=False` (§2.1.4), one call per request |
+| Use case | `app.search.parse_query(q)` + the `team` parameter composed into a `SearchQuery` (§2.1.4), then `app.search.search_issues(db, query, now=…)` with `count=False` and the `now` of §2.3.5 — one call per request |
 | Template | `search.html`, extending `base.html` (blocks `title`, `content` only) |
 | Model | `search_vm` of §2.3.5, complete in every state (R3) |
 | Sidebar | the `Search` entry **stays**, on every page, and points at `/search` with no query — which is why that URL answers `200`. On this page it is marked active (`page.is_search`, §2.3.1) |
@@ -438,7 +439,8 @@ declares nothing of its own beyond the render model of §2.3.5 (D-016):
   picks no class (R2).
 - `422` is the code for every refusal of the query, and the page never answers `400` for a malformed
   `q`: a query SPEC-090 cannot read is a refusal of the input, and `422` is what the rest of this layer
-  uses for one (§6). The `400` of the `/_/` family (R5) and of the write guard (R28) is untouched.
+  uses for one (§6). The `400` of the `/_/` family (R5) is untouched, and so is the write guard of R28 —
+  which answers `403`, and is not a `400` of this layer at all.
 - **The `q` never reaches SQL and never reaches the page as a value of its own**: it is escaped by Jinja
   in the input's `value`, and the hits come from the use case. `vm.q` is the raw string; the template
   escapes it because it is user text.
@@ -523,6 +525,17 @@ src/hifa/web/templates/
 
 `base.html` defines exactly these blocks: `title`, `head`, `content`, `panel`, `scripts`.
 A child template **cannot** inject `<script>` (forbidden by CSP, R14).
+
+**The sidebar's view links carry `side-link`, and the active one also carries `is-active`.** These are the
+two class names §2.1.8's page and its §7 scenario depend on, and neither was declared anywhere. The three
+view links of `partials/sidebar.html` are
+`<a class="side-link{% if page.is_board %} is-active{% endif %}" href="/{team}/board">Board</a>`, the same
+for List over `is_list`, and `<a class="side-link{% if page.is_search %} is-active{% endif %}"
+href="/search">Search</a>` over `is_search` — the three flags §2.3.1 declares. `is-active` is appended to
+**exactly one** of the three on any page (or to none, on the detail page and in the picker, where all three
+flags are `False`), which is why the pair reads as one string in the markup and in §7's assertion. Nothing
+else marks the active view: no `aria-current`, no `data-*`, and the template compares no `nav` value —
+the flags are that comparison, made once, in the read model.
 
 ### 2.3 Read models
 
@@ -828,8 +841,14 @@ them in every state (R3):
 | `"empty"` | `search the workspace` | `"empty"` | `True` | `[]` | `0` |
 | `"results"` | `None` | `None` | `False` | the hits | `len(hits)` |
 | `"no_results"` | `nothing matches '<q>'` — the query as the reader typed it, escaped once | `"empty"` | `False` | `[]` | `0` |
-| `"error"` | the §6 sentence (`invalid value: <domain message>`), never a sentence built here | `"error"` | `False` | `[]` | `0` |
+| `"error"` | `refusal_sentence(refusal)` — the builder's identifier-less arm, `invalid value: <SPEC-090 §6 message>` (§6) | `"error"` | `False` | `[]` | `0` |
 
+- **The error state's sentence is built, not written.** `build_search_vm` receives the `SearchError` of
+  SPEC-090 §6 the route caught and asks the one builder of §6 for its text:
+  `refusal_sentence(refusal)` with **no** `verb` and **no** `identifier`, which is the arm that exists for
+  a refusal about the request itself rather than about a row. The read model stores the result in
+  `message`; the template prints it like any other. No branch of the route, no handler and no template
+  composes one (§2.3.7, R2).
 - `snippet_html` is the **only** HTML of a hit: `build_search_vm` splits SPEC-090's snippet on
   `MARK_START`/`MARK_END`, escapes each piece and rejoins it around the literal `<mark>`/`</mark>`
   (R17). `title`, `identifier`, `state_name` and the labels are plain text the template escapes.
@@ -1874,7 +1893,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R18** | **Read-only is visible.** With `can_write=False` no write `<form>` and no drag control are rendered; only reading remains. A `POST` in that mode ⇒ `403`, with `error.html` from a page route and `partials/fragment_error.html` from a `/_/` route. → **REQ-F070-04** |
 | **R19** | **Palette in two phases.** With an empty `q` the server responds with **actions only** and does not query the database; with a non-empty `q` it adds up to 8 issues. The list is a `<ul role="listbox">` with `aria-activedescendant`; `Enter` navigates with `location.assign` (not `hx-get`) so the URL stays in the history. → **REQ-F070-07** |
 | **R20** | **Shortcuts with a focus guard.** `j/k/c///Esc` are ignored if `event.target` is `input`, `textarea`, `select` or `[contenteditable]` (except `Esc` and `Cmd+Enter`). `j`/`k` move **real focus** (`tabindex="-1"` + `:focus-visible`), not a class, and survive an htmx swap. → **REQ-F070-08** |
-| **R21** | **Search with state in the URL, and a page that never answers `400`.** `/search?q=` is a full page and `GET /_/palette` is the fragment of the same query; both use `parse_query` + `search_issues` (SPEC-090 §2.3, D-016, D-064). `q` travels in the query string, never in the body nor in a cookie. The page has exactly four states and no fifth (§2.1.8, D-063): **empty** (`200`, no `q`, the use case is not called), **results** (`200`), **no results** (`200`, `hits=[]` from a valid query) and **error** (`422`, a query SPEC-090 §6 refuses, re-rendered with the sentence and the query kept). It answers `400` for none of them: a missing query is the empty state and a malformed one is a validation. → **REQ-F070-11** |
+| **R21** | **Search with state in the URL, and a page that never answers `400`.** `/search?q=` is a full page and `GET /_/palette` is the fragment of the same query; both compose the `SearchQuery` from `parse_query(q)` + their parameters and call `search_issues(db, query, now=…)` (SPEC-090 §2.3, D-016, D-064) — `now` is the instant this layer's clock read, the same one `updated_label` uses. `q` travels in the query string, never in the body nor in a cookie. The page has exactly four states and no fifth (§2.1.8, D-063): **empty** (`200`, no `q`, the use case is not called), **results** (`200`), **no results** (`200`, `hits=[]` from a valid query) and **error** (`422`, a query SPEC-090 §6 refuses, re-rendered with `refusal_sentence(refusal)` and the query kept). It answers `400` for none of them: a missing query is the empty state and a malformed one is a validation. → **REQ-F070-11** |
 | **R22** | **Keyset HTML pagination (D-011).** `limit` 1-200 default 50; cursor = opaque `base64url(sort_key + "\|" + issue.id)` generated by `encode_cursor` (SPEC-030 §2.6); `has_more` comes from requesting `limit + 1` (never `COUNT(*)`); `next_url` carries `cursor`. There is no `?page=N`. `offset` (0-500) exists **only** for `list.html` infinite scroll, is mutually exclusive with `cursor`, and its cap does not come from this spec. Invalid `sort`, `cursor` or `offset`, or `cursor` + `offset` together ⇒ `422` with `error.html`. → **REQ-F070-12** |
 | **R23** | **The sidebar is a per-request read.** `page["teams"]` is built from the database on every request that renders a page; it is never captured once in `create_app`, never stored on `app.state` and never memoized for the life of the process. The CLI is the **other writer** of that same SQLite file (D-030), so a team created by `hifa team create` while `hifa serve` is running must appear in the sidebar on the **next request**, with no restart. The active team is marked and the block is never hidden, not even with a single team. → **REQ-F070-13** |
 | **R24** | **`default_team` is never absent, and the root never guesses.** `config.py` always resolves `[cli].default_team` — the configured value, else `[team].key`, which itself defaults to `DEFAULT_TEAM_KEY` (SPEC-100 §2.3) — so "2+ teams and no default" is **not** a reachable state and is not what the picker is for. What `GET /` does, in this order: (1) the resolved default names a team that exists ⇒ `303` to `/{key}/board`; (2) exactly one non-archived team ⇒ `303` to it (this is the fresh-database case, where the default key exists); (3) **canonical picker case** — the default names a team that is **not in the database** (a second team created under another key, a regenerated `.bak`, a `.hifa.toml` copied from another workspace) and there are 2+ non-archived teams ⇒ `200` `team_picker.html` (§2.3.8) listing every team and linking to `/{team}/board`, with `reason = "several_teams"`; (4) **secondary case** — the caller passed no default at all (`create_app(default_team=None)`: embedding, tests, a bootstrap that skipped config) and there are 2+ teams ⇒ the same `200` picker, with `reason = "no_default_team"`; (5) no teams ⇒ `404` `error.html`. It never picks by `created_at`, alphabetical order, cookie or session, and never answers `404` when a usable answer exists. → **REQ-F070-14** |
@@ -2181,13 +2200,28 @@ Catalog of visible messages (exact text, lowercase initial, no trailing period):
 **Every refusal of a write is composed by one builder, and the subject is the identifier of the row the
 route resolved.** The sentences this catalogue puts in a `form_error` — one for each layer, the two
 `CLOSE_WITH_OPEN_CHILDREN` verbs', the confirmation's and the invalid-field fallback — are built by one
-function of this edge, `refusal_sentence(refusal, *, verb, identifier)`, in `src/hifa/web/app.py`: the
-single place in the tree that turns a refusal into text (A7, P4). Nothing else composes them — not a
-handler of `_install_error_handlers`, not a route branch, and not a template (§2.3.7: a template prints
-the `form_error` it is handed and never assembles one) — so each string exists once in the spec, here,
-and once in the code, in that function. `refusal` is the `HifaError` the route caught, or `None` for the
-one refusal of this layer that no use case produces: the missing `confirm=1` of §2.1.2. Each argument has
-exactly one source:
+function of this edge,
+`refusal_sentence(refusal: HifaError | None, *, verb: str | None = None, identifier: str | None = None)
+-> str`, in `src/hifa/web/app.py`: the single place in the tree that turns a refusal into text (A7, P4).
+Nothing else composes them — not a handler of `_install_error_handlers`, not a route branch, and not a
+template (§2.3.7: a template prints the `form_error` it is handed and never assembles one) — so each
+string exists once in the spec, here, and once in the code, in that function. `refusal` is the
+`HifaError` the route caught, or `None` for the one refusal of this layer that no use case produces: the
+missing `confirm=1` of §2.1.2.
+
+**The builder has two arms, and the second one exists because a query has no identifier.**
+`verb` and `identifier` are keywords with no default *value* of their own — the write arm cannot be called
+without them — and the function **raises** if a rule whose sentence names an issue arrives with
+`identifier=None`. The **request arm** is `refusal_sentence(refusal)` with both keywords omitted: it is
+legal only for a refusal about the request and not about a row, it selects no rule sentence, and it
+returns `invalid value: ` plus `refusal.message` — the last row of the catalogue below, which is
+`invalid value: nothing to search for`, `invalid value: limit must be between 1 and 200`, and so on for
+SPEC-090 §6's four messages. Its one caller today is `GET /search`: the route catches `SearchError`,
+`build_search_vm` calls the builder with no keywords (§2.3.5) and stores the text in `message`. A
+`SearchError` never reaches the write arm, because no write route can raise one, and the arm cannot be
+reached with an issue rule and no identifier, because the function refuses it.
+
+Each argument has exactly one source:
 
 - `refusal.rule` is the rule id and the only thing that selects a sentence — never the exception's class,
   which is `Validation` for two of these rules and `InvalidTransition` for the third, and never two
@@ -2510,7 +2544,7 @@ Feature: hifa web dashboard
     Given a workspace with one team ENG
     When GET /search is requested
     Then the HTML contains "href=\"/search\""
-    And the search link carries "class=\"view-link is-active\""
+    And the search link carries "class=\"side-link is-active\""
 
   Scenario: the row and card fragments keep the trash out while the page serves it
     Given an issue ENG-13 in the state "Todo" with title "Fix login", in the trash and not archived
@@ -2846,10 +2880,39 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 27 (2026-11-20): **the review round of HIFA-7 closed four holes around the `/search` page
+  and corrected the record of what the revision before it changed (HIFA-7).** `version` 6 → 7, because
+  §2.1.4, §2.1.8, §2.2, §2.3.5, §6 and R21 all change:
+  (1) **The `422` had no legal producer.** §2.3.5 said the error state's `message` was "never a sentence
+  built here", §2.3.7 forbade the template to compose one, and the one builder of §6 —
+  `refusal_sentence(refusal, *, verb, identifier)` — required an issue identifier that a query does not
+  have. §6 now declares the builder's **two arms**: the write arm (a rule sentence, `verb` and
+  `identifier` required, and a hard refusal if a rule arrives without an identifier) and the **request
+  arm** — `refusal_sentence(refusal)` with both keywords omitted, legal only for a refusal about the
+  request, returning `invalid value: ` plus SPEC-090 §6's message. `GET /search` is its one caller:
+  the route catches `SearchError`, `build_search_vm` asks the builder, and the template prints `vm.message`
+  as it always did. One owner, reachable by the template, and no branch composes text.
+  (2) **The page composes its query and passes its instant.** R21 and §2.1.4/§2.1.8's use-case rows say
+  what SPEC-090 §2.3 now says: `parse_query(q)` parses text, the route composes the `SearchQuery` with its
+  `team` parameter, and `search_issues(db, query, now=…)` receives the instant this layer's clock read —
+  the same `now` `updated_label` uses — because `app/` has no clock and a relative `due:` window needs one.
+  (3) **The sidebar's two classes are declared.** §7 pinned `class="view-link is-active"` and no section of
+  this document declared either name; the markup of `partials/sidebar.html` is `side-link` with
+  `is-active` appended by the flag of §2.3.1, so §2.2 declares both, the scenario asserts the class the
+  template really carries, and the paragraph says what does *not* mark the active view.
+  (4) **The write guard is a `403` in this document too.** §2.1.1 and §2.1.8 listed the cross-site guard
+  among "the `400`s of this layer" while R28 and §6 answer `403`; both sentences now say so, and the only
+  `400` left is the `HX-Request` one of R5.
+  §7 does not move — **73** scenarios before and after — and no route, state or read-model key is added
+  or removed in this round.
 - spec_revision 26 (2026-11-20): **the `/search` page is contracted, and the dead end it used to be is
   gone** (D-063). `version` 5 → 6: §2.1.8 and §2.1.9 are new, §2.3.5 gains four keys and every hit gains
-  four, and one row of §6 changes its status. The page existed in the route map and in the template tree
-  and answered `501`/`400` in the code: (1) **the empty state is a state, not a refusal.** `/search`
+  four, and one row of §6 changes its status. The route exists and the **template does not**: `web/app.py`
+  declares `GET /search` and answers `400` (empty `q`) or `501` (`search is not implemented yet`), the tree
+  has no `templates/search.html`, and `partials/empty_state.html` hardcodes the sentence `Nothing here yet`
+  with a fixed `class="empty"`. What this revision contracts is the page those two facts become: its four
+  states, its read model, its template and the two class names its sidebar link wears — not a page that
+  was already there. (1) **the empty state is a state, not a refusal.** `/search`
   without `q` is `200` with the box focused and `search the workspace` in the result area — the sidebar
   links to it from every page, and the `400` of §2.1.1/§6 turned that link into an error page. The `400`
   is gone from this spec: a missing query is the empty state and a query SPEC-090 refuses is a `422` on

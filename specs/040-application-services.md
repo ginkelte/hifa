@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 5
-spec_revision: 30
+version: 6
+spec_revision: 31
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -42,7 +42,9 @@ invariants** live: the ones that need to combine a pure rule (SPEC-020) with a r
 - **It does not cache nor remember state between calls.** Every use case is a stateless function.
 - **It does not implement search nor import/export.** It declares the **signature** of `search_issues` (the port that
   060 and 070 consume) but its semantics, its envelope and its filters belong to SPEC-090 §2 (D-016); here they are neither
-  redefined nor given extra parameters. `app/transfer.py` (import/export) belongs to SPEC-080 and does not appear in
+  redefined nor given extra parameters. The one keyword this layer adds is `now` — the instant the edge's clock read —
+  because a read use case has no unit of work to carry one, and the alternative (a clock inside `app/`) is what A2
+  forbids; the timezone rule that consumes it is SPEC-090 R13. `app/transfer.py` (import/export) belongs to SPEC-080 and does not appear in
   this contract.
 
 ## 2. Public contract
@@ -898,10 +900,17 @@ def agenda(
 # raises: NotFound(team), Validation(DATE_RANGE_INVERTED)
 
 
-def search_issues(db: Database, query: SearchQuery) -> SearchPage: ...
+def search_issues(db: Database, query: SearchQuery, *, now: datetime) -> SearchPage: ...
 
 
-# raises: Validation(QUERY_EMPTY); semantics from SPEC-090 §2 (D-016), not redefined here
+# raises: SearchError — the four refusals of SPEC-090 §6 (`query_empty`, `query_too_long`,
+# `invalid_limit`, `invalid_filter`), with the codes and sentences that section declares; the
+# semantics, the filters and the envelope are SPEC-090 §2 (D-016), not redefined here.
+# `now` is **aware and in UTC** (the `Clock.now()` contract of SPEC-030 §2.7) and it is a required
+# parameter because this layer reads no clock: a read use case has no unit of work, so the edge that
+# owns the clock passes the instant down, and SPEC-090 R13 derives `today` from it in the query's
+# timezone (`team.timezone` of the team the query names, UTC otherwise) — never `datetime.now`, which
+# A2 forbids here.
 
 
 def list_comments(
@@ -1121,7 +1130,7 @@ it is fixed there, not here.
 | `add_labels` / `remove_labels` (plural) | `add_label` / `remove_label`, one call per label; the edge iterates (GAP-05) | rename in the edge |
 | `delete_issue` / `--hard` | does not exist: `trash_issue` (soft) and `archive_issue` (D-015) | remove from the edge |
 | `list_issues(uow, *, filters, sort, cursor) -> Page[Issue]` | **one form only:** `list_issues(db, filters: ListFilters) -> IssuePage`, with `limit`, `cursor`, `order` and `reverse` carried by `ListFilters` (D-011); the read path opens its own read-only connection, so it takes no unit of work | the edge adapts; the port does not grow a second shape |
-| `search_issues(q, ...)` | `search_issues(db, SearchQuery)`; the envelope belongs to SPEC-090 (D-016) | aligned |
+| `search_issues(q, ...)` | `search_issues(db, SearchQuery, *, now)`; the envelope and the timezone rule belong to SPEC-090 (D-016, R13) | aligned |
 | `bootstrap_workspace(...)` | not from this spec: `app/teams.py::bootstrap(...)` is from SPEC-100 §2.5 | no change |
 
 **Edge names that are NOT part of the port.** They appear as `fn(` in 050/060/070 and are not added to
@@ -2117,7 +2126,8 @@ Use case → expected errors matrix (contract for the tests of §7):
 | `create_cycle` | team | `DATE_RANGE_INVERTED` | `DUPLICATE_CYCLE_NUMBER` | — |
 | `complete_cycle` | cycle | — | `CYCLE_ALREADY_COMPLETED` | — |
 | `add_issues_to_cycle` | cycle, issue | `CYCLE_COMPLETED`, `CYCLE_TEAM_MISMATCH` | — | — |
-| `issue_detail` / `list_*` / `agenda` / `search_issues` | issue, team, project, cycle, label, member | `INVALID_CURSOR`, `LIMIT_RANGE`, `ORDER_INVALID`, `INCLUDE_INVALID`, `DATE_RANGE_INVERTED`, `QUERY_EMPTY` | — | — |
+| `issue_detail` / `list_*` / `agenda` | issue, team, project, cycle, label, member | `INVALID_CURSOR`, `LIMIT_RANGE`, `ORDER_INVALID`, `INCLUDE_INVALID`, `DATE_RANGE_INVERTED` | — | — |
+| `search_issues` | team (through `SearchFilters.team`) | the four of SPEC-090 §6 — `query_empty`, `query_too_long`, `invalid_limit`, `invalid_filter` — which are that section's codes and sentences, not rules of this table | — | — |
 | `list_labels` | team | — | — | — |
 | `label_detail` | label | `LABEL_AMBIGUOUS` | — | — |
 | `list_blocked` | team | — | — | — |
@@ -2666,6 +2676,18 @@ Feature: Application use cases
 
 ## Notes
 
+- spec_revision 31 (2026-11-20): **`search_issues` takes the instant, and this is the only port of the
+  read family that does** (HIFA-7 review round). `version` 5 → 6: §2.2's declaration gains
+  `*, now: datetime`, `now` aware and in UTC, and the paragraph of §1 says why — a read use case has no
+  unit of work to carry a clock, and a clock inside `app/` is what A2 forbids, so the edge that owns the
+  clock passes the instant down and SPEC-090 R13 derives `today` from it in the query's timezone. The
+  signature is the one SPEC-090 §2.3 declares, character for character, because a port two specs spell
+  differently is two ports. Two smaller alignments in the same round: the `search_issues` row of §6's
+  raise table now names the four codes SPEC-090 §6 owns (`query_empty`, `query_too_long`,
+  `invalid_limit`, `invalid_filter`) instead of the `QUERY_EMPTY` this table would have spelled in its
+  own vocabulary — one refusal, one code, and the owner is the section that publishes the sentences — and
+  the row is split from the `issue_detail`/`list_*` one, which has no search refusal in it. No other
+  signature, behaviour or envelope moves, and every other edge still calls the same functions it called.
 - spec_revision 30 (2026-11-20): **one spelling for the noun a move cannot find, and one statement of the
   set (HIFA-14, D-062).** §5.2's declared raise for a `--state` that resolves to nothing spelled its noun
   after the SQL table, and the two `raises:` lines of §2 (`move_issue`, `rebalance_board`) spelled it the

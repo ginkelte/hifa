@@ -3212,3 +3212,95 @@ D-063's page, not this shape's.
 **Verification.** SPEC-090 §8 step 11 names `search_issues`/`parse_query`/`SearchService` for the contract
 check; SPEC-050 §7 asserts the eleven keys of a hit; SPEC-070 §7 asserts the six rendered fields and the
 single escaping of the snippet; `grep -rn "SearchService(" src/hifa/cli src/hifa/web` must return nothing.
+
+## D-065 — `fts5_unavailable` has one producer, and it is the connection layer
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.1/§6 (the class and the check) · **Touches:** SPEC-030 §1,
+§2.1, §2.2, §4.2, §5.1, §6, §7, §10, `Notes`; SPEC-050 §6; SPEC-100 R21, `Notes`; SPEC-090 §6, §11
+
+**The rule.** `fts5_unavailable` is raised by **`require_fts5(conn)`** of SPEC-030 §2.1, and by nothing
+else. It answers `SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'`
+(`FTS5_ENABLED_SQL`) and raises `Fts5Unavailable(code='fts5_unavailable')` when the connection's SQLite was
+built without the module: exit `6`, HTTP `500`, the internal class of D-014. It runs in exactly two
+declared places — in `migrate()`, before the backup and before the first `BEGIN`, when
+`pending_migrations()` is non-empty (the v1 schema creates the `issue_fts` virtual table, so a build
+without FTS5 cannot apply it); and as the **first statement of `reindex(conn)`** (SPEC-100 R21), the one
+command whose whole job is to write the index. It does **not** run in `connect()`.
+
+**Why the code needed a producer at all.** SPEC-050 §6 and SPEC-100 R21 published `fts5_unavailable` and
+sent the reader to "the migrator (SPEC-030 §2.3)" for the check; §2.3 of that document declared neither the
+class nor the statement, and nothing in the corpus tested it. A published code with no producer is worse
+than an unpublished one: the implementer either invents the check in the edge (where A7 says the edge maps
+codes and does not define them) or never writes it and the exit `6` is dead. The producer now lives where
+the fact lives — the adapter owns the connection, so the adapter is the layer that can ask the connection
+what its SQLite was compiled with.
+
+**Why not in `connect()`.** A database whose index cannot be read is still searchable: SPEC-090 R14 sends
+that query to the `like` path with exit `0`, because the rows are in `issue` and a reader who gets their
+issues is better served than a reader who gets an error. A check in `connect()` would refuse the
+connection and take those rows away from every command, including the ones that never touch the index. The
+two callers that *must* have the module ask for it explicitly.
+
+**Why `pragma_compile_options` and not `PRAGMA compile_options`.** It is one `SELECT` over a table-valued
+function (SQLite ≥ 3.16; the corpus already requires ≥ 3.35 for `RETURNING`), it composes with a `WHERE`
+so the answer is a row or no row rather than a string a caller has to parse, and it works on a read-only
+connection — which matters because `connect(readonly=True)` is how every read reaches the file.
+
+**The alternatives rejected.** (1) *Raise it from the migrator only* — `db reindex` runs on a database that
+is already migrated, so it would never meet the check and would fail with `no such module: fts5` from
+inside its transaction, which is the unnamed error this decision removes. (2) *Let `translate_sqlite_error`
+map `no such module: fts5`* — that mapping is for errors the driver raises on a statement the caller wrote;
+here the caller writes no statement that can fail, and SPEC-090 R14 already claims `no such module: fts5`
+as a *fallback trigger* of the search, so the same string would mean two things in two layers. (3) *A
+`doctor` check* — `doctor` reports and repairs nothing (R20), and a build without FTS5 makes `doctor`'s own
+C8 unanswerable.
+
+**What it does not change.** The search's behaviour on a degraded build — `backend="like"`, exit `0`
+(SPEC-090 §6, R14); the exit set of `db reindex`, `0/3/6` (R21); and `hifa db migrate`'s own exit codes,
+which already had `6` for `SQLITE_TOO_OLD`. `not_a_hifa_database` stays where it was born, the `hifa init`
+refusal of R14c.
+
+**Verification.** SPEC-030 §7's two scenarios — the check passes on a build that has the module and raises
+`Fts5Unavailable` with `code="fts5_unavailable"` on one that does not (the second stubs `FTS5_ENABLED_SQL`
+with no row, which is the only way to test it on a build that has FTS5); REQ-F030-23; and
+`grep -rn "fts5_unavailable" src/hifa` returning exactly one raiser.
+
+## Amendments to D-063 and D-064 (review round, 2026-11-20)
+
+Appended, not rewritten: the two decisions of this ticket are five hours old and were reviewed against the
+corpus rather than against their own prose, so what follows corrects them in place and leaves their text
+standing.
+
+**D-063, `400` and the write guard.** The rule above puts "the cross-site write guard (R28)" among the
+places `400` stays. It does not: R28 and SPEC-070 §6 answer **`403`** (`text/plain`, `cross-site write
+refused`, `Cache-Control: no-store`), and the guard is not a `400` of that layer at all. The sentence is
+wrong on a status code and nothing else; the argument around it — a missing `q` is a state, a malformed one
+is a `422` — is untouched, and so is the list of places `400` does stay (the `/_/` family without
+`HX-Request`, R5). SPEC-070 §2.1.1 and §2.1.8 carried the same slip and are corrected in the same commit.
+
+**D-064, the parser takes one argument.** The rule above says `parse_query(raw)` is the public parser and
+that it turns the raw string **plus the CLI flags** into the `SearchQuery` — and SPEC-090 §2.3 said the
+same in one sentence. Both are corrected: **`parse_query(raw: str) -> ParsedQuery`** parses text and
+nothing else, where `ParsedQuery` carries the free text, the filters the text itself carried, the
+terms-derived values (`terms`, `match`, `match_title`, `like_terms`) and `is_empty`; the **edge** composes
+the `SearchQuery` from that plus its own flags, which override the embedded value of the same field, plus
+the `limit`/`offset`/`sort`/`count` only it owns. The twelve flags of `hifa search` never enter the parser,
+and neither does `default_team`, which the previous revision declared: it let the parser read
+`[cli].default_team` and stamp it into `SearchFilters.team`, so `parse_query` was not a function of its
+argument, `app/` read configuration (A1/A3), and a workspace-wide search was silently narrowed to one team
+that no flag named. The team comes from the edge that resolved it, as `--team`'s value does.
+
+**D-064, the use case takes the instant.** `search_issues(db, query, *, now)` — `now` aware and in UTC —
+is the signature, and `SearchService(reads).search(query, *, now)` passes it down. The rule above writes
+the signature without it, and that signature could not compute a relative `due:` window: SPEC-090 R13 used
+a `Clock` this module may not import (A2), and the adapter is forbidden to call `datetime.now`. The instant
+comes from the edge's clock; SPEC-090 R13 derives `today = now.astimezone(zone).date()` where `zone` is the
+**query's** timezone (the team's when the query names one, **UTC** otherwise, because the schema has no
+workspace timezone and the default team is configuration).
+
+**D-064, `Touches:` was incomplete.** The list above names SPEC-090, SPEC-050, SPEC-070 and `specs/INDEX.md`
+and omits **SPEC-060**, which publishes the same hit as `SearchHit(issue: IssueOut, snippet, score)` in
+§2.2, asserts its three keys in §2.6 and §7, and therefore needed a `spec_revision` bump and a §Notes
+pointer in that round and got neither. SPEC-060 is added here and its revision 12 does the work; the lesson
+is the one SPEC-030's rev 12 already wrote down about D-059 — a decision whose `Touches:` list is short by
+one spec produces a corpus with two shapes for one payload.

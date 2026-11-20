@@ -3,8 +3,8 @@ id: SPEC-090
 title: FTS5 full-text search
 component: application
 status: review
-version: 2
-spec_revision: 5
+version: 3
+spec_revision: 6
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/search.py
@@ -108,6 +108,17 @@ class SearchQuery:
 
 
 @dataclass(frozen=True)
+class ParsedQuery:  # what `parse_query(raw)` returns: the TEXT, never a SearchQuery (§2.3)
+    text: str  # the free text, with the embedded field:value filters of R6 removed
+    filters: SearchFilters  # only the filters the text carried; a flag overrides them (R6)
+    terms: tuple[str, ...]  # sanitize_terms(text) (R2)
+    match: str | None  # build_match_expression(terms), None when no positive term survives (R4)
+    match_title: str | None  # build_title_match_expression(terms) (R4)
+    like_terms: tuple[str, ...]  # the positive terms the `like` path would use (R14)
+    is_empty: bool  # the text left no term and no filter; it describes the TEXT, not the query
+
+
+@dataclass(frozen=True)
 class SearchHit:
     issue_id: str
     identifier: str
@@ -132,8 +143,9 @@ class SearchPage:
 
 
 class SearchError(Validation):
-    code: str  # query_too_long | query_empty | invalid_filter | invalid_limit
-    field: str | None
+    code: str  # query_empty | query_too_long | invalid_limit | invalid_filter (§6)
+    message: str  # the one sentence of §6's table for that code
+    field: str | None  # the INPUT that carried it: limit | offset | priority | due | q
 ```
 
 ### 2.3 Functions and service
@@ -143,25 +155,75 @@ def sanitize_terms(text: str) -> tuple[str, ...]
 def build_match_expression(text: str) -> str | None
 def build_title_match_expression(text: str) -> str | None
 def escape_like(value: str) -> str
-def parse_query(raw: str, *, default_team: str | None = None) -> SearchQuery
+def parse_query(raw: str) -> ParsedQuery
 def identifier_candidate(text: str) -> str | None
-
-def search_issues(db: Database, query: SearchQuery) -> SearchPage
+def search_issues(db: Database, query: SearchQuery, *, now: datetime) -> SearchPage
 
 
 class SearchService:
-    def __init__(self, reads: SearchReads, clock: Clock)
-    def search(self, query: SearchQuery) -> SearchPage
+    def __init__(self, reads: SearchReads)
+    def search(self, query: SearchQuery, *, now: datetime) -> SearchPage
 ```
 
+**`parse_query` parses text and nothing else; the edge composes the `SearchQuery`.** `ParsedQuery` is
+what a raw string is worth: the free text, the filters the text carried (R6) and, for the edge's own
+decisions, the terms-derived values that `search_issues` recomputes from `SearchQuery.text` (§5.1). The
+`SearchQuery` is composed by **each edge from three sources and no fourth**: the `ParsedQuery`'s `text`
+and `filters`, the edge's own flags — which override the embedded value of the same field (`--state Done`
+wins over `state:Todo`, R6) — and the options only the edge owns (`limit`, `offset`, `sort`, `count`).
+The composition is the same three lines in all three edges (§2.5, §2.6.1; SPEC-050 §2.5.1, SPEC-060
+§2.5.4, SPEC-070 §2.1.8):
+
+```python
+parsed = parse_query(raw)
+overrides = {name: value for name, value in flags.items() if value is not None}  # only flags given
+query = SearchQuery(
+    text=parsed.text,
+    filters=replace(parsed.filters, **overrides),
+    limit=limit,
+    offset=offset,
+    sort=sort,
+    count=count,
+)
+page = search_issues(db, query, now=clock.now())
+```
+
+A flag that was not passed contributes **no** override, so a `state:Todo` written in the text survives a
+command that does not pass `--state`. No edge builds a `SearchFilters` from scratch, no edge passes a
+flag into `parse_query`, and no edge reads the terms: they arrive in `ParsedQuery` for the two decisions
+an edge makes locally (whether to call at all, and the `sort` default) and for nothing else.
+
+**What `default_team` was, and why it is gone.** Revision 4 declared
+`parse_query(raw, *, default_team=None)`: a parser that also resolved the caller's team — the
+`[cli].default_team` of SPEC-100 §2.3 — and stamped it into `SearchFilters.team` when the text carried no
+`team:` filter. It was wrong three times over. It made the parser read configuration, which `app/` may
+not do (A1/A3: the config file is an edge concern, and `hifa search` was its only caller that ever passed
+it); it made one string parse into two different queries depending on the environment the process ran
+in, so `parse_query` was not a function of its argument; and it silently narrowed a workspace-wide search
+to one team, which no flag asked for and `--team` already does explicitly. **A team that arrives by
+default arrives from the edge that resolved it**, exactly as `--team`'s value does: `hifa search` leaves
+`filters.team` as the text wrote it, and `GET /search` sets it from its one query parameter. The testable
+consequence: `parse_query("deploy")` returns the same `ParsedQuery` for every working directory, every
+`.hifa.toml` and every database.
+
 **`search_issues` is the use case and the only entry point**, and its signature is the one SPEC-040
-§2.2 declares (`search_issues(db, SearchQuery) -> SearchPage`): the edges call it with the `Database`
-they already hold, exactly like `list_issues` or `issue_detail`. It builds the `SearchService` of this
-module over `reads.search` (SPEC-030), calls `search` once and returns the page; it opens no
-transaction and adds no rule of its own. `SearchService` is the **implementation object**, not a port:
-no edge constructs it, because that would make `web/` or `cli/` import `adapters/` to obtain the
-`Reads` it wants (SPEC-000 A3, D-064). `parse_query` is the edge-facing parser: it turns the raw
-string plus the CLI flags into the `SearchQuery` the use case takes.
+§2.2 declares — `search_issues(db, query, *, now)` with `now` aware and in UTC: the edges call it with the
+`Database` they already hold, as they do with `list_issues` and `issue_detail`, and with the instant their
+own `Clock` read, which is the one argument those two do not need. It builds the `SearchService` of this
+module over `reads.search` (SPEC-030), calls `search` once and returns the page; it opens no transaction
+and adds no rule of its own. `SearchService`
+is the **implementation object**, not a port: no edge constructs it, because that would make `web/` or
+`cli/` import `adapters/` to obtain the `Reads` it wants (SPEC-000 A3, D-064).
+
+**Where the time comes from, and why there is no clock in this module.** `search_issues(db, query, *,
+now)` takes the instant as a parameter, and `SearchService(reads).search(query, now=now)` passes it down:
+`app/search.py` imports neither `time` nor `datetime.now` (A2, SPEC-000 §4.1: time enters through the
+`Clock` port), and the adapter never reads the system date — it receives the `today` string of §2.4. The
+edge is the only owner of "now": `hifa search` passes `SystemClock().now()`, the API passes the clock it
+built with the app, and the page passes the same `now` its read model uses for `updated_label`
+(SPEC-070 §2.3.5). `now` is aware and in UTC, the `Clock.now()` contract of SPEC-030 §2.7 — the
+`AwareDatetime` of SPEC-020 §2.2 is the model-field spelling of the same constraint — and a naive
+`datetime` is a bug of the caller, not a refusal: the unit test passes an aware one.
 
 `SearchReads` is the `Reads` object from `adapters/sqlite/reads.py` (SPEC-030). The service never opens
 connections: it uses the one `Reads` already has and does not manage transactions (all queries are
@@ -198,18 +260,37 @@ def search(
     count: bool,
     today: str,
 ) -> tuple[list[SearchRow], int | None, Literal["fts", "like", "none"]]
+
+
+def team_timezone(conn: sqlite3.Connection, *, team_key: str) -> str | None
 ```
 
 Port rules:
 
-- `match`/`match_title` are **already sanitized** FTS5 expressions (§2.3). If `match is None`, the
-  adapter runs the `like` path with `like_terms`.
-- `today` is `YYYY-MM-DD` in the team's timezone, computed by `SearchService` with `Clock` (the
-  adapter never calls `datetime.now`).
-- The received `limit` is already clamped to `1..MAX_LIMIT`; the adapter requests `limit + 1` rows to
-  compute `has_more` and returns at most `limit`.
-- It returns `(rows, total, backend)`. On `sqlite3.OperationalError` with `fts5:` in the message, it
-  retries once through the `like` path and returns `backend="like"` (R14).
+- `match`/`match_title` are **already sanitized** FTS5 expressions (§2.3), built by `SearchService` from
+  `query.text`. The port distinguishes exactly three text states, and there is no fourth:
+  - `match is not None` ⇒ the `fts` path.
+  - `match is None` **and the query carries text** (a purely negative query, R14a) ⇒ the `like` path with
+    `like_terms`.
+  - **no text at all** — `like_terms == ()` and no negated term — ⇒ **no text predicate**,
+    `backend="none"`, and the filters alone (R14's last sentence). An empty `match` never means "fall
+    back to `like`": a `like` path over zero terms is an all-rows scan wearing the wrong label, and an
+    implementation that refused to build a predicate from no term would answer **zero** rows. Both are
+    wrong; `hifa search --state Done` is the case that tells them apart (§2.5).
+- `today` is `YYYY-MM-DD` **in the query's timezone**, computed by `SearchService` from `now` and
+  `reads.team_timezone` (R13): the adapter never calls `datetime.now` and never calls a date function in
+  SQL.
+- The received `limit` is already clamped to `1..MAX_LIMIT`; the adapter requests `limit + 1` rows and
+  returns **up to `limit + 1`** of them — the extra row is the probe, not a hit. `SearchService` sets
+  `has_more = len(rows) > limit` and **trims** the list to `limit` before building the page (§5.1 steps 8
+  and 9). The tuple stays `(rows, total, backend)`: `has_more` is a derivation of the service, never a
+  fourth return value of the port.
+- It returns `(rows, total, backend)`. On a `sqlite3.OperationalError` whose message matches one of the
+  triggers listed in **R14** — that list is the only one in this document, and this bullet names no
+  trigger of its own — it retries once through the `like` path and returns `backend="like"`.
+- `team_timezone` is the one extra read of this component: `SELECT timezone FROM team WHERE key = ?`,
+  `None` when no team carries that key. `SearchService` calls it only when `query.filters.due` is a
+  relative window (R13) and the query names a team; every other search reads no timezone at all.
 
 ### 2.5 CLI surface
 
@@ -232,10 +313,20 @@ Port rules:
   MATCH` — formatted by `cli/output.py` (SPEC-000 A6). `MATCH` renders the snippet with `MARK_START` and
   `MARK_END` removed (reverse video when ANSI is on, §2.4 of SPEC-050), and is the empty cell `–` when
   the query carried no text (`backend="none"`). The six fields are the ones the page of §2.6 renders.
-- The command calls `parse_query` and then the use case `search_issues(db, query)` (SPEC-040 §2.2, §2.3
-  of this document); it holds no query of its own and builds no envelope (D-016, D-064).
-- `GET /api/v1/issues?q=…` from SPEC-060 reuses `parse_query` + `search_issues`; it does not define its own
-  new parameters. This spec exposes no endpoints.
+- The command composes the `SearchQuery` of §2.3 — `parse_query(raw)` plus its twelve flags — and calls
+  the use case `search_issues(db, query, now=clock.now())` (SPEC-040 §2.2, §2.3 of this document); it
+  holds no query of its own and builds no envelope (D-016, D-064).
+- **The walk of a filters-only search, which is where the two readings of §2.4 diverge.** `hifa search
+  --state Done` carries no text at all: `parse_query("")` is empty (`is_empty` is `True`, and the command
+  does not refuse, because the composed `SearchQuery` carries a filter), `match` is `None`, `like_terms`
+  is `()`, and the adapter runs **no text predicate** with `backend="none"` (§2.4). The result is **every
+  issue whose state is `Done`**, under the default visibility of R10. The wrong reading of "`match is
+  None` ⇒ the `like` path" answers the same rows but labels them `backend="like"` — an all-rows scan
+  reported as a text search — and an implementation that built `AND ` over an empty term list would
+  answer **zero** rows, which is the failure this walk exists to pin.
+- `GET /api/v1/issues?q=…` is **not** this contract: the `q` of the issue listing is the title filter of
+  D-025 (SPEC-040 §2.2, §4; SPEC-030 §2.6), it declares no `MATCH`, no `backend` and no ranking, and it
+  does not call `parse_query` or `search_issues`. This spec exposes no endpoint.
 
 ### 2.6 What the edges consume: `hifa search`, `/api/v1/search` and `GET /search`
 
@@ -252,10 +343,13 @@ One contract, three transports, no fourth definition:
 The page is a **consumer**, so it accepts exactly this document's inputs and renders exactly this
 document's outputs:
 
-- it builds the query with `parse_query(raw)` plus the one filter it exposes as a query parameter
-  (`team`); it declares no grammar, no flag and no envelope of its own (D-016);
-- it calls `search_issues(db, query)` with `count=False`, so it pays no second query, and it shows
-  `len(hits)` under its result list instead of a total (SPEC-070 §2.3.5);
+- it composes the `SearchQuery` of §2.3 — `parse_query(q)` plus the one filter it exposes as a query
+  parameter (`team`) — and it calls `search_issues(db, query, now=…)` with `count=False`, so it pays no
+  second query, and it shows `len(hits)` under its result list instead of a total (SPEC-070 §2.3.5); it
+  declares no grammar, no flag and no envelope of its own (D-016);
+- `now` is the page's own: the same instant its read model uses for `updated_label` (§2.3.5), passed
+  explicitly because this module never reads a clock (A2, §2.3). A relative `due:` window therefore
+  resolves in the timezone of the `team` the query names, and in UTC when it names none (R13);
 - it renders `identifier`, `title`, `snippet`, `state_name`, `priority` and `updated_at` of each hit —
   the six fields `hifa search` prints in §2.5;
 - `hits=[]` from a valid query is the page's **no-results** state, `200`; it is not an error and it does
@@ -408,9 +502,11 @@ Nothing is ever written to any of these tables from this component.
   i.archived_at IS NULL` unless `is:archived`, `is:trashed` or `is:all` is requested. The counts
   (`total`) use the same predicate: what is not returned is never counted.
 - **R11 — Pagination (REQ-F090-11).** `limit` outside `1..200` ⇒ `invalid_limit`. `offset < 0` ⇒
-  `invalid_limit`. The adapter requests `limit + 1` rows: if `limit + 1` arrive, `has_more = True` and
-  the last one is discarded. `total` is computed only with `count=True`; without it, it is `None`. An
-  `offset` greater than the total returns `hits=[]` with `has_more=False` and exit 0, not an error.
+  `invalid_limit`. The adapter requests `limit + 1` rows; `SearchService` sets
+  `has_more = len(rows) > limit` and then **trims** `rows` to `limit`, so `hits` never carries the probe
+  and the port never returns a fourth value (§2.4, §5.1 steps 8 and 9). `total` is computed only with
+  `count=True`; without it, it is `None`. An `offset` greater than the total returns `hits=[]` with
+  `has_more=False` and exit 0, not an error.
   `total`, when computed, is the size of the **filtered set** and never the size of the page: with 20
   matches and `offset=100`, `hits` is empty and `total` is `20`, because a consumer that read
   `total = len(hits)` would conclude that the query matched nothing.
@@ -418,19 +514,45 @@ Nothing is ever written to any of these tables from this component.
   DESC; `"priority"` → priority band (urgent first, `0` last) and then `updated_at` DESC;
   `"due"` → `due_date IS NULL ASC, due_date ASC`. With `sort != "relevance"` the band and the `bm25`
   do not take part in the order, but the same filters and the same visibility apply.
-- **R13 — `due` filter (REQ-F090-13).** `today` is computed in `SearchService` as
-  `Clock.today(team.timezone).isoformat()` and reaches the adapter as a parameter; the SQL never calls
-  system date functions. Values: `none` → `due_date IS NULL`; `overdue` →
-  `due_date < :today AND s.type NOT IN ('completed','canceled')`; `today` → `= :today`; `week` →
-  `BETWEEN :today AND date(:today,'+7 days')`; `YYYY-MM-DD` → `=`; `>YYYY-MM-DD` / `<YYYY-MM-DD` →
-  strict comparison. Any other format ⇒ `invalid_filter`.
-- **R14 — Fallback to LIKE (REQ-F090-14).** The `like` path is used when: (a) `match is None` and there
-  are terms (purely negative query), (b) the `MATCH` raises `sqlite3.OperationalError` whose
-  message contains `fts5:`, `malformed` or `no such module: fts5`, (c) the `issue_fts` table does not
-  exist (`no such table`), or (d) the interpreter's SQLite was built without FTS5 and the query fails
-  to even resolve the virtual table. (b) and (d) are one rule with two messages because they are one
-  situation: the index exists and this process cannot read it. On that path the predicate is, for each
-  positive term,
+- **R13 — `due` filter, and the timezone of the query (REQ-F090-13).** `today` is **derived, never
+  read**: `today = now.astimezone(zone).date().isoformat()`, where `now` is the aware-UTC instant
+  `search_issues` received (§2.3) and `zone` is **the query's timezone**:
+  - `team.timezone` of the team `query.filters.team` names, read with `reads.team_timezone` (§2.4);
+  - **UTC** when the query names no team. The schema declares no workspace timezone — `workspace` is
+    `id, name, url_key, created_at` (SPEC-010 §3.1) and only `team` and `member` carry one — and the
+    default team is an edge's configuration (`[cli].default_team`, SPEC-100 §2.3), which `app/` may not
+    read (A1/A3). Inventing a workspace zone would need a migration this ticket does not own, so the
+    fallback is UTC and it is declared rather than guessed.
+
+  The consequence is stated plainly: a workspace-wide `due:today` is the **UTC day**, so for the hours in
+  which a team's zone is already on another date, `hifa search due:today` and `hifa search due:today
+  --team ENG` name different days. The way to ask about a team's day is to name the team; the contract
+  does not silently borrow one. `today` is computed only when `due` is `overdue`, `today` or `week`: `none`,
+  `YYYY-MM-DD`, `>YYYY-MM-DD` and `<YYYY-MM-DD` read no timezone and issue no query for it (§5.1 step 6).
+  The SQL never calls a system date function. **Testable:** with `now = 2026-11-20T02:00:00Z`, a query with
+  `team:ENG` (`America/Santiago`, UTC−3) resolves `today = "2026-11-19"` and the same instant with no team
+  resolves `today = "2026-11-20"`; both cases are pinned by the two scenarios of §7. Values: `none` →
+  `due_date IS NULL`; `overdue` → `due_date < :today AND s.type NOT IN ('completed','canceled')`;
+  `today` → `= :today`; `week` → `BETWEEN :today AND date(:today,'+7 days')`; `YYYY-MM-DD` → `=`; `>YYYY-MM-DD`
+  / `<YYYY-MM-DD` → strict comparison. Any other format ⇒ `invalid_filter`.
+- **R14 — Fallback to LIKE (REQ-F090-14), and the only list of retry triggers.** The `like` path is used
+  when (a) the query carries text and `match is None` (a purely negative query, R4), or (b) the `MATCH`
+  raises `sqlite3.OperationalError` whose message **contains one of exactly four strings**. This is the
+  only place in the corpus where those four are listed: §2.4 cites this rule and names no trigger of its
+  own.
+
+  | Trigger | What it means |
+  |---|---|
+  | `fts5:` | an FTS5 error of the engine itself (a syntax or shadow-table complaint) |
+  | `malformed` | `database disk image is malformed`: the index cannot be read |
+  | `no such module: fts5` | this interpreter's SQLite was built without FTS5, so the virtual table does not resolve |
+  | `no such table` | `issue_fts` is gone (dropped, or a database that never ran the migration) |
+
+  The last two are one situation with two messages — the index exists for the reader but not for this
+  process — and they are matched the same way as the first two, by `in` over the driver's message, never
+  by an exact comparison and never by a regex. The verification is a unit test that raises each of the
+  four as `sqlite3.OperationalError` and asserts that `reads.search` answers `backend="like"`. On that
+  path the predicate is, for each positive term,
   `(title LIKE :p ESCAPE '\' OR description LIKE :p ESCAPE '\' OR identifier LIKE :p ESCAPE '\')`
   with `:p = '%' || escape_like(term) || '%'` and AND between terms; `escape_like` escapes `\`, `%`
   and `_`. The ranking of the `like` path is fixed: exact identifier (0), `title LIKE 'term%'` (1),
@@ -500,14 +622,23 @@ Nothing is ever written to any of these tables from this component.
     match_title  ← build_title_match_expression(terms)
     ident_exact  ← complete identifier_candidate(text) or ""
     ident_like   ← prefix "KEY-" or "KEY-12" + "%" or ""
- 5. if match is None and there are negative terms → like path (R14a)
- 6. today ← clock.today(team.timezone).isoformat()   (only if filters.due needs it)
+ 5. three text states, no fourth (§2.4):
+    match is not None                          → fts path
+    match is None and the query carries text    → like path (R14a)
+    no text at all (like_terms empty, no -term) → no text predicate, backend = "none"
+ 6. today ← ""   unless filters.due ∈ {overdue, today, week}
+    zone  ← reads.team_timezone(conn, team_key=filters.team) if filters.team else "UTC"   (R13)
+    today ← now.astimezone(zone).date().isoformat()
  7. rows, total, backend ← reads.search(conn, match=…, match_title=…, like_terms=…,
                                          filters=…, order=query.sort, limit=…, offset=…,
                                          count=query.count, today=today)
- 8. has_more ← len(rows) > limit  → trim to limit
+ 8. has_more ← len(rows) > limit;  rows ← rows[:limit]
  9. build SearchPage(hits, total, has_more, backend, took_ms)
 ```
+
+Steps 8 and 9 are the whole of §2.4's last port rule: the adapter may answer `limit + 1` rows, and this
+is where the probe becomes a boolean and leaves the page. `now` is the parameter of `search`, so this
+sequence contains no clock read at all; it contains no team read either unless step 6 needs a timezone.
 
 `took_ms` is measured with `time.perf_counter()` between step 1 and step 9 and rounded to 1 decimal; it is the
 only non-deterministic field of the response and it **does not** enter the equality comparisons of the
@@ -603,32 +734,39 @@ The snippet of this path is computed after the fetch, in `SearchService`, follow
 
 ## 6. Errors
 
-| Error | `code` | When | CLI | HTTP |
-|---|---|---|---|---|
-| `Validation` | `query_empty` | no text and no filters | exit 2, stderr | 422 |
-| `Validation` | `query_too_long` | > 512 characters, > 16 terms or term > 128 | exit 2 | 422 |
-| `Validation` | `invalid_limit` | `limit` outside 1..200 or `offset < 0` | exit 2 | 422 |
-| `Validation` | `invalid_filter` | invalid value of a known field (`priority:urgentísimo`, `due:ayer`, `-due:…`) | exit 2, message with `field` | 422 |
-| `InternalError` | `internal_error` | a `MATCH` that R14's four cases did not cover, and any other unmapped exception | exit 6 | 500 |
+| Error | `code` | `message` | When | CLI | HTTP |
+|---|---|---|---|---|---|
+| `SearchError` | `query_empty` | `nothing to search for` | no text and no filters | exit 2, stderr | 422 |
+| `SearchError` | `query_too_long` | `the query is longer than 512 characters or has more than 16 terms or a term longer than 128 characters` | > 512 characters, > 16 terms or term > 128 | exit 2 | 422 |
+| `SearchError` | `invalid_limit` | `limit must be between 1 and 200` (`limit`) · `offset cannot be negative` (`offset`) | `limit` outside 1..200 or `offset < 0` | exit 2 | 422 |
+| `SearchError` | `invalid_filter` | `'<value>' is not a value of <field>` | invalid value of a known field (`priority:urgentísimo`, `due:ayer`, `-due:…`) | exit 2 | 422 |
+| `InternalError` | `internal_error` | — (the driver's message, on `stderr`) | a `MATCH` that R14's four triggers did not cover, and any other unmapped exception | exit 6 | 500 |
 
+- **`code` is `error.code` and `field` names the input, on every edge.** `limit`, `offset`, `priority`,
+  `due`, `q` — the input that carried the refusal — is what `error.field` publishes; a code never
+  travels there. The four codes are the contract of this section, and SPEC-050 §6 and SPEC-060 §6.1
+  publish them as they are: one refusal, one envelope, no edge renaming a code or a field.
 - The search does **not** produce `NotFound`, `Conflict` or `InvalidTransition`: a filter that matches
   nothing is a valid response with `hits=[]`, `total=0` (if requested) and exit 0.
 - **One class, four codes.** `SearchError` is the `Validation` subclass of §2.2 and the only exception
-  this component raises for input it refuses: it carries `code` (the four values of the table) and
-  `field`. No edge special-cases it — the CLI maps it as every other `Validation` (exit 2) and the API as
-  `422` (SPEC-050 §2.6, SPEC-060 §6) — and the class exists so the four codes have one owner. The four
-  are **lowercase envelope codes**, and that is what makes them survive the CLI's mapping: a code that is
-  already lowercase is passed through as the envelope's `error.code`, the mechanism `invalid_config` uses,
-  instead of collapsing into `validation_error` (SPEC-050 §2.4.5, `cli/errors.py::error_code_for`).
+  this component raises for input it refuses: it carries `code` (the four values of the table), `message`
+  (its column) and `field`. No edge special-cases it — the CLI maps it as every other `Validation` (exit
+  2) and the API as `422` (SPEC-050 §6, SPEC-060 §6.1) — and the class exists so the four codes have one
+  owner. The four are **lowercase envelope codes**, and that is what makes them survive the CLI's mapping:
+  a code that is already lowercase is passed through as the envelope's `error.code`, the mechanism
+  `invalid_config` uses, instead of collapsing into `validation_error` (declared in SPEC-050 §6, in the
+  `Validation` row's `error.code` cell, which is where the pass-through lives; this contract names no
+  module and no private function of `cli/`).
 - `query_empty` is a refusal of the **edges that are asked to run a query**: `hifa search` with nothing
   to search and `GET /api/v1/search` without `q` and without filters (SPEC-060 §2.5.4). `GET /search`
   is a page, and a page with no `q` is its empty state, `200` (SPEC-070 §2.1.8, D-063).
 - **A degraded index is not a failed search.** A database whose `issue_fts` is missing, and a Python
   whose SQLite was built without FTS5, are answered through the `like` path with `backend="like"` and
-  exit 0 (R14c/R14d): the rows are still there and a search that can read `issue` is worth more than an
-  error. `hifa db reindex` is the command that refuses that database loudly instead (SPEC-100 R21,
-  exit 6 `fts5_unavailable` / `corrupt_database`).
-- An FTS `sqlite3.OperationalError` that is not one of R14's four cases is an **infrastructure**
+  exit 0 (R14b): the rows are still there and a search that can read `issue` is worth more than an
+  error. `hifa db reindex` is the command that refuses the build loudly instead (SPEC-100 R21, exit 6
+  `fts5_unavailable`) and the one that **recreates** a missing `issue_fts` before it rebuilds it, so the
+  advice a degraded search carries is the one command that repairs it.
+- An FTS `sqlite3.OperationalError` that matches none of R14's four triggers is an **infrastructure**
   failure, not a validation one: it leaves the command as exit 6, `internal_error`, with the driver's
   message on `stderr` and no traceback in the human output (`--verbose` shows it). Exit 2 is reserved
   for what the user typed.
@@ -790,6 +928,33 @@ Feature: Full-text search over issues
     When "hifa search deploy --json" is executed
     Then a snippet contains the literal "<form>"
     And a snippet contains the literal "<mark>"
+
+  Scenario: a filters-only search adds no text predicate
+    Given 3 issues, one of them in state "Done"
+    When "hifa search --state Done --json" is executed
+    Then the exit code is 0
+    And the "backend" field is "none"
+    And the result contains every issue in state "Done"
+    And the result contains no issue in any other state
+
+  Scenario: a relative due window resolves in the team's timezone
+    Given team "ENG" with timezone "America/Santiago"
+    And an issue due "2026-11-19" and an issue due "2026-11-20"
+    When "hifa search due:today --team ENG --json" is executed at "2026-11-20T02:00:00Z"
+    Then the result contains the issue due "2026-11-19"
+    And the result does not contain the issue due "2026-11-20"
+
+  Scenario: a relative due window with no team is the UTC day
+    Given an issue due "2026-11-19" and an issue due "2026-11-20"
+    When "hifa search due:today --json" is executed at "2026-11-20T02:00:00Z"
+    Then the result contains the issue due "2026-11-20"
+    And the result does not contain the issue due "2026-11-19"
+
+  Scenario: the LIKE triggers are the four of R14
+    Given a connection whose next MATCH raises OperationalError "no such module: fts5"
+    When "hifa search deploy --json" is executed
+    Then the exit code is 0
+    And the "backend" field is "like"
 ```
 
 ## 8. Regeneration checklist
@@ -805,14 +970,22 @@ Feature: Full-text search over issues
    empty terms, prefix, phrase and negation. No input may produce an invalid `MATCH`: the
    parameterized test runs `conn.execute("SELECT rowid FROM issue_fts WHERE issue_fts MATCH ?", …)`
    over 100 adversarial inputs and requires 0 `OperationalError`.
-5. Implement `parse_query` respecting R6/R7/R8 and `PRIORITY_NAMES`.
+5. Implement `parse_query` returning `ParsedQuery` (§2.3) respecting R6/R7/R8 and `PRIORITY_NAMES`; it
+   takes one argument and reads no configuration.
 6. Implement `reads.search` with the query of §5.2, assembling the filter fragments as
-   constants and the values as parameters. `limit + 1` for `has_more`.
-7. Implement the `like` path of §5.3 and the `try/except sqlite3.OperationalError` that falls back to it.
-8. Implement the snippet of the `like` path in `SearchService` (R15).
-9. Create the `hifa search` command of §2.5 delegating the formatting to `cli/output.py`, and
-    `hifa db reindex` with the contract of SPEC-100 R21 — the command is what the acceptance of
-    §7 (`10-search.feature`) needs and it is part of this component's delivery.
+   constants and the values as parameters, and `reads.team_timezone` for R13. `limit + 1` rows out of the
+   adapter; the trim belongs to `SearchService`.
+7. Implement the `like` path of §5.3 and the `try/except sqlite3.OperationalError` that falls back to it
+   on R14's four triggers — the list lives there and nowhere else.
+8. Implement the snippet of the `like` path in `SearchService` (R15), and the `backend="none"` state of
+   §2.4 (no text ⇒ no text predicate).
+9. **The two commands of this delivery are created from their own specs' contracts, in this ticket**:
+   `hifa search` from SPEC-050 §2.5.1 (its flags, its table of §2.4.1.1, its exit codes) and
+   `hifa db reindex` from SPEC-100 §2.7/R21 (its transaction, its `{"reindexed": N}`, its exit `0/3/6`)
+   — they are what the acceptance of §7 (`10-search.feature`) needs. This spec claims **no `cli/**`
+   file**: `hifa search` lives in `cli/commands/search.py` under SPEC-050's `implements:` and `db reindex`
+   in `cli/commands/db.py` under SPEC-100's, so neither module appears in this document's frontmatter and
+   §8 asks for no code below `app/` and `adapters/`.
 10. Cover the scenarios of §7 and the performance test of R16 with the 10 000-issue fixture
     (bulk insert + `INSERT INTO issue_fts(issue_fts) VALUES('rebuild')`).
 11. `pytest tests -k search` green; `python scripts/spec_contract_check.py --spec
@@ -862,7 +1035,7 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
 |---|---|---|---|
 | `hifa search` (table) | not reachable: no query and no filter is `query_empty`, exit 2, `stdout` untouched | empty `stdout`, `0 issues` on `stderr` — the empty-collection line of SPEC-050 §2.4.1, exit 0; `--quiet` prints nothing | §6's sentence on `stderr` and its exit code; `stdout` stays empty |
 | `hifa search --json` | the same `query_empty` | `{"hits": [], "total": null, "has_more": false, "backend": "fts"\|"like"\|"none", "took_ms": …}` — `total` is `0` only with `--count` | the error envelope of SPEC-050 §2.4.5, exit 2 or 6 |
-| `hifa db reindex` | an empty database rebuilds `0` issues: `{"reindexed": 0}`, exit 0 — "there was nothing to rebuild" is a success, not a no-op error | — | exit 3 `database_not_found` or exit 6 (`fts5_unavailable`, `corrupt_database`), SPEC-100 R21 |
+| `hifa db reindex` | an empty database rebuilds `0` issues: `{"reindexed": 0}`, exit 0 — "there was nothing to rebuild" is a success, not a no-op error | — | exit 3 `database_not_found`, or exit 6 `fts5_unavailable` on a build without FTS5 or `corrupt_database` on an unreadable image, SPEC-100 R21 |
 
 - **No loading state.** The command is one synchronous query against a local file: there is no progress
   to report and no partial output to flush. A long search prints nothing until it has its rows.
@@ -878,6 +1051,40 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
 
 ## 12. Notes
 
+- spec_revision 6 (2026-11-20): **the review round of HIFA-7 settled the three signatures this document
+  published without saying how they are called, and closed eight contradictions it carried with its own
+  edges.** `version` 2 → 3, because §2.3 and §2.4 both change shape:
+  (1) **`parse_query` parses text.** It is `parse_query(raw: str) -> ParsedQuery` — the free text, the
+  filters the text carried, the four terms-derived values and `is_empty` — and the `SearchQuery` is
+  composed by **each edge** from that `ParsedQuery`, its own flags (which override the embedded value of
+  the same field) and its own `limit`/`offset`/`sort`/`count` (§2.3 has the three lines all three edges
+  run). `default_team` is gone and §2.3 says what it was and why it could not stay: it made the parser
+  read configuration, and one string parsed into two queries.
+  (2) **`search_issues` takes the instant.** `search_issues(db, query, *, now)` and
+  `SearchService(reads).search(query, now=…)`: `app/search.py` has no clock and imports no time module
+  (A2), the edge supplies `now` from its own `Clock`, and R13 derives `today = now.astimezone(zone).date()`
+  where `zone` is the **query's** timezone — the team's when the query names one, **UTC** otherwise,
+  because no workspace timezone exists in the schema and the default team is an edge's configuration. The
+  consequence (a workspace-wide `due:today` is the UTC day) and the two test instants are declared.
+  (3) **`has_more` had two owners and now has one.** §2.4 said the adapter "requests `limit + 1` rows and
+  returns at most `limit`" while R11 and §5.1 derived `has_more` from `len(rows) > limit`: the adapter
+  returns up to `limit + 1`, the port keeps `(rows, total, backend)`, and `SearchService` derives the
+  boolean and trims. (4) **The three text states are named once.** §2.4 said "if `match is None`, the
+  adapter runs the `like` path", which made a filters-only search a like-scan with no terms; it now says:
+  no text ⇒ no text predicate and `backend="none"`, text with no `MATCH` ⇒ `like`. §2.5 walks
+  `hifa search --state Done` under both readings and states that the answer is every `Done` issue.
+  (5) **The retry triggers are one list.** R14's four strings (`fts5:`, `malformed`, `no such module:
+  fts5`, `no such table`) live in R14 and §2.4 names none of its own; §7 pins the fallback with one of
+  them. (6) **§6 publishes `message` and says where the code goes.** The four refusals have one sentence
+  each, `error.code` carries the code and `error.field` carries the **input** (`limit`, `offset`,
+  `priority`, `due`, `q`) — never the code — which is what SPEC-050 §6 and SPEC-060 §6.1 now publish; the
+  pass-through of a lowercase code is cited where SPEC-050 declares it, and no private symbol is named.
+  (7) **`GET /api/v1/issues?q=` is not this contract.** The bullet that claimed it reused `parse_query` +
+  `search_issues` is gone: that `q` is D-025's title filter.
+  (8) **§8 step 9 stops claiming files this spec does not own:** both commands are built from SPEC-050
+  §2.5.1 and SPEC-100 R21 in this ticket, and `implements:` gains no `cli/**` path.
+  §7 gains four inline scenarios (filters-only, the two timezone cases, one R14 trigger); the `.feature`
+  corpus does not move — 17 files, **240** scenarios (228 `Scenario` + 12 `Scenario Outline`).
 - spec_revision 5 (2026-11-20): **promoted from `draft` to `review`, with the two things that made it a
   draft closed and the four contradictions it carried with its edges (SPEC-040, SPEC-050, SPEC-070)
   removed.** `version` 1 → 2:

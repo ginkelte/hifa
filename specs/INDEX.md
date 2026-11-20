@@ -6,8 +6,9 @@ regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Tem
 **Process status:** Spec Review round 1 (104 gaps) → 5 Fix rounds → re-reviews →
 **2 approved specs, 10 at `review` and 1 draft**, which is the `status:` of each frontmatter and what
 the Status column of the Map below repeats (SPEC-110, the release pipeline, is the draft, at `version: 3`
-/ `spec_revision: 6` after the engine change of D-039 and the governed outcome classifier of D-040).
-Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md) (**64 decisions: D-001 … D-064**; P-12 closed
+/ `spec_revision: 9` after the engine change of D-039, the governed outcome classifier of D-040 and the
+three revisions that followed it).
+Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md) (**65 decisions: D-001 … D-065**; P-12 closed
 by D-041). Reports in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035, D-058):** the canonical seed is
@@ -42,8 +43,10 @@ label administration page; D-061(g)).
 
 **The search surface is contracted and the page is no longer a stub (HIFA-7, D-063, D-064):**
 `hifa search` (SPEC-090 §2.5, SPEC-050 §2.5.1) and `GET /search` (SPEC-070 §2.1.8) are the two edges of
-the use case behind **`search_issues(db, query)`**, the entry point SPEC-040 §2.2 declares (D-064)
-— over the FTS5 index of SPEC-090 §3. The page has exactly four states: empty (`200`, no `q`), results,
+the use case behind **`search_issues(db, query, *, now)`**, the entry point SPEC-040 §2.2 declares (D-064)
+— over the FTS5 index of SPEC-090 §3. Each edge is a **consumer** that parses its own text with
+`parse_query(raw)` and composes the `SearchQuery` from its own flags and the instant its clock read; the
+parser takes no flag and no default team, and `app/` holds no clock (SPEC-090 §2.3, R13). The page has exactly four states: empty (`200`, no `q`), results,
 no results (`200`, `hits=[]`) and error (`422`, a query SPEC-090 §6 refuses); it never answers `400`, which
 is what the sidebar link to `/search` used to hit (D-063). `hifa db reindex` (SPEC-100 R21) is the only
 corrective action of the index and the only verb of the `db` group that ships: `db migrate`, `db vacuum`,
@@ -84,9 +87,9 @@ self-relation; they accept NULL, `2026-03-01`, homonymous label in another team)
 | 060 | REST API | [060-api-rest.md](./060-api-rest.md) | `api/**`, `tests/e2e/api/**` | 040 | review |
 | 070 | Web dashboard | [070-web-dashboard.md](./070-web-dashboard.md) | `web/**`, `tests/e2e/web/**` | 040, 060 | **review** — partial delivery. Stage 1 delivered: read-only board/list/detail + quick add + `/healthz`; read contract closed by D-025…D-028, write paths contracted by D-053…D-056, the write guard of §2.1.7 by D-057, the two routes that read through the trash — detail and panel with `Restore` alone, §2.1.1/R29 — by D-059, and the `/search` page with its four states — §2.1.8, D-063) |
 | 080 | Import / export | [080-transfer-csv-json.md](./080-transfer-csv-json.md) | `app/transfer.py`, `adapters/sqlite/transfer_sql.py` | 040 | review |
-| 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | review (`version: 2`, `spec_revision: 5`: promoted by HIFA-7 — the one entry point `search_issues` in §2.3 and the page's consumption in §2.6, D-063/D-064) |
+| 090 | FTS5 search | [090-search-fts.md](./090-search-fts.md) | `app/search.py`, `adapters/sqlite/reads.py::search` | 010, 040 | review (`version: 3`, `spec_revision: 6`: promoted by HIFA-7 — the one entry point `search_issues(db, query, *, now)` in §2.3, `parse_query` as the text parser the edges compose over, and the page's consumption in §2.6, D-063/D-064) |
 | 100 | Config and bootstrap | [100-config-bootstrap.md](./100-config-bootstrap.md) | `config.py`, `app/teams.py::bootstrap`, `cli/commands/db.py` | 010, 040 | review |
-| 110 | Semantic release pipeline | [110-release.md](./110-release.md) | `.github/workflows/release.yml`, `.github/release/tag-message.sh`, `.github/release/assert-outcome.sh`, `.releaserc.json`, `package.json`, `package-lock.json`, `CHANGELOG.md`, `.github/signers/**`, `pyproject.toml` (the `version` literal and the version-producing keys, D-038/D-039), `src/hifa/__init__.py`, `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py`, `tests/e2e/test_release_outcome.py`, `tests/fixtures/release/*.log` | 000, 050 | draft (`version: 3`, `spec_revision: 6`: npm `semantic-release` engine, literal version, `v0.1.0` bootstrap — D-039; per-step secrets, governed and tested outcome classifier — D-040) |
+| 110 | Semantic release pipeline | [110-release.md](./110-release.md) | `.github/workflows/release.yml`, `.github/release/tag-message.sh`, `.github/release/assert-outcome.sh`, `.releaserc.json`, `package.json`, `package-lock.json`, `CHANGELOG.md`, `.github/signers/**`, `pyproject.toml` (the `version` literal and the version-producing keys, D-038/D-039), `src/hifa/__init__.py`, `tests/unit/test_version.py`, `tests/e2e/test_release_contract.py`, `tests/e2e/test_release_outcome.py`, `tests/fixtures/release/*.log` | 000, 050 | draft (`version: 3`, `spec_revision: 9`: npm `semantic-release` engine, literal version, `v0.1.0` bootstrap — D-039; per-step secrets, governed and tested outcome classifier — D-040) |
 
 ## Dependency graph
 
