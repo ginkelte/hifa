@@ -37,7 +37,7 @@ WINDOW_SIZE: Final[int] = 100
 SOMEONE: Final[str] = "someone"
 
 #: The twelve month names the timeline prints. A constant, not `strftime`'s locale: a row's stamp
-#: reads the same on a machine with no locale set (SPEC-070 §2.5.7.2's day separators print it too).
+#: reads the same on a machine with no locale set, and so do the day separators beside it.
 MONTHS: Final[tuple[str, ...]] = (
     "Jan",
     "Feb",
@@ -220,11 +220,12 @@ def _dot(entry: IssueHistory, colours: Mapping[str, str]) -> str | None:
 def _sentence(entry: IssueHistory, old: str | None, new: str | None) -> str | None:
     """The wording of one row, or `None` when the field has no sentence for this direction.
 
-    Every branch here has a row behind it: a field `issue_history` can hold (SPEC-030 §2.4) and a
-    branch for it are the same set. `project_id`, `milestone_id` and `cycle_id` are the exception
-    the other way round — `update_issue` refuses a value for all three (GAP-08, HIFA-90), so no
-    sentence is offered and the row falls back to `changed <field>` like any unknown name. A
-    sentence for a field nothing can write is wording no reader can reach.
+    Every branch here has a row behind it: the fields a writer records in `issue_history`, one
+    field per row with its old and new value, and the branches below are that same set.
+    `project_id`, `milestone_id` and `cycle_id` are the exception the other way round —
+    `update_issue` refuses a value for all three (GAP-08, HIFA-90), so no sentence is offered and
+    the row falls back to `changed <field>` like any unknown name. A sentence for a field nothing
+    can write is wording no reader can reach.
     """
     field = entry.field
     if field == "created":

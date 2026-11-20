@@ -99,8 +99,9 @@ SENTENCES: tuple[tuple[str, str | None, str | None, str], ...] = (
 )
 
 
-#: Every field `issue_history` can hold a row for, as SPEC-030 §2.4 names them. The three link
-#: columns are absent because nothing writes them yet (GAP-08, HIFA-90): they render the fallback.
+#: Every field `issue_history` can hold a row for — one row per changed field, written by the
+#: issue writers. The three link columns are absent because nothing writes them
+#: yet (GAP-08, HIFA-90): they render the fallback.
 WRITER_FIELDS: frozenset[str] = frozenset(
     {
         "created",

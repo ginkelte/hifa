@@ -1,4 +1,4 @@
-"""`HistoryRepo.record`: one `executemany`, one row per change, one instant (REQ-F030-20).
+"""`HistoryRepo.record`: one `executemany`, one row per change, one instant stamped on all.
 
 The count is of the **call** and not of the statements SQLite reports: `set_trace_callback` fires
 once per row an `executemany` steps, so it cannot tell one batch of three from three batches of

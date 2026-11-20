@@ -255,8 +255,8 @@ def test_show_all_is_one_button_whose_triple_names_a_real_swap(
 ) -> None:
     """`hx-get` the fragment, `hx-target` the list, `hx-swap=outerHTML`: and the route answers.
 
-    `070` §7 asserts every `Then` of the expansion and nothing about how the control asks for it;
-    three attributes that disagree with the fragment's route expand nothing at all.
+    The expansion's scenarios assert every `Then` of it and nothing about how the control asks
+    for it; three attributes that disagree with the fragment's route expand nothing at all.
     """
     world = _person(tmp_path, monkeypatch, rows=11)
 
@@ -412,7 +412,7 @@ def test_the_row_carries_the_stored_pair_and_the_text_carries_only_labels(
     """`data-old`/`data-new` hold what the row stored; the sentence holds the two labels only.
 
     The pair is the one place a ULID is allowed to be — on the DOM, never in the text a CSS
-    `content:` or a screen reader could pick up (§2.5.7.1 rule 1). A side the row does not have
+    `content:` or a screen reader could pick up. A side the row does not have
     is an empty attribute and never the string `None`.
     """
     world = _person(tmp_path, monkeypatch)
