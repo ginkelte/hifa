@@ -546,3 +546,20 @@ def test_the_history_entries_resolve_the_actor_and_keep_the_stored_values(cli: C
     assert json.loads(priority["old_value"]) == 0
     assert json.loads(priority["new_value"]) == 2
     assert member["display_name"] in cli.run("issue", "show", "ENG-1", "--with", "history").stdout
+
+
+def test_the_comment_body_folds_its_lines_and_is_capped_at_60_cells(cli: Cli) -> None:
+    """A body is one cell: its line breaks become spaces and the cell gives way with an ellipsis."""
+    cli.create("Fix SSO login")
+    body = "first line\n" + "x" * 80
+    assert cli.run("issue", "comment", "ENG-1", body).exit_code == 0
+
+    result = cli.run("issue", "show", "ENG-1", "--with", "comments")
+
+    header, *rows = sections(result)["COMMENTS"]
+    cell = rows[0][header.index("BODY") :]
+    assert len(rows) == 1
+    assert "\n" not in cell
+    assert cell.startswith("first line ")
+    assert len(cell) <= 60
+    assert cell.endswith("…")

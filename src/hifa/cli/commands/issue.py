@@ -944,7 +944,11 @@ def _collections_payload(
 
 
 def _collection_item(name: str, value: Any) -> dict[str, Any]:
-    """One element of one collection, in the shape its object has everywhere else."""
+    """One element of one collection, in the shape its object has everywhere else.
+
+    The four names are the closed set the command formats; `children` is the one whose element is
+    the identifier reference a parent already carries.
+    """
     if name == "comments":
         return _comment_canonical(value)
     if name == "relations":
