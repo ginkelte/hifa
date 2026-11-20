@@ -76,9 +76,9 @@ class HifaError(Exception):
 class NotFound(HifaError):
     """Resource that does not exist by id or identifier. CLI exit 3, HTTP 404.
 
-    The sentence is the catalogue's of SPEC-050 §6 — `<resource> '<key>' does not exist` — and it
-    is built here so that every edge renders one wording: `hifa: issue 'ENG-999' does not exist`.
-    A raise site that knows better passes `message` and keeps the two accessors.
+    The sentence is the catalogue's — `<resource> '<key>' does not exist` — and it is built here so
+    that every edge renders one wording: `hifa: issue 'ENG-999' does not exist`. A raise site that
+    knows better passes `message` and keeps the two accessors.
     """
 
     code = "NOT_FOUND"

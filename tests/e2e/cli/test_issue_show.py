@@ -557,10 +557,10 @@ def test_show_accepts_the_ulid_of_the_issue(cli: Cli) -> None:
 def test_show_with_a_nonexistent_reference_is_not_found(cli: Cli) -> None:
     """A reference that resolves nowhere is the verb's one `3`, with the noun in `field`.
 
-    The scenario of SPEC-050 §7 asserts the sentence `stderr` carries, not only the code, so the
-    human line is read here byte for byte — `does not exist`, the quoted reference and the `field`
-    the catalogue's `NotFound` row publishes — and `stdout` is empty because a refusal writes
-    nothing a caller could mistake for an object.
+    The recorded scenario asserts the sentence `stderr` carries, not only the code, so the human
+    line is read here byte for byte — `does not exist`, the quoted reference and the `field` the
+    catalogue's `NotFound` row publishes — and `stdout` is empty because a refusal writes nothing a
+    caller could mistake for an object.
     """
     result = cli.run("issue", "show", "ENG-999")
 

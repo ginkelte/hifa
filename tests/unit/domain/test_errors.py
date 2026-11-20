@@ -87,7 +87,7 @@ def test_default_message_when_none_is_passed() -> None:
 
 
 def test_not_found_derives_message_and_details() -> None:
-    """An explicit message wins; without one the sentence is the catalogue's (SPEC-050 §6)."""
+    """An explicit message wins; without one the sentence is the catalogue's."""
     err = NotFound("no existe", resource="issue", key="ENG-404")
     assert err.resource == "issue"
     assert err.key == "ENG-404"
