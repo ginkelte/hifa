@@ -3397,3 +3397,129 @@ its own, and corrects the older bullet of its Notes that had repeated the classi
 `hifa init` refusal of R14c". It now has a second surface: `db reindex` answers the same code at exit `3`
 for a file that opens and is not a hifa database (D-066). `fts5_unavailable` is untouched — one producer,
 `require_fts5(conn)`, the same two call sites — and the exit set of `db reindex` is still `0, 3, 6`.
+
+## Amendments to D-063, D-064, D-065 and D-066 (third review round, 2026-11-20)
+
+Appended, not rewritten, for the reason the two blocks above give: these decisions were reviewed against
+the corpus and against their own executable text, and two of the corrections below are statements the
+reviewer ran.
+
+**D-063, `q` and the order.** The amendment above says the listing's `q` has "no effect on `order`" and
+names SPEC-060 §2.5.1 and §2.6 as the places that now say so. One sentence of the same document survived
+the round: **R9**, which read "the default order is `score DESC, id ASC` and an explicit `order` with `q`
+⇒ 422". The search endpoint declares no `order` at all — its parameter is `sort`, the five values of
+SPEC-090 §2.5, and `relevance` is what `score DESC, id ASC` means — so R9 refused a parameter this
+document does not publish, in the one place a client reads the refusal. R9 now states the rule the other
+three sections state: `q` does not change the order, and no `order`/`sort` value is refused because `q` is
+present. SPEC-060 rev 14.
+
+**D-064, the port carries the text half.** The rule makes `search_issues(db, query, *, now)` the entry
+point and `SearchService` its implementation, and it left the port's text arguments where revision 6 had
+them: `reads.search(match=…, match_title=…, like_terms=…)`, with `like_terms` described as "the positive
+terms". §5.3 (rev 7) then printed a form whose entire predicate is a negation, and the adapter's third
+state was declared as "`like_terms == ()` **and no negated term**" — a condition that, inside the
+adapter, is spelled `like_terms == ()` and nothing else, because nothing in its arguments could carry a
+negated term. The no-positive form could not be called, and "no text at all" could not be told from "text
+that is all negation". §2.4's `text` argument is now a `TextPredicate` with both tuples (D-067), and
+§2.4's table decides the path from its four fields alone. `SearchService.search`'s signature does not
+move: what it passes down does. SPEC-090 rev 8, `version` 3 → 4.
+
+**D-064, `NOT` over a nullable column.** The `like` path is the decision's own contract — the fallback of
+R14a/R14b — and its printed `NOT (title LIKE :n0 OR description LIKE :n0)` dropped rows: with
+`description IS NULL` (legal, SPEC-010 §3.4) and a title that does not carry the term, the predicate is
+`NULL`, `NOT NULL` is `NULL`, and the `WHERE` discards the row. Measured on a four-row fixture — `i1`
+title "Deploy roto", `i2` "Bug del deploy" with a NULL description, `i3` "Otra cosa" with a NULL
+description, `i4` "Otra mas" with "tiene bug dentro" — the revision-7 form of `hifa search -bug` returned
+**1** row (`i1`) instead of the **2** it must return; with `COALESCE(description, '')` inside the `NOT`
+block it returns `i1` and `i3`, the `description IS NULL` row included. R14 now states the rule once — "a
+predicate under `NOT` treats a NULL column as empty" — and §5.3 carries it in both forms. The `fts` path
+needs no such rule: there `NOT` is evaluated over the index, which stores a NULL column as an empty one.
+
+**D-065, where `require_fts5` runs in `reindex`.** The rule puts the check "as the **first statement of
+`reindex(conn)`**", i.e. on the writable connection R21 opened before it had identified the file. With the
+probe now first (D-066, below), the check moved with it: `require_fts5(probe)` runs on the **read-only**
+probe, which is what the rule's own last paragraph already claims is possible ("it works on a read-only
+connection"), and the writable connection is opened only after the verdict. One producer, two call sites,
+unchanged: `migrate()` and `reindex`.
+
+**D-066, the two carriers, and the order of the probe.** The rule says `db reindex` "reads the file before
+it writes to it". It did not read it before it **opened** it: revision 10 opened the database read-write
+(which creates a missing path — 4096 bytes, empty schema, SPEC-030 §2.1) and then asked `sqlite_master`,
+so `database_not_found` was unreachable and the command created the file it promised not to touch. R21 now
+prints three ordered steps — (a) the path exists? no ⇒ `3` `database_not_found`, nothing opened; (b) a
+**read-only** open, the `sqlite_master` verdict and `require_fts5` ⇒ `3` or `6`, nothing written; (c) only
+then the writable connection and the transaction — and (a) and (b) leave the file byte-identical
+(measured: a foreign file keeps its sha and its 8192 bytes and leaves no `-wal`/`-shm` behind). The probe
+opens by URI mode and **not** with `connect(readonly=True)`: that function of SPEC-030 §2.1 applies the
+whole `PRAGMAS` tuple and its first entry is `journal_mode=WAL`, a write to the header that answers
+`attempt to write a readonly database` on a file that is not already in WAL — exit `4` on exactly the
+input the step exists to name. The decision's **other** carrier was dead for a different reason: `hifa
+init` ran its "no `workspace` table" probe **after** the migrator, and `001_init.sql` creates `workspace`
+on any `user_version`-0 file, so a foreign file was migrated (measured: `workspace` and `issue` present
+after applying the migration to a file with a `notes` table) and the probe could never fire. It is now
+§5.2 step 5, before the migrator, on the same read-only open: refused at `2` with no table created and no
+migration run, byte-identical, `--force` the override §6 already named. Both exits of the one code are
+now reachable, which is what the decision claims and could not previously show. §7 pins both: the missing
+path (`database_not_found`, no file created) and the foreign file (`not_a_hifa_database`, bytes unchanged).
+SPEC-100 rev 11, `version` 4 → 5.
+
+**One count, corrected in passing.** SPEC-100 §11's revision-10 note said "the six statements" and then
+enumerated eight (`CREATE VIRTUAL TABLE`, 3 × `DROP TRIGGER`, 3 × `CREATE TRIGGER`, `VALUES('rebuild')`);
+it now says eight between `BEGIN IMMEDIATE` and `COMMIT`, ten counting those two.
+
+## D-067 — The adapter receives the text half as one predicate, with both of its tuples
+
+**Date:** 2026-11-20 · **Wins:** SPEC-090 §2.2/§2.3 (the shape the service builds) and SPEC-090 §2.4 (what
+the port receives) · **Touches:** SPEC-090 §2.2, §2.3, §2.4, §2.5, §4.1 (R4, R14), §5.1, §5.3, §8, §12;
+`specs/INDEX.md`
+
+**The rule.** The text half of a search crosses the port as **one** frozen `TextPredicate` —
+`match: str | None`, `match_title: str | None`, `like_terms: tuple[str, ...]`,
+`not_terms: tuple[str, ...]` — built by **`build_text_predicate(text)`** in `app/search.py` and passed as
+`reads.search(conn, text=predicate, …)`. It replaces the three loose keywords (`match`, `match_title`,
+`like_terms`) of the previous signature. The negated terms are an argument of the port; the adapter never
+parses the text and never receives it.
+
+**Why the negated terms had to become an argument.** Revision 7 printed a `like` form whose whole
+predicate is a negation, and the port carried no way to ask for it: `like_terms` is "the positive terms",
+and the third text state was declared as "`like_terms == ()` **and no negated term**". Inside the
+adapter, "no negated term" has no representation — so `hifa search -bug` and `hifa search --state Done`
+were the same three arguments, and every implementation had to choose which of the two answers to break.
+An argument is the only place a decision can be made without re-deriving the query; the alternative —
+letting `reads.py` call `sanitize_terms` — puts the parser of `app/` inside the adapter and gives the two
+layers two copies of one rule.
+
+**Why not a field on `SearchQuery`.** `SearchQuery.text` already carries the negation (`-bug` is text),
+and `SearchQuery` is composed by each edge from the `ParsedQuery` plus its own flags. A `not_terms` field
+there would be a second copy of one fact, filled by the edge — which means the edge would have to read
+the terms, the one thing §2.3 forbids it to do for anything but its two local decisions, and a copy that
+can disagree with the text it was parsed from. The direction is the other one: `SearchService` derives
+both tuples from `query.text` in step 4 of §5.1 and the predicate is the only object that carries them.
+
+**Why one object and not four keywords.** The path is a function of four values, and it is now decidable
+by reading one argument's fields (§2.4's table): `match is not None` ⇒ `fts`; `match is None` with
+`like_terms` ⇒ the first `like` form; `match is None` with `like_terms == ()` and `not_terms` non-empty ⇒
+the second `like` form; both tuples empty ⇒ `backend="none"` and no text predicate. Four independent
+keywords invite a caller to pass three of them, which is how the third state became unreachable in the
+first place.
+
+**The alternatives rejected.** (1) *Add `not_terms` next to `like_terms`* — it works, and it leaves the
+three states spread over two booleans and a nullable string in five places (§2.4, §5.1, R4, R14, §5.3)
+instead of one table; the object is what makes the table writable once. (2) *A `TextPredicate` with only
+`not_terms` and `like_terms`* (no FTS expressions) — the adapter would then build `MATCH`, which is
+`app/`'s job (R4, REQ-N090-05: `app/search.py` holds the grammar, `reads.py` holds the SQL). (3) *A
+`backend` field the service computes* — the service cannot know the retry: when the `MATCH` raises one of
+R14's four triggers the adapter answers `backend="like"` while the predicate still carries a `match`, and
+a field would be a promise the retry breaks.
+
+**What it does not change.** `SearchQuery`, `SearchFilters`, `ParsedQuery` and `SearchPage` (no field
+moves); the `fts` path's SQL (§5.2); R14's four retry triggers and its ranking bands; the CLI flags, the
+API parameters and the page's four states; and `search_issues(db, query, *, now)`, whose signature every
+edge already calls (D-064).
+
+**Verification.** SPEC-090 §2.4's table is the contract and §5.1 steps 4-5 name the four values; §8 step 4
+asks for the split test (`deploy -bug -infra` ⇒ `like_terms=("deploy",)`, `not_terms=("bug","infra")`);
+§7's purely-negative scenario asserts `backend="like"` with the three surviving issues; and the two SQL
+blocks of §5.3 were executed against the four-row fixture of the D-064 amendment above — `hifa search -bug`
+returns **2** rows with the new block and returned **1** with the old one, the row whose `description` is
+`NULL` being the one that moved.

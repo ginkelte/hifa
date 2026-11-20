@@ -3,8 +3,8 @@ id: SPEC-090
 title: FTS5 full-text search
 component: application
 status: review
-version: 3
-spec_revision: 7
+version: 4
+spec_revision: 8
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/app/search.py
@@ -119,6 +119,14 @@ class ParsedQuery:  # what `parse_query(raw)` returns: the TEXT, never a SearchQ
 
 
 @dataclass(frozen=True)
+class TextPredicate:  # the text half of a search, as `reads.search` receives it (§2.4)
+    match: str | None  # FTS5 MATCH expression, None when no positive term survives (R4)
+    match_title: str | None  # the title-restricted expression, for the ranking band (R9)
+    like_terms: tuple[str, ...]  # the POSITIVE terms, in order of appearance, `-` stripped (R14)
+    not_terms: tuple[str, ...]  # the NEGATED terms, in order of appearance, `-` stripped (R14)
+
+
+@dataclass(frozen=True)
 class SearchHit:
     issue_id: str
     identifier: str
@@ -154,6 +162,7 @@ class SearchError(Validation):
 def sanitize_terms(text: str) -> tuple[str, ...]
 def build_match_expression(text: str) -> str | None
 def build_title_match_expression(text: str) -> str | None
+def build_text_predicate(text: str) -> TextPredicate
 def escape_like(value: str) -> str
 def parse_query(raw: str) -> ParsedQuery
 def identifier_candidate(text: str) -> str | None
@@ -206,6 +215,17 @@ default arrives from the edge that resolved it**, exactly as `--team`'s value do
 consequence: `parse_query("deploy")` returns the same `ParsedQuery` for every working directory, every
 `.hifa.toml` and every database.
 
+**`build_text_predicate(text)` is the only constructor of the text half, and it is why the port can
+tell "no text" from "text that is all negated".** It calls `sanitize_terms(text)`, splits the result on
+R2's `-` marker into the positive and the negated terms (the marker stripped), and returns the
+`TextPredicate` of §2.2: the two FTS5 expressions of R4 and the two tuples. `SearchService` builds it
+once per call, from `query.text` alone, and hands it to `reads.search` (§5.1 steps 2-5 and 7). The
+negated terms therefore reach the adapter as an **argument**, not as something it has to rediscover by
+reading the text: `like_terms == ()` and `not_terms == ()` means no text, `like_terms == ()` with
+`not_terms != ()` means the no-positive form of §5.3, and only the predicate can tell those two apart.
+The terms are **not** carried on `SearchQuery` and are not read by any edge: `SearchQuery.text` already
+carries the `-` and the service is the one that parses it (D-067).
+
 **`search_issues` is the use case and the only entry point**, and its signature is the one SPEC-040
 §2.2 declares — `search_issues(db, query, *, now)` with `now` aware and in UTC: the edges call it with the
 `Database` they already hold, as they do with `list_issues` and `issue_detail`, and with the instant their
@@ -250,9 +270,7 @@ class SearchRow:
 def search(
     conn: sqlite3.Connection,
     *,
-    match: str | None,
-    match_title: str | None,
-    like_terms: tuple[str, ...],
+    text: TextPredicate,
     filters: SearchFilters,
     order: str,
     limit: int,
@@ -267,16 +285,27 @@ def team_timezone(conn: sqlite3.Connection, *, team_key: str) -> str | None
 
 Port rules:
 
-- `match`/`match_title` are **already sanitized** FTS5 expressions (§2.3), built by `SearchService` from
-  `query.text`. The port distinguishes exactly three text states, and there is no fourth:
-  - `match is not None` ⇒ the `fts` path.
-  - `match is None` **and the query carries text** (a purely negative query, R14a) ⇒ the `like` path with
-    `like_terms`.
-  - **no text at all** — `like_terms == ()` and no negated term — ⇒ **no text predicate**,
-    `backend="none"`, and the filters alone (R14's last sentence). An empty `match` never means "fall
-    back to `like`": a `like` path over zero terms is an all-rows scan wearing the wrong label, and an
-    implementation that refused to build a predicate from no term would answer **zero** rows. Both are
-    wrong; `hifa search --state Done` is the case that tells them apart (§2.5).
+- `text` is the `TextPredicate` of §2.2 — **already sanitized** FTS5 expressions and the two term tuples,
+  built by `SearchService` with `build_text_predicate(query.text)` (§2.3). The port distinguishes exactly
+  three text states — `fts`, `like`, `none`, and no fourth; `like` has the two forms of §5.3 — and
+  **decides them from its arguments alone**: `text.match`, `text.like_terms` and `text.not_terms`, with
+  nothing read out of the text again. The four argument combinations are these:
+
+  | `text.match` | `text.like_terms` | `text.not_terms` | Path |
+  |---|---|---|---|
+  | not `None` | any | any | **`fts`**: `MATCH :match` (§5.2); `like_terms` is kept for R14b's retry and for the snippet (R15) |
+  | `None` | non-empty | any | **`like`**, the first form of §5.3: the positives, minus the negated ones |
+  | `None` | `()` | non-empty | **`like`**, the no-positive form of §5.3: nothing but the negations |
+  | `None` | `()` | `()` | **no text predicate**, `backend="none"`, the filters alone (R14's last sentence) |
+
+  The second row is unreachable from `SearchService` — R4 returns a `match` whenever a positive term
+  survives — and it is declared so the adapter's decision is total over its arguments rather than
+  dependent on a caller's promise. The third and fourth rows are the pair this revision separates: both
+  have `like_terms == ()`, and only `not_terms` tells "a query that excludes something" from "a query
+  with no text at all". An empty `match` never means "fall back to `like`": a `like` path over zero
+  terms is an all-rows scan wearing the wrong label, and an implementation that refused to build a
+  predicate from no term would answer **zero** rows. Both are wrong; `hifa search --state Done` is the
+  case that tells them apart (§2.5).
 - `today` is `YYYY-MM-DD` **in the query's timezone**, computed by `SearchService` from `now` and
   `reads.team_timezone` (R13): the adapter never calls `datetime.now` and never calls a date function in
   SQL.
@@ -318,8 +347,9 @@ Port rules:
   holds no query of its own and builds no envelope (D-016, D-064).
 - **The walk of a filters-only search, which is where the two readings of §2.4 diverge.** `hifa search
   --state Done` carries no text at all: `parse_query("")` is empty (`is_empty` is `True`, and the command
-  does not refuse, because the composed `SearchQuery` carries a filter), `match` is `None`, `like_terms`
-  is `()`, and the adapter runs **no text predicate** with `backend="none"` (§2.4). The result is **every
+  does not refuse, because the composed `SearchQuery` carries a filter), and `build_text_predicate`
+  returns a predicate whose `match` is `None`, whose `like_terms` is `()` **and** whose `not_terms` is
+  `()`; the adapter runs **no text predicate** with `backend="none"` (§2.4). The result is **every
   issue whose state is `Done`**, under the default visibility of R10. The wrong reading of "`match is
   None` ⇒ the `like` path" answers the same rows but labels them `backend="like"` — an all-rows scan
   reported as a text search — and an implementation that built `AND ` over an empty term list would
@@ -454,6 +484,10 @@ Nothing is ever written to any of these tables from this component.
   - If no term remains, it returns `None`.
   - `build_title_match_expression` emits the same with a column filter: `title : (<positives>)`.
     It is used only to compute the ranking band (R9), never to filter.
+  - `build_text_predicate(text)` is the four values above, together, in one `TextPredicate` (§2.2): the
+    two expressions and the two term tuples, positives and negated, split on R2's `-` marker. It is what
+    the service hands the adapter, so the negation travels with the query instead of being re-derived
+    from the text inside `reads.py` (§2.3, §2.4, D-067).
 - **R5 — Query limits (REQ-F090-05).** `len(raw) > 512` ⇒ `query_too_long`. More than 16
   terms ⇒ `query_too_long`. A term (post-normalization) longer than 128 characters ⇒
   `query_too_long`. No text and no filters ⇒ `query_empty`.
@@ -536,10 +570,10 @@ Nothing is ever written to any of these tables from this component.
   `today` → `= :today`; `week` → `BETWEEN :today AND date(:today,'+7 days')`; `YYYY-MM-DD` → `=`; `>YYYY-MM-DD`
   / `<YYYY-MM-DD` → strict comparison. Any other format ⇒ `invalid_filter`.
 - **R14 — Fallback to LIKE (REQ-F090-14), and the only list of retry triggers.** The `like` path is used
-  when (a) the query carries text and `match is None` (a purely negative query, R4), or (b) the `MATCH`
-  raises `sqlite3.OperationalError` whose message **contains one of exactly four strings**. This is the
-  only place in the corpus where those four are listed: §2.4 cites this rule and names no trigger of its
-  own.
+  when (a) `text.match is None` and `text.not_terms` is non-empty — a purely negative query, R4 — or
+  (b) the `MATCH` raises `sqlite3.OperationalError` whose message **contains one of exactly four
+  strings**. This is the only place in the corpus where those four are listed: §2.4 cites this rule and
+  names no trigger of its own.
 
   | Trigger | What it means |
   |---|---|
@@ -551,11 +585,31 @@ Nothing is ever written to any of these tables from this component.
   The last two are one situation with two messages — the index exists for the reader but not for this
   process — and they are matched the same way as the first two, by `in` over the driver's message, never
   by an exact comparison and never by a regex. The verification is a unit test that raises each of the
-  four as `sqlite3.OperationalError` and asserts that `reads.search` answers `backend="like"`. On that
-  path the predicate is, for each positive term,
+  four as `sqlite3.OperationalError` and asserts that `reads.search` answers `backend="like"`.
+
+  **The bindings of the `like` path, positive and negated, are declared here and nowhere else.** For
+  each **positive** term of `text.like_terms`, one binding `:p0`, `:p1`, … =
+  `'%' + escape_like(term) + '%'`, and the predicate
   `(title LIKE :p ESCAPE '\' OR description LIKE :p ESCAPE '\' OR identifier LIKE :p ESCAPE '\')`
-  with `:p = '%' || escape_like(term) || '%'` and AND between terms; `escape_like` escapes `\`, `%`
-  and `_`. The ranking of the `like` path is fixed: exact identifier (0), `title LIKE 'term%'` (1),
+  with `AND` between terms. For each **negated** term of `text.not_terms`, one binding `:n0`, `:n1`, … of
+  the **same** shape — `'%' + escape_like(term) + '%'`, `ESCAPE '\'` — used by
+  `NOT (title LIKE :n ESCAPE '\' OR COALESCE(description, '') LIKE :n ESCAPE '\')`, one such `NOT` block
+  per negated term, `AND` between blocks. `escape_like` escapes `\`, `%` and `_`, so a negated `-100%` is
+  a literal. Both tuples are numbered independently and in order of appearance: `deploy -bug -infra`
+  binds `:p0`, `:n0`, `:n1`. The match is **case-insensitive for ASCII only** — `LIKE` folds `A`–`Z`
+  and nothing else in SQLite, so `-bug` also excludes `BUG` and `Bug`, and `-ñandú` excludes neither
+  `Ñandú` nor `ÑANDÚ`. That is the same asymmetry the positive path already has, stated here because the
+  no-positive form is nothing but negations.
+
+  **A predicate under `NOT` treats a NULL column as empty.** `NULL LIKE '%x%'` is `NULL`, and `NOT NULL`
+  is `NULL`, which the `WHERE` discards: an issue with `description IS NULL` would silently disappear
+  from a negated query instead of surviving it. `description` is the only column of these predicates the
+  schema leaves nullable (SPEC-010 §3.4: `title` and `identifier` are `NOT NULL`), so **every nullable
+  column inside a `NOT (…)` is read as `COALESCE(column, '')`**, in both forms of §5.3. The `fts` path
+  needs no such rule: the FTS5 index stores a NULL column as an empty one and `NOT` there is evaluated
+  over the index, not over SQL NULL.
+
+  The ranking of the `like` path is fixed: exact identifier (0), `title LIKE 'term%'` (1),
   `title LIKE '%term%'` (2), the rest (3). `SearchPage.backend` reports `"like"` and `score` is
   `0.0`. The fallback **never** changes the set of filters or the visibility. If there is no text
   (filters only), no text predicate is added and `backend` is `"none"`.
@@ -618,27 +672,30 @@ Nothing is ever written to any of these tables from this component.
  1. validate limit/offset (R11) and query limits (R5)        → invalid_limit / query_too_long
  2. terms ← sanitize_terms(query.text)
  3. if terms is empty and there are no filters               → query_empty
- 4. match        ← build_match_expression(terms)             (None if there are no positives)
-    match_title  ← build_title_match_expression(terms)
-    ident_exact  ← complete identifier_candidate(text) or ""
+ 4. pred         ← build_text_predicate(query.text)           (R4: match, match_title, like_terms, not_terms)
+    ident_exact  ← complete identifier_candidate(query.text) or ""
     ident_like   ← prefix "KEY-" or "KEY-12" + "%" or ""
- 5. three text states, no fourth (§2.4):
-    match is not None                          → fts path
-    match is None and the query carries text    → like path (R14a)
-    no text at all (like_terms empty, no -term) → no text predicate, backend = "none"
+ 5. three text states, no fourth (§2.4), decided on the predicate's own fields:
+    pred.match is not None                              → fts path
+    pred.match is None, pred.like_terms non-empty       → like path, first form (positives + negations)
+    pred.match is None, pred.like_terms == (),
+    pred.not_terms non-empty                            → like path, second form (negations only)
+    pred.match is None and both tuples == ()            → no text predicate, backend = "none"
  6. today ← ""   unless filters.due ∈ {overdue, today, week}
     zone  ← reads.team_timezone(conn, team_key=filters.team) if filters.team else "UTC"   (R13)
     today ← now.astimezone(zone).date().isoformat()
- 7. rows, total, backend ← reads.search(conn, match=…, match_title=…, like_terms=…,
-                                         filters=…, order=query.sort, limit=…, offset=…,
+ 7. rows, total, backend ← reads.search(conn, text=pred, filters=query.filters,
+                                         order=query.sort, limit=…, offset=…,
                                          count=query.count, today=today)
  8. has_more ← len(rows) > limit;  rows ← rows[:limit]
  9. build SearchPage(hits, total, has_more, backend, took_ms)
 ```
 
 Steps 8 and 9 are the whole of §2.4's last port rule: the adapter may answer `limit + 1` rows, and this
-is where the probe becomes a boolean and leaves the page. `now` is the parameter of `search`, so this
-sequence contains no clock read at all; it contains no team read either unless step 6 needs a timezone.
+is where the probe becomes a boolean and leaves the page. Step 4 is the only place the negated terms are
+produced: `reads.search` receives them in `text.not_terms` and never looks at `query.text`, which it does
+not have. `now` is the parameter of `search`, so this sequence contains no clock read at all; it contains
+no team read either unless step 6 needs a timezone.
 
 `took_ms` is measured with `time.perf_counter()` between step 1 and step 9 and rounded to 1 decimal; it is the
 only non-deterministic field of the response and it **does not** enter the equality comparisons of the
@@ -711,9 +768,9 @@ Normative notes:
 
 ### 5.3 `like` path (fallback)
 
-Two forms, one per text state the port rules of §2.4 distinguish. This is the first — a query with at
-least one **positive** term, which is R14a's text case and R14b's retry — and its bands are decided by
-the query's first positive term:
+Two forms, one per `like`-path state of §2.4's table. This is the first — a predicate with at least one
+**positive** term, which is R14b's retry and §2.4's second row — and its bands are decided by the
+query's first positive term:
 
 ```sql
 SELECT i.id, i.identifier, i.title, s.name, s.type, i.priority, i.due_date,
@@ -728,17 +785,23 @@ LEFT JOIN member m    ON m.id = i.assignee_id
 WHERE ( i.title LIKE :p0 ESCAPE '\' OR i.description LIKE :p0 ESCAPE '\'
         OR i.identifier LIKE :p0 ESCAPE '\' )
   [ AND ( … ) for each additional positive term ]
-  [ AND NOT ( i.title LIKE :n0 ESCAPE '\' OR i.description LIKE :n0 ESCAPE '\' ) for each negated term ]
+  [ AND NOT ( i.title LIKE :n0 ESCAPE '\' OR COALESCE(i.description, '') LIKE :n0 ESCAPE '\' ) for each negated term ]
   AND i.trashed = 0 AND i.archived_at IS NULL
 ORDER BY band ASC, i.updated_at DESC, i.id ASC
 LIMIT :limit_plus_one OFFSET :offset
 ```
 
+The `COALESCE` inside `NOT (…)` is R14's NULL rule and not a decoration: with `description IS NULL` the
+bare `NOT (title LIKE :n0 OR description LIKE :n0)` evaluates to `NULL` for a row whose title does not
+carry the term, and the row is dropped from a query it should survive (§12 has the measurement). The
+positive disjunction above needs no `COALESCE` — a `NULL` there only makes one disjunct unknown, and the
+row is returned as soon as any other disjunct is true.
+
 The snippet of this path is computed after the fetch, in `SearchService`, following R15.
 
 **The form with no positive term.** `hifa search -bug` carries text and has no positive term, so R4
-returns `match=None` and R14a sends the query here with a predicate made only of negations. The form
-above cannot express it: `:p0`, `:first_prefix` and `:first_contains` are derived from a *first
+returns `match=None` and §2.4's third row sends the query here with a predicate made only of negations.
+The form above cannot express it: `:p0`, `:first_prefix` and `:first_contains` are derived from a *first
 positive* term, and there is none. The same query is emitted as this one:
 
 ```sql
@@ -748,22 +811,25 @@ SELECT i.id, i.identifier, i.title, s.name, s.type, i.priority, i.due_date,
 FROM issue i
 JOIN workflow_state s ON s.id = i.state_id
 LEFT JOIN member m    ON m.id = i.assignee_id
-WHERE NOT ( i.title LIKE :n0 ESCAPE '\' OR i.description LIKE :n0 ESCAPE '\' )
-  [ AND NOT ( i.title LIKE … OR i.description LIKE … ) for each further negated term ]
+WHERE NOT ( i.title LIKE :n0 ESCAPE '\' OR COALESCE(i.description, '') LIKE :n0 ESCAPE '\' )
+  [ AND NOT ( i.title LIKE :n1 ESCAPE '\' OR COALESCE(i.description, '') LIKE :n1 ESCAPE '\' ) for each further negated term ]
   AND i.trashed = 0 AND i.archived_at IS NULL
 ORDER BY i.updated_at DESC, i.id ASC
 LIMIT :limit_plus_one OFFSET :offset
 ```
 
-Its bindings are exactly the negated terms (`:n0`, `:n1`, …), the parameters of the filters present,
-`:limit_plus_one` and `:offset`: it binds **no** `:p0`, no `:first_prefix`, no `:first_contains` and no
-`:ident_exact` — an identifier candidate is derived from a positive term and there is none. `band` is
-the constant `0`, because there is nothing to rank above anything else, and the order is the tail of the
-first form without the band: `i.updated_at DESC, i.id ASC`. The rows are the issues whose title and
-description carry none of the negated terms, under the same visibility and filter rules as the first
-form; the snippet follows R15's last case (no positive term ⇒ the description truncated to 120
-characters, or the title). A query with neither a positive nor a negated term is **not** this form: it
-is §2.4's `backend="none"`, with no text predicate at all.
+Its bindings are exactly the negated terms (`:n0`, `:n1`, …, each `'%' + escape_like(term) + '%'` with
+`ESCAPE '\'`, the shape R14 declares), the parameters of the filters present, `:limit_plus_one` and
+`:offset`: it binds **no** `:p0`, no `:first_prefix`, no `:first_contains` and no `:ident_exact` — an
+identifier candidate is derived from a positive term and there is none. `band` is the constant `0`,
+because there is nothing to rank above anything else, and the order is the tail of the first form without
+the band: `i.updated_at DESC, i.id ASC`. The rows are the issues whose title and description carry none
+of the negated terms, under the same visibility and filter rules as the first form; the snippet follows
+R15's last case (no positive term ⇒ the description truncated to 120 characters, or the title). Its
+`NOT (…)` blocks carry the same `COALESCE(i.description, '')` for the same reason, and here it is the
+whole predicate: an issue with no description at all is exactly the row a bare `NOT` would lose. A query
+with neither a positive nor a negated term is **not** this form: it is §2.4's `backend="none"`, with no
+text predicate at all.
 
 ## 6. Errors
 
@@ -1007,10 +1073,12 @@ Feature: Full-text search over issues
    `identifier UNINDEXED`) and add the 3 triggers of §3.1 with those exact names
    (`issue_fts_ai`, `issue_fts_ad`, `issue_fts_au`).
 3. Create `src/hifa/app/search.py` with the constants, dataclasses and functions of §2.1-2.3. No SQL.
-4. Implement `sanitize_terms` → `build_match_expression` → `build_title_match_expression` with
-   unit tests covering: unbalanced quotes, `OR`/`NOT`/`NEAR`, parentheses, `%`, `_`,
-   empty terms, prefix, phrase and negation. No input may produce an invalid `MATCH`: the
-   parameterized test runs `conn.execute("SELECT rowid FROM issue_fts WHERE issue_fts MATCH ?", …)`
+4. Implement `sanitize_terms` → `build_match_expression` → `build_title_match_expression` →
+   `build_text_predicate` with unit tests covering: unbalanced quotes, `OR`/`NOT`/`NEAR`, parentheses,
+   `%`, `_`, empty terms, prefix, phrase and negation — the last one asserting that `-bug deploy` and
+   `deploy -bug -infra` split into the two tuples of §2.2 with the `-` stripped. No input may produce an
+   invalid `MATCH`: the parameterized test runs
+   `conn.execute("SELECT rowid FROM issue_fts WHERE issue_fts MATCH ?", …)`
    over 100 adversarial inputs and requires 0 `OperationalError`.
 5. Implement `parse_query` returning `ParsedQuery` (§2.3) respecting R6/R7/R8 and `PRIORITY_NAMES`; it
    takes one argument and reads no configuration.
@@ -1093,10 +1161,40 @@ its 320 px layout and its keyboard path in SPEC-070 §2.1.8; nothing of that is 
 
 ## 12. Notes
 
+- spec_revision 8 (2026-11-20): **the negated terms reach the port, the `NOT (…)` survives a NULL
+  column, and the numbers in this note are the ones a probe printed (HIFA-7, third review round,
+  D-067).** `version` 3 → 4: §2.2 gains a type and §2.4's signature changes, so the public contract
+  moves. Three corrections, two of them executable text that was run and answered the wrong rows:
+  (1) **The no-positive form could not be called.** `reads.search` carried `like_terms` — "the positive
+  terms" — and nothing else, while §5.3 printed a form whose whole predicate is a negation, and the
+  adapter's third state ("no text at all") was declared as "`like_terms == ()` and no negated term":
+  inside the adapter that is indistinguishable from `like_terms == ()`, period. §2.2 now declares
+  `TextPredicate` (`match`, `match_title`, `like_terms`, `not_terms`), §2.3 declares
+  `build_text_predicate(text)` as its only constructor, §2.4's `text` argument carries it, and §2.4
+  publishes a four-row table that decides the path from those four fields alone — `(None, (), ())` is
+  `backend="none"`, `(None, (), (n0…))` is the no-positive form. §5.1 steps 4-5 and 7, R4, R14 and §2.5's
+  filters-only walk now name the same two tuples. The field is **not** on `SearchQuery`: the text already
+  carries its `-` and an edge that had to fill a second copy would be parsing the query it is forbidden
+  to parse (D-067).
+  (2) **The printed `NOT (…)` dropped rows with a NULL column.** Measured on a four-row fixture where
+  `i3` has `description IS NULL` and carries no `bug`: the form of revision 7 —
+  `NOT (i.title LIKE :n0 OR i.description LIKE :n0)` — returns **1** row (`i1`), because for `i3` the
+  predicate is `NULL` and the `WHERE` discards it; with `COALESCE(i.description, '')` inside both `NOT`
+  blocks it returns the **2** rows it must (`i1`, `i3`), and the first form's negated clause does the
+  same. R14 states the rule once — "a predicate under `NOT` treats a NULL column as empty" — with the
+  SPEC-010 §3.4 citation that makes `description` the only nullable column of these predicates.
+  (3) **The negated bindings are declared.** R14 said what the positive bindings are and said nothing
+  about `:n0`, which the no-positive form binds as its *entire* predicate: one binding per negated term
+  of `text.not_terms`, same shape (`'%' + escape_like(term) + '%'`, `ESCAPE '\'`), independently
+  numbered, and the ASCII-only case folding of `LIKE` stated with the terms it does not fold.
+  §8 step 4 asks for the split test. The `.feature` corpus does not move — 17 files, **240** scenarios
+  (228 `Scenario` + 12 `Scenario Outline`).
 - spec_revision 7 (2026-11-20): **the `like` path can now express a query with no positive term, and the
   two failures of the only write this component authorises are named by the file each one refuses
   (HIFA-7, second review round).** `version` stays 3: §2.2, §2.3 and §2.4 do not move — the port already
   distinguished the three text states, and what was missing was the SQL that compiles the second one.
+  (Revision 8 corrects this sentence: the port did **not** distinguish the third state from "no text at
+  all", because no argument carried a negated term, so §2.2 and §2.4 do move after all — `version` 3 → 4.)
   (1) **§5.3 had one form and R14a names two states.** The block bound `:p0`, `:first_prefix` and
   `:first_contains` from a *first positive* term, so `hifa search -bug` — a predicate that is only
   `AND NOT (…)` — had no normative SQL to compile to, and an implementation had to invent one. §5.3 now

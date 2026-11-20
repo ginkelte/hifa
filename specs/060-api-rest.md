@@ -3,8 +3,8 @@ id: SPEC-060
 title: REST API — endpoints, schemas, pagination and HTTP errors
 component: entry
 status: review
-version: 6
-spec_revision: 13
+version: 7
+spec_revision: 14
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/api/**
@@ -113,8 +113,23 @@ writes and a shared connection turns contention into `database is locked`.
 
 ### 2.4 Pydantic v2 schemas
 
-All output models use `model_config = ConfigDict(from_attributes=True)`. All input models,
-`ConfigDict(extra="forbid")`. No loose `dict`s: the shape of the JSON is the schema.
+**`model_config = ConfigDict(from_attributes=True)` is for the models that validate a use case's
+dataclass**, i.e. the ones a handler builds with `Model.model_validate(<frozen dataclass>)` out of
+`app/` or `adapters/`: `IssueOut`, `TeamOut`, `StateOut`, `LabelOut`, `ProjectOut`, `CycleOut`,
+`MemberOut`, `CommentOut`, `RelationOut`, `AttachmentOut`, `SearchHit` and `SearchPage`. **Every input
+model** (the `*Create`/`*Patch`/`*Move`/`*Add` set) uses `ConfigDict(extra="forbid")`. No loose `dict`s:
+the shape of the JSON is the schema.
+
+A model that is **composed here and not validated from a dataclass** carries neither config, and that is
+deliberate rather than an omission: the nested references of §2.4.1 (`TeamRef`, `StateRef`, `MemberRef`,
+`ProjectRef`, `MilestoneRef`, `CycleRef`, `ParentRef`, `LabelRef`), the envelopes of §2.6 (`IssuePage`,
+`TeamList`, the eight bounded lists and their `items`), the aggregates computed in the handler
+(`HistoryEntry`, `TeamProgress`), and `HealthOut` are built field by field, so `from_attributes` would
+declare a coercion path nothing uses. **The error bodies carry no config either** — `ErrorBody`,
+`ErrorEnvelope` — and on purpose: they are built from a `DomainError`, whose `code`/`message`/`field`
+are copied into the schema by `api/errors.py`, so they must not accept an arbitrary object as their
+source. Adding `from_attributes` there would make any exception with those attribute names
+envelope-shaped, which is the one place of this layer where that freedom is a hazard.
 
 ```python
 # src/hifa/api/schemas.py
@@ -810,9 +825,9 @@ class SearchPage(BaseModel):
     took_ms: float
 ```
 
-Both are **output models** and both carry `model_config = ConfigDict(from_attributes=True)`, which §2.4
-makes mandatory for every one of them. That is not decoration: `search_issues` returns the **frozen
-dataclasses** of SPEC-090 §2.2, so `SearchPage.model_validate(page)` and `SearchHit.model_validate(hit)`
+Both validate a dataclass — `search_issues` returns the **frozen dataclasses** of SPEC-090 §2.2 — and both
+carry `model_config = ConfigDict(from_attributes=True)`, which §2.4 requires of exactly that family of
+models. That is not decoration: `SearchPage.model_validate(page)` and `SearchHit.model_validate(hit)`
 are the conversion — every field is read by attribute, the nested hits included, and no edge builds a
 `dict` or calls `model_dump()` on the way in. A schema without the config rejects the use case's own
 return value.
@@ -1044,7 +1059,7 @@ Nothing is ever written to `v_*` or to `issue_fts`.
 | **R6** | **REF is resolved at the app-layer edge, not in the router.** The router passes the string; `identifier` case-insensitive first, ULID after; no match ⇒ `NotFound`. `LIKE` is never used and nothing is guessed by prefix. → **REQ-F060-06** |
 | **R7** | **No remote assets.** `docs_url=None`, `redoc_url=None`, no `StaticFiles` under `/api`, no CDN in any response. `GET /docs` ⇒ 404. → **REQ-N060-03** |
 | **R8** | **Creation and deletion codes.** A `POST` that creates a top-level resource ⇒ 201 + `Location`. `DELETE /issues/{ref}` is **soft only**: 200 with the resource and `trashed: true`; **there is no physical delete and no `?hard`** (D-015 — the only compaction is `hifa db vacuum`), and a `hard` in the query string is rejected with 422 `validation_error`, `field: "hard"`. The labels subresource **does not** create top-level resources and is idempotent (SPEC-040 R10): `POST /issues/{ref}/labels` and `DELETE /issues/{ref}/labels/{label}` ⇒ **200** with the complete issue, never 201 and never 204. → **REQ-F060-07** |
-| **R9** | **Search: contract of SPEC-090 §2 (D-016).** `q` requires `min_length=1` and `≤ 512` chars; `limit` `1..200` default `50`; the 11 filters are those of SPEC-090 §2, with no parameters of its own. `score` is **higher = better** and **never negative** (`0.0` with `backend="like"`); the default order is `score DESC, id ASC` and an explicit `order` with `q` ⇒ 422. `snippet` arrives as-is from SPEC-090 §2: FTS5 `snippet(issue_fts, -1, '<mark>', '</mark>', '…', 12)`, with `<mark>`/`</mark>` around the terms and no escaping in `app/` (REQ-S090-03). → **REQ-F060-09** |
+| **R9** | **Search: contract of SPEC-090 §2 (D-016).** `q` requires `min_length=1` and `≤ 512` chars; `limit` `1..200` default `50`; the 11 filters are those of SPEC-090 §2, with no parameters of its own. `score` is **higher = better** and **never negative** (`0.0` with `backend="like"`); the default order is `score DESC, id ASC` — which here is `sort=relevance`, the default of the `sort` parameter of §2.5.4. **`q` does not change the order, and no `order`/`sort` value is refused because `q` is present**: this endpoint declares `sort` (the five values of SPEC-090 §2.5, all valid with or without `q`) and no `order` parameter at all, so there is nothing to refuse — a `sort` with `q` is a search ordered by that key, and the ranking of SPEC-090 R9/R12 is what `relevance` means. `snippet` arrives as-is from SPEC-090 §2: FTS5 `snippet(issue_fts, -1, '<mark>', '</mark>', '…', 12)`, with `<mark>`/`</mark>` around the terms and no escaping in `app/` (REQ-S090-03). → **REQ-F060-09** |
 | **R10** | **Single-direction relations.** `POST /relations` with `type=blocks` creates `issue_id → related_issue_id`. `blocked_by` is not persisted: the inverse is derived on read. → **REQ-F060-10** |
 | **R11** | **Read-only.** With `read_only=True`, any method ≠ GET/HEAD ⇒ 403 `forbidden` with the `message` `"server in read-only mode"`, before touching the database. → **REQ-F060-11** |
 | **R12** | **A single error format.** Pydantic's 422s and those of `RequestValidationError` are rewritten into the envelope of §6.3; FastAPI's `{"detail": [...]}` format **never** goes out. → **REQ-F060-12** |
@@ -1429,6 +1444,25 @@ Feature: hifa REST API
 
 ## 11. Notes
 
+- spec_revision 14 (2026-11-20): **`q` does not move the order, and §2.4's config rule now says what the
+  models actually do (HIFA-7, third review round).** `version` 6 → 7: §2.4's normative instruction
+  changes (which models carry `from_attributes`) and R9 is the rule a client reads.
+  (1) **R9 refused something this document does not declare.** It said "an explicit `order` with `q` ⇒
+  422", against SPEC-090 §2.5 — which accepts `sort` with `q` — and against §2.6 of this document, whose
+  own `order` rule is the listing's keyset order and has nothing to do with a search. The sentence is
+  replaced: `q` does not change the order and no `order`/`sort` value is refused because `q` is present;
+  the endpoint declares `sort` (the five values of SPEC-090 §2.5, valid with or without `q`) and no
+  `order` parameter at all. `relevance` is what `score DESC, id ASC` means.
+  (2) **§2.4's blanket rule was false.** "All output models use `model_config =
+  ConfigDict(from_attributes=True)`" was not true of `IssuePage`, `TeamList`, `HistoryEntry`,
+  `TeamProgress`, `HealthOut`, `ErrorBody`/`ErrorEnvelope` or the eight nested references, and revision
+  13 restated it as "mandatory for every output model". The rule is now the truthful one — the config
+  belongs to the models that validate a use case's dataclass, named one by one — with the reason the
+  others carry neither config (composed field by field, so `from_attributes` would declare a coercion
+  path nothing uses) and the reason the error bodies are declared without it on purpose (they must not
+  accept an arbitrary exception as their source, which would make any object with those attribute names
+  envelope-shaped). No model gains or loses a field, and no error body gains config. §2.6's sentence
+  under `SearchPage` follows.
 - spec_revision 13 (2026-11-20): **`q` on the issue listing has one meaning, and it is not the search's
   (HIFA-7, second review round).** `version` 5 → 6, because §2.5.1's filter table and §2.6's order rule
   both change.
@@ -1439,11 +1473,12 @@ Feature: hifa REST API
   `OrderField` (§2.4). `q` is now the title filter of D-025 and nothing else: no `MATCH`, no `backend`, no
   ranking, no band, and no effect on `order`, with the sentence pointing at the route that does search
   (§2.5.4).
-  (2) **`SearchHit` and `SearchPage` now declare `from_attributes`.** §2.4 makes it mandatory for every
-  output model and these two, added in revision 12, carried no `model_config` — while the use case
-  returns SPEC-090's frozen dataclasses, so the schemas could not validate what they were written to
-  publish. One sentence under them states that `model_validate` over the dataclasses **is** the
-  conversion.
+  (2) **`SearchHit` and `SearchPage` now declare `from_attributes`.** §2.4 as it then read made it
+  mandatory for every output model (revision 14 narrows that sentence to the models that validate a
+  dataclass, which is exactly this pair) and these two, added in revision 12, carried no `model_config` —
+  while the use case returns SPEC-090's frozen dataclasses, so the schemas could not validate what they
+  were written to publish. One sentence under them states that `model_validate` over the dataclasses
+  **is** the conversion.
   (3) **A citation of the note below pointed at §2.2 for a class §2.4.4 declares**; it now says §2.4.4.
 - spec_revision 12 (2026-11-20): **the search hit this edge publishes is the one SPEC-090 declares, flat
   and eleven fields, and a refused search keeps its own code (HIFA-7 review round, D-064).** `version`

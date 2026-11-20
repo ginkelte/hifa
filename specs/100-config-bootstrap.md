@@ -3,8 +3,8 @@ id: SPEC-100
 title: Configuration and bootstrap
 component: support
 status: review
-version: 4
-spec_revision: 10
+version: 5
+spec_revision: 11
 depends_on: [SPEC-000, SPEC-010, SPEC-040]
 implements:
   - src/hifa/config.py
@@ -305,10 +305,11 @@ class DoctorReport:
 
 def doctor(conn: sqlite3.Connection, *, db_path: Path, migrations_dir: Path) -> DoctorReport
 def migrations_max_version(migrations_dir: Path) -> int
-# reindex: require_fts5(conn) first (SPEC-030 §2.1); then the sqlite_master verdict of R21 (a file with
-# no `workspace`/`issue` is NotAHifaDatabase, exit 3, nothing written); then ONE transaction with the
-# exact sequence of R21 — CREATE VIRTUAL TABLE IF NOT EXISTS, DROP TRIGGER IF EXISTS x3, CREATE
-# TRIGGER x3, VALUES('rebuild'). Returns the count of `issue` rows.
+# reindex: require_fts5(probe) and the sqlite_master verdict of R21 on a READ-ONLY probe first (a file with
+# no `workspace`/`issue` is NotAHifaDatabase, exit 3, nothing written; a path that does not exist is
+# DatabaseNotFound, exit 3, nothing created); then ONE writable transaction with the exact sequence of
+# R21 — CREATE VIRTUAL TABLE IF NOT EXISTS, DROP TRIGGER IF EXISTS x3, CREATE TRIGGER x3,
+# VALUES('rebuild'). Returns the count of `issue` rows.
 def reindex(conn: sqlite3.Connection) -> int
 ```
 
@@ -493,11 +494,16 @@ Invariants that `hifa init` guarantees on completion:
   sources says otherwise. The generated content is the one in §2.3 with the effective values, with
   `db` as a path **relative** to the file's directory when the database is inside that tree, and
   absolute when it is not.
-- **R14 — Existing database detection (REQ-F100-14).** Three cases: (a) nonexistent file ⇒ it is
-  created and seeded; (b) existing and migrated file (`user_version >= 1`) with a workspace ⇒
-  `already_initialized` and only what is missing is completed; (c) existing file **without** a `workspace`
-  table (it is not a hifa database) ⇒ `not_a_hifa_database` (exit 2) without writing. A
-  `user_version` greater than the binary's maximum migration ⇒ `schema_too_new` (exit 4).
+- **R14 — Existing database detection (REQ-F100-14).** Three cases, decided by §5.2 step 5, **before**
+  the migrator of step 6 runs: (a) a nonexistent file — or an existing file whose `sqlite_master` holds
+  no table and no view at all, i.e. a file that has never carried a schema — ⇒ it is created and seeded;
+  (b) existing with a workspace ⇒ `already_initialized` and only what is missing is completed; (c)
+  existing, carrying schema objects and **no** `workspace` table (it is not a hifa database) ⇒
+  `not_a_hifa_database` (exit 2), refused without writing a byte and without a migration having run.
+  `--force` skips the probe of (c) — it is the override §6's row names, and the only way to seed a file
+  that already holds another tool's tables. A `user_version` greater than the binary's maximum migration
+  ⇒ `schema_too_new` (exit 4), answered by the migrator at step 6, so a hifa database from a newer binary
+  passes step 5 (it carries `workspace`) and is refused there.
 - **R15 — Flag validation (REQ-F100-15).** `--team-key` must match
   `^[A-Z][A-Z0-9]{1,9}$` **after** `strip().upper()`; if the user passes `--team-key eng`, it is
   normalized to `ENG` (not an error). `--timezone` must exist in `zoneinfo.available_timezones()`
@@ -538,21 +544,42 @@ Invariants that `hifa init` guarantees on completion:
   is the one of C8, always inside a rolled-back transaction. `doctor` does not apply migrations, does not
   repair indexes and does not change permissions (it only reports them; hardening them belongs to `init`).
 - **R21 — `hifa db reindex` (REQ-F100-20), and it is the whole contract of the verb.** The command
-  resolves the database path with §2.2, opens it **read-write**, calls `require_fts5(conn)` (SPEC-030
-  §2.1: a build without `ENABLE_FTS5` cannot write this index at all), and then, **before it writes
-  anything**, asks the file what it is:
+  resolves the database path with §2.2 and then runs **three ordered steps, and the file is only asked
+  what it is on a connection that cannot write**:
 
   ```
-  tables ← SELECT name FROM sqlite_master WHERE type IN ('table', 'view')
-  "workspace" ∉ tables, or "issue" ∉ tables  →  not_a_hifa_database, exit 3, nothing written
+  (a) db_path exists?  no  →  database_not_found, exit 3, nothing opened and nothing created
+  (b) probe ← read-only connection to db_path            (the mode of SPEC-030 §2.1's connect(readonly=True))
+      probe ← sqlite3.connect(f"file:{db_path}?mode=ro", uri=True); row_factory = Row; isolation_level = None
+      "workspace" ∉ tables, or "issue" ∉ tables  →  not_a_hifa_database, exit 3, nothing written
+      require_fts5(probe)   →  fts5_unavailable, exit 6, nothing written   (SPEC-030 §2.1, one SELECT)
+  (c) conn ← writable connection; ONE transaction with the sequence below; then SELECT COUNT(*) FROM issue
   ```
+
+  **The order is the contract, and (a) and (b) leave the file byte-identical.** Both facts are measured:
+  with the writable open first — which is what revision 10 prescribed — `connect(readonly=False)` on a
+  **missing** path creates it (4096 bytes, empty schema, SPEC-030 §2.1), so the `database_not_found`
+  answer was unreachable and the command created the very file it promised not to touch; and the
+  `sqlite_master` read on a **read-write** connection is a write-side open of somebody else's database
+  before it has been identified. Now (a) is a `stat` and nothing else, (b) cannot write because the URI
+  is `mode=ro`, and the first writable open is (c) — after the verdict.
+
+  **The probe opens by URI mode, not with `connect()`.** `connect(readonly=True)` of SPEC-030 §2.1 is the
+  read-only open of this corpus and the mode is exactly the one printed above, but that function also
+  applies the whole `PRAGMAS` tuple, and its first entry, `journal_mode=WAL`, **is a write to the header**:
+  on a file that is not already in WAL — which is what a foreign database is — it answers
+  `attempt to write a readonly database` (measured on SQLite 3.53.1). So the probe takes the mode and not
+  the tuple: `sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)`, plus `row_factory` and
+  `isolation_level=None`, and **no `PRAGMA`**. An implementation that reached for `connect(readonly=True)`
+  here would answer `Conflict(DB_READONLY)` — exit `4` — on exactly the input this step exists to name,
+  and `4` is not in this verb's exit set.
 
   Those are the two names a hifa database cannot lack: `workspace` is the marker `hifa init` already
   reads (R14c) and `issue` is the table the rebuild indexes. A file without them is a valid SQLite
   database of some other tool and not this one, and a rebuild attempted on it fails *inside* the
   transaction with `no such table: main.issue` — an error about the index that is really an answer about
-  the file. The read runs before any `BEGIN`, so a file that is refused is left byte-identical.
-  Then it executes **exactly this sequence**, in one transaction:
+  the file. A **missing** `issue_fts` is not a refusal: it is the state the sequence repairs, and it
+  arrives at (c) like any other. Then it executes **exactly this sequence**, in one transaction:
 
   ```sql
   BEGIN IMMEDIATE;
@@ -681,12 +708,16 @@ the `team`/`cli`/`web` values come from it; if not, from the defaults.
  2. validate flags (R15); normalize --team-key to uppercase                → exit 2
  3. db_path = ":memory:" → in_memory_not_supported                          → exit 2
  4. mkdir(db_path.parent, mode=0o700, exist_ok=True)   → db_dir_not_writable (exit 2)
- 5. open connection (SPEC-010 PRAGMAs) and run the migrator
+ 5. db_path exists?  yes and not --force → probe it READ-ONLY (the R21 probe: URI mode=ro, no PRAGMA)
+       sqlite_master carries no table and no view at all   → an empty file: proceed (R14a)
+       "workspace" ∉ the objects of sqlite_master          → not_a_hifa_database          (exit 2)
+       "workspace" ∈ them                                  → proceed
+    no  → nothing to probe; step 6 creates the file (R14a)
+ 6. open connection (SPEC-010 PRAGMAs) and run the migrator
        user_version > max(migrations) → schema_too_new                     (exit 4)
- 6. detect state:
-       workspace table missing  → not_a_hifa_database                      (exit 2)
+ 7. detect state:
        workspace and team exist → already_initialized = True
- 7. BEGIN IMMEDIATE
+ 8. BEGIN IMMEDIATE
        get-or-create workspace  (by url_key)
        get-or-create team       (by workspace_id, key)
        get-or-create 7 workflow_states (by team_id, name)
@@ -694,18 +725,29 @@ the `team`/`cli`/`web` values come from it; if not, from the defaults.
        get-or-create member     (by email | display_name)       if seed_member
        get-or-create team_membership
     COMMIT
- 8. chmod(db_path, 0o600)
- 9. find_project_root(cwd) is None            → write no config; report
+ 9. chmod(db_path, 0o600)
+10. find_project_root(cwd) is None            → write no config; report
                                                 `config: none (outside a git work tree)`
     else if there is no .hifa.toml in [cwd..project root] (or --force)
                                                 → write_config_file(0o600)  (+ .bak if --force)
     else                                        → report the existing file, write nothing
-10. BootstrapResult(created, skipped, ids, db_path, already_initialized)
-11. exit 0
+11. BootstrapResult(created, skipped, ids, db_path, already_initialized)
+12. exit 0
 ```
 
-The seeding of step 7 is a single transaction: if something fails, there is no workspace without a team and no
-team without states. Step 5 commits before (migrations are not part of the seeding).
+**Step 5 is the one that has to come before step 6, and the reason is measured.** `001_init.sql` creates
+`workspace` on any `user_version`-0 file, so a probe that ran after the migrator could never fire: applied
+to a foreign file, the migration leaves `workspace` and `issue` in `sqlite_master` and the state detection
+of step 7 reads `already_initialized` for a database that was never hifa's. Moving the probe to step 5
+makes the exit `2` reachable and the file byte-identical after the refusal, because the probe is the same
+read-only open R21 uses — `mode=ro`, no `PRAGMA` — and it costs one `stat` on the happy path (a path that
+does not exist is not probed at all). It is also what keeps the two carriers of `not_a_hifa_database` of
+D-066 honest: `init` refuses the **argument** at `2` before a single migration runs, `db reindex` refuses
+the **database** at `3` before a single write, and the two of them are the only two edges that publish
+that code.
+
+The seeding of step 8 is a single transaction: if something fails, there is no workspace without a team and no
+team without states. Step 6 commits before (migrations are not part of the seeding).
 
 ### 5.3 `hifa doctor`
 
@@ -738,7 +780,7 @@ run and returns exit 2 with the checks already computed.
 | `ConfigError` | `config_unreadable` | `.hifa.toml` exists but cannot be read | exit 2 |
 | `ConfigError` | `db_dir_not_writable` | the database directory cannot be created/written | exit 2 |
 | `ConfigError` | `in_memory_not_supported` | `hifa init` with `--db :memory:` | exit 2 |
-| `Validation` | `not_a_hifa_database` | **`hifa init`** (R14c): the file exists but has no `workspace` table — the `--db` value is refused and `--force` is the override, which is why this edge answers `2` | exit 2 |
+| `Validation` | `not_a_hifa_database` | **`hifa init`** (R14c): the file exists but has no `workspace` table — the `--db` value is refused **before the migrator runs** (§5.2 step 5) and `--force` is the override, which is why this edge answers `2` | exit 2 |
 | `NotAHifaDatabase` | `not_a_hifa_database` | **`db reindex`** (R21): the file opens and is valid SQLite but carries no `workspace`/`issue`, so there is nothing this command can index. One code, two edges, two exits: `init`'s `2` refuses the argument, `reindex`'s `3` says the database is not a hifa database (D-066) | exit 3 |
 | `Conflict` | `schema_too_new` | `user_version` > the binary's maximum migration | exit 4 |
 | `DatabaseNotFound` | `database_not_found` | `doctor`/`reindex` on a nonexistent path that cannot be opened (the code of SPEC-050 §6 for a missing file; one of the two `3`s of this table, with `not_a_hifa_database` below it) | exit 3 |
@@ -747,10 +789,12 @@ run and returns exit 2 with the checks already computed.
 
 `NotAHifaDatabase` is the one class of this spec that carries a code and no `field`: `code =
 "not_a_hifa_database"`, `message = "not a hifa database: <path>; run 'hifa init'"`, raised by `reindex`
-at R21's first step and mapped to exit `3` by SPEC-050 §6, which publishes it as a row of its own.
+at R21's step (b) — the read-only probe, before the writable connection exists — and mapped to exit `3`
+by SPEC-050 §6, which publishes it as a row of its own.
 `hifa init` keeps raising `Validation` with the same lowercase code (exit `2`, SPEC-050 §6's
-pass-through), because what it refuses is the `--db` argument; D-066 is the decision that argues one
-code with two exits.
+pass-through), because what it refuses is the `--db` argument, and it raises it at §5.2 step 5, before
+its own migrator; D-066 is the decision that argues one code with two exits, and this revision is what
+makes both of them reachable.
 
 Catalog of `CheckResult`s that produce exit ≠ 0:
 
@@ -976,6 +1020,14 @@ Feature: Configuration, bootstrap and database diagnostics
     And error.code is "not_a_hifa_database"
     And the "reindexed" field is absent
     And the file still has no "issue_fts" table
+    And the bytes of the file are the same as before the command
+
+  Scenario: reindex answers a missing path without creating it
+    Given no database file at the path "/tmp/hifa-no-db/hifa.db"
+    When "hifa db reindex --json" is executed
+    Then the exit code is 3
+    And error.code is "database_not_found"
+    And no file exists at "/tmp/hifa-no-db/hifa.db"
 
   Scenario: reindex refuses a file that SQLite itself cannot read
     Given a file with no SQLite header at the database path
@@ -1057,6 +1109,33 @@ Feature: Configuration, bootstrap and database diagnostics
 
 ## 11. Notes
 
+- **spec_revision 11 (2026-11-20): the probe runs before the write, and `init`'s refusal can be reached
+  (HIFA-7, third review round).** `version` 4 → 5: §2.6's `reindex` declaration carries the new order and
+  R21's contract changes shape. Three corrections, the first two measured on SQLite 3.53.1:
+  (1) **R21 created the file it promised not to touch.** Revision 10 opened the database read-write
+  before the `sqlite_master` verdict, and `connect(readonly=False)` on a **missing** path creates it
+  (4096 bytes, empty schema, SPEC-030 §2.1): `database_not_found` was unreachable — the command answered
+  `not_a_hifa_database` for a file it had just created — and "before it writes anything" was false.
+  R21 now prints three ordered steps: (a) the path exists? no ⇒ exit `3` `database_not_found`, nothing
+  opened; (b) a **read-only** open (`mode=ro`) and the verdict plus `require_fts5` ⇒ exit `3` or `6`,
+  nothing written; (c) only then the writable connection and the transaction. Both of the first two
+  leave the file byte-identical (measured: a foreign file keeps its sha and its 8192 bytes, and no
+  sidecar appears). The probe opens by URI mode and **not** with `connect(readonly=True)` — that
+  function applies `PRAGMAS`, whose first entry is `journal_mode=WAL`, a header write that answers
+  `attempt to write a readonly database` on a file that is not already in WAL, i.e. exit `4` on exactly
+  the input the step exists to name.
+  (2) **`init`'s exit `2` was unreachable.** §5.2 ran the "no `workspace` table" probe **after** the
+  migrator, and `001_init.sql` creates `workspace` on any `user_version`-0 file: applied to a foreign
+  file, the migration leaves `workspace` and `issue` behind and the state detection reads
+  `already_initialized`. The probe is now §5.2 step 5, on the same read-only open R21 uses, **before**
+  step 6's migrator: a foreign file is refused at `2` with no table created and no migration run, an
+  empty file (no objects at all) is seeded as R14a says, `--force` is the override §6 already named, and
+  D-066's two carriers are both reachable. (3) **A count that did not match its own list**: the
+  revision-10 note said "the six statements" and then enumerated eight; it now says eight between
+  `BEGIN IMMEDIATE` and `COMMIT`. §7 gains one inline scenario for the missing path (exit `3`,
+  `database_not_found`, and no file created) and one assertion to the foreign-file scenario (the bytes are
+  the same as before the command): **28 → 29** inline scenarios; the `.feature` corpus does not move —
+  17 files, **240** scenarios (228 `Scenario` + 12 `Scenario Outline`).
 - **spec_revision 10 (2026-11-20): the reindex sequence runs, and the foreign file has a code of its own
   (HIFA-7, second review round, D-066).** `version` 3 → 4, because §2.6's `reindex` declaration is what a
   regeneration reads and it now carries the verdict and the statement sequence §2.7's row serves, and
@@ -1069,7 +1148,8 @@ Feature: Configuration, bootstrap and database diagnostics
   triggers in `sqlite_master`** (verified on SQLite 3.53.1), and the verbatim `CREATE TRIGGER issue_fts_ai`
   of a database that lost only the table raises `trigger issue_fts_ai already exists` — inside the
   transaction, so the run §7 promised (exit `0`, the index intact) could not be produced. R21 now prints
-  the six statements it means: `CREATE VIRTUAL TABLE IF NOT EXISTS`, `DROP TRIGGER IF EXISTS` for each of
+  the eight statements it means, between `BEGIN IMMEDIATE` and `COMMIT` (ten counting those two):
+  `CREATE VIRTUAL TABLE IF NOT EXISTS`, `DROP TRIGGER IF EXISTS` for each of
   the three names, the three `CREATE TRIGGER`s, then `VALUES('rebuild')` — one transaction, SPEC-090 §3.1
   still the canonical DDL the block must match column-for-column, and every starting state (both present,
   table gone, triggers gone, both gone) ending at exit `0` with the index rebuilt and the triggers back.
