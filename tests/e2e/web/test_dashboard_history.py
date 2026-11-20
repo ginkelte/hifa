@@ -193,16 +193,50 @@ def test_the_panel_shows_eight_rows_and_offers_the_rest_of_the_window(
     assert "Show all 12" in section
 
 
-def test_the_page_prints_the_whole_window_and_the_same_control(
+def test_the_page_prints_the_whole_window_and_offers_no_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The page is not cut at eight: it prints the window the read returned."""
+    """The page is not cut at eight and has nothing to expand: the control belongs to the panel.
+
+    The cut is eight rows *of the panel*; the page prints the window it was given, so a `Show all`
+    there would replace twelve rows with the same twelve. The scene that asks the page for the
+    control is wrong and HIFA-100 carries it.
+    """
     world = _person(tmp_path, monkeypatch, rows=11)
 
     section = _section(world.client.get(f"/ENG/issue/{world.identifier}").text)
 
     assert len(EVENT.findall(section)) == 12
-    assert "Show all 12" in section
+    assert "Show all" not in section
+
+
+def test_show_all_is_one_button_whose_triple_names_a_real_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`hx-get` the fragment, `hx-target` the list, `hx-swap=outerHTML`: and the route answers.
+
+    `070` §7 asserts every `Then` of the expansion and nothing about how the control asks for it;
+    three attributes that disagree with the fragment's route expand nothing at all.
+    """
+    world = _person(tmp_path, monkeypatch, rows=11)
+
+    section = _section(world.client.get(f"/_/issues/{world.identifier}/panel", headers=HTMX).text)
+    button = re.search(r'<button[^>]*class="btn history-all"[^>]*>.*?</button>', section, re.S)
+
+    assert button is not None, "the panel lost its `Show all`"
+    markup = button.group(0)
+    assert 'hx-target="#history-list"' in markup
+    assert 'hx-swap="outerHTML"' in markup
+    assert '<ol id="history-list"' in section
+    asked = re.search(r'hx-get="([^"]+)"', markup)
+    assert asked is not None
+    assert asked.group(1) == f"/_/issues/{world.identifier}/history?limit=100"
+    assert "Show all 12" in markup
+
+    answer = world.client.get(asked.group(1), headers=HTMX)
+
+    assert answer.status_code == 200
+    assert len(EVENT.findall(answer.text)) == 12
 
 
 def test_show_all_answers_the_whole_window_without_a_control_of_its_own(
@@ -222,18 +256,41 @@ def test_show_all_answers_the_whole_window_without_a_control_of_its_own(
 def test_a_full_window_is_a_floor_and_both_hosts_say_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """120 rows return 100: the button names the window and the dim line names the reach."""
+    """120 rows return 100: the panel's button names the window and the dim line names the reach."""
     world = _person(tmp_path, monkeypatch, rows=119)  # 120 with the `created` row
 
     page = _section(world.client.get(f"/ENG/issue/{world.identifier}").text)
+    panel = _section(world.client.get(f"/_/issues/{world.identifier}/panel", headers=HTMX).text)
     fragment = world.client.get(f"/_/issues/{world.identifier}/history?limit=100", headers=HTMX)
 
     assert len(EVENT.findall(page)) == 100
-    assert "Show all 100" in page
-    assert "the last 100 events" in page
+    assert "Show all" not in page
+    assert page.count("the last 100 events") == 1
+    assert "Show all 100" in panel
     assert len(EVENT.findall(fragment.text)) == 100
-    assert "the last 100 events" in fragment.text
+    assert fragment.text.count("the last 100 events") == 1
     assert "Show all" not in fragment.text
+
+
+def test_the_floor_line_travels_inside_the_list_the_swap_replaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One element carries the rows and the line, so the swap cannot leave the reader two lines.
+
+    The target is `#history-list`, so a line printed *beside* the `<ol>` survives the swap and
+    the panel ends up showing its own copy and the fragment's.
+    """
+    world = _person(tmp_path, monkeypatch, rows=119)
+
+    section = _section(world.client.get(f"/_/issues/{world.identifier}/panel", headers=HTMX).text)
+    listing = LIST.search(section)
+
+    assert listing is not None
+    assert "the last 100 events" in listing.group(1)
+    assert re.search(r'<li class="dim history-floor" role="note">the last 100 events</li>',
+                     listing.group(1)) is not None
+    # The line is inside the list and not in any row's accessible name.
+    assert all("the last 100 events" not in row for row in EVENT.findall(section))
 
 
 def test_the_fragment_ignores_a_limit_bigger_than_the_window(

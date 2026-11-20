@@ -1635,6 +1635,11 @@ def _issue_detail_vm(
     The page's composer posts to its own route and the browser follows the redirect; the panel's
     posts the fragment and the client appends. Deciding it here keeps the template free of the
     conditional that would otherwise have to know which page it is in.
+
+    The same one decision gives the timeline its cut: `history_panel` is the panel's eight rows
+    and `history` the whole window, so only the panel has anything to expand and only the panel
+    keeps a `Show all`. On the page `history_hidden` is zero — the control there would expand
+    what is already on screen.
     """
     vm = readmodels.build_issue_vm(
         detail,
@@ -1650,6 +1655,9 @@ def _issue_detail_vm(
     )
     panel = surface == "panel"
     vm["history_entries"] = vm["history_panel"] if panel else vm["history"]
+    # Only the panel is cut at eight, so only the panel has a `Show all` to offer: the page already
+    # prints the whole window, and a control there would expand what the reader can see.
+    vm["history_hidden"] = vm["history_hidden"] if panel else 0
     vm["comment_composer_id"] = "panel-comment-body" if panel else "comment-body"
     vm["comment_draft"] = draft or ""
     vm["comment_composer_fragment"] = f"/_/comments/{detail.issue.identifier}" if panel else None
