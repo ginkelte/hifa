@@ -779,6 +779,7 @@ __all__ = [
     "LABEL_HISTORY_FIELD",
     "AddLabelResult",
     "add_label",
+    "case_variant_at_level",
     "create_label",
     "label_detail",
     "list_labels",
