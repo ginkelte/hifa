@@ -4718,3 +4718,50 @@ cut is empty by construction and carries no control, and the panel keeps both th
 same second as a preceding state-only move still satisfies both conditions and is filtered. That is a window
 of one second instead of a class of events, and closing it needs a batch identifier in the write — a schema
 change this decision does not take.
+
+## D-076 — `show` reads four reference forms, and only the number asks for a team
+
+**Date:** 2026-11-21 · **Wins:** SPEC-001 REQ-F012 (the behaviour: which references resolve) and SPEC-050
+§2.5.3.2 (the grammar, the codes and the message that spell it) · **Touches:** SPEC-050 §2.3.1, §2.5,
+§2.5.3, §2.5.3.2, §4, §7, §11; `specs/INDEX.md`; `scripts/spec_claims_debt.json`; this file
+
+**What the two documents said, and where they parted.** SPEC-001 REQ-F012: "`hifa issue show` accepts
+three reference forms: `identifier` (`ENG-12`), full ULID (26 chars) and integer number with `--team ENG`.
+It also resolves historical identifiers (old key in `team_previous_key` + `number`) and prints an
+`identifier renamed` warning on `stderr`. A non-existent reference exits with exit code `3` and
+`error.code=\"not_found\"`." SPEC-050's row of §2.5.3 closed the verb to `--with`, and §2.5.3.2 opened
+with "`REF` — an identifier or a ULID — is resolved by `issue_detail(db, REF, include=…)`": one form
+short of the requirement, and silent about the fourth and about the warning.
+
+**Neither document loses a rule, and that is the resolution rather than a split.** SPEC-001 wins the
+**behaviour**: the three forms and the historical one are what the vertical requires, and R17 never said
+otherwise — R17 closes the **tree** (which leaves exist, with exactly the flags their row lists), not the
+vocabulary of a `REF` the row already declares. A reference form is an input's grammar; `--team` is not a
+new option either, it is the §2.2 duplicate the verbs that already consult the team list (`create`,
+`list`, `assign`, `blocked`), and `issue show` now lists it for the same reason they do. SPEC-050 wins
+the **spelling**: the order the forms are read in, which one needs a team, the code and `field` of every
+refusal, and the channel and wording of the warning. SPEC-001 is unchanged: 001 §10.1 item 8 assigns the
+CLI surface to SPEC-050, and §7's count of the acceptance corpus does not move because the new scenarios
+land in SPEC-050 §7 and not in `specs/acceptance/001-mvp-v1/`.
+
+**The three things SPEC-050 had to decide, and did.** (1) A bare number in a workspace with 0 or ≥2
+teams and no `--team` is `missing_context` — exit 2, `field: "team"`, the message §2.2.2 and §6 already
+carry — and **not** `not_found`: a number names no issue until a team is chosen, so what is missing is an
+input, not a row, and REQ-F012's exit 3 keeps its meaning for a team's issue that does not exist. With
+exactly one non-archived team the fifth source of §2.2.2 answers and the number resolves with no flag.
+(2) The order of the four forms makes the answer total: a current identifier shadows a previous key of
+the same spelling, which `team_previous_key`'s key `(team_id, key)` allows (SPEC-010 §3.6). Refusing
+there would refuse a case the corpus's ambiguity rule does not cover — that rule (D-070) is for two rows
+answering **one** form; these are two forms answering once each, and the more specific one wins. (3) The
+warning is a line and not a payload: `identifier renamed: ENG-3 is now PLAT-3` on `stderr`, printed once,
+in table, `--json` and `--quiet` alike, with the exit code at **0** and `stdout` keeping its one document
+(R11); no key of §2.4.2 carries it, and the object stays at 33 and 37 keys.
+
+**Residual, named rather than hidden.** The two new forms have no producer. SPEC-040 §2.2 declares
+`issue_detail` for "`ENG-123` or a ULID", and no read returns an issue by `(team_id, number)` nor a team
+by a current or a previous key, so the edge cannot resolve them without a use case of its own (D-012,
+REQ-S050-01). That is GAP-09 of SPEC-050 §2.3.1, the §7 scenarios that drive the new forms carry
+`@deferred(HIFA-83)`, and closing the row is HIFA-83's implementation half. `team_previous_key` has an
+adapter writer (`TeamRepo.add_previous_key`) and **no caller**: the rotation that would write a row is
+SPEC-001 REQ-F006, which SPEC-001 §10.1 item 8 lists among the verticals with no counterpart in SPEC-050 —
+so until `team set-key` is contracted, the historical form resolves rows a future command left behind.
