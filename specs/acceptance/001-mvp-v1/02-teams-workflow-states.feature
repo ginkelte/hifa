@@ -56,7 +56,7 @@ Feature: Teams and workflow states
 
   # D-031: `archive_team` is declared but not implemented, so these two scenarios are not
   # runnable yet. The @deferred tag keeps them out of the runnable set until the use case lands.
-  @REQ-F007 @smoke @deferred
+  @REQ-F007 @smoke @deferred(HIFA-105)
   Scenario: archiving a team with open issues requires --yes
     Given a team "ENG" with 2 open issues
     When I run "hifa team archive ENG"
@@ -64,7 +64,7 @@ Feature: Teams and workflow states
     And the error.code is "conflict"
     And the team "ENG" has no archived_at
 
-  @REQ-F007 @smoke @deferred
+  @REQ-F007 @smoke @deferred(HIFA-105)
   Scenario: an archived team disappears from listings but keeps its issues
     Given a team "OPS" with no open issues with the issue "OPS-1"
     When I run "hifa team archive OPS --yes" and then "hifa team list --json" and then "hifa issue show OPS-1 --json"
@@ -121,7 +121,7 @@ Feature: Teams and workflow states
 
   # D-035: deleting a state is not implemented — what happens to the issues that live in it is
   # undefined. The @deferred tag keeps these two out of the runnable set until the decision is made.
-  @REQ-F009 @smoke @deferred
+  @REQ-F009 @smoke @deferred(HIFA-105)
   Scenario: deleting a state with issues requires reassigning them
     Given the state "Backlog" has 3 issues
     When the state "Backlog" of the team "ENG" is deleted
@@ -130,7 +130,7 @@ Feature: Teams and workflow states
     And the error message names the 3 affected issues
     And the state "Backlog" still exists
 
-  @REQ-F009 @smoke @deferred
+  @REQ-F009 @smoke @deferred(HIFA-105)
   Scenario: deleting a state while reassigning its issues happens in one transaction
     Given the state "Backlog" has 3 issues
     When the state "Backlog" of the team "ENG" is deleted moving its issues to "Todo"

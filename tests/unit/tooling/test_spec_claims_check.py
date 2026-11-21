@@ -177,6 +177,64 @@ def test_a_dataclass_the_tree_does_not_carry_is_not_checked(tmp_path: Path) -> N
     assert producer_violations(tree) == []
 
 
+#: The contract as it is usually written: the field declares its own fallback.
+SPEC_DECLARED_DEFAULT = (
+    "## 2. The row\n\n```python\n"
+    "@dataclass(frozen=True)\n"
+    "class RetryPolicy:\n"
+    "    attempts: int = 3\n"
+    "    base_delay: float = 0.05\n"
+    "    budget: float = 1.0\n"
+    "```\n"
+)
+
+#: The code carries the same shape and only one of the three fields is ever assigned.
+SOURCE_DECLARED_DEFAULT = """from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    attempts: int = 3
+    base_delay: float = 0.05
+    budget: float = 1.0
+
+
+def configure() -> RetryPolicy:
+    return RetryPolicy(attempts=5)
+"""
+
+
+def test_a_field_that_declares_a_default_is_still_a_declaration(tmp_path: Path) -> None:
+    """A default is the class's own value, not a producer: the field still waits for a writer.
+
+    Reading the default as a value skipped exactly the fields a spec publishes and the code never
+    fills, which is the disagreement this rule exists to find.
+    """
+    tree = build_tree(tmp_path, spec=SPEC_DECLARED_DEFAULT, source=SOURCE_DECLARED_DEFAULT)
+
+    violations = producer_violations(tree)
+
+    assert [v.detail for v in violations] == [
+        "the field RetryPolicy.base_delay is declared and nothing assigns it",
+        "the field RetryPolicy.budget is declared and nothing assigns it",
+    ]
+    assert [v.subject for v in violations] == [
+        "dataclass:RetryPolicy.base_delay",
+        "dataclass:RetryPolicy.budget",
+    ]
+
+
+def test_a_field_with_a_default_a_function_assigns_is_a_producer(tmp_path: Path) -> None:
+    """The honest direction: a writer fills the defaulted field, so nothing is missing."""
+    source = SOURCE_DECLARED_DEFAULT.replace(
+        "    return RetryPolicy(attempts=5)",
+        "    return RetryPolicy(attempts=5, base_delay=0.1, budget=2.0)",
+    )
+    tree = build_tree(tmp_path, spec=SPEC_DECLARED_DEFAULT, source=source)
+
+    assert producer_violations(tree) == []
+
+
 def test_a_vocabulary_table_names_every_value_a_writer_must_store(tmp_path: Path) -> None:
     """A closed vocabulary enumerates the values the writers produce, one row per value."""
     spec = """
@@ -202,27 +260,24 @@ def write() -> str:
     assert [v.detail for v in violations] == ["the name 'truncated_rows' has no producer"]
 
 
-def test_a_sentence_table_names_every_wording_a_renderer_builds(tmp_path: Path) -> None:
-    """A grammar table enumerates renderings; one no literal renders has no producer."""
+def test_a_grammar_table_declares_no_field_vocabulary(tmp_path: Path) -> None:
+    """A table whose last column is the wording says what a sentence is about, not what to write.
+
+    The wording is not checked: comparing it to a template is a structured comparison this gate
+    does not do, and a word-overlap guess would accept the wrong sentence — so the table declares
+    nothing here rather than declaring something it cannot check.
+    """
     spec = """
 ## 2. The sentences
 
 | `field` | old | new | sentence |
 |---|---|---|---|
 | `title` | old | new | `changed the title to “new”` |
-| `project_id` | – | name | `moved to project X` |
+| `truncated_rows` | – | name | `moved to project X` |
 """
-    source = """
-def sentence(field: str, new: str) -> str | None:
-    if field == "title":
-        return f"changed the title to \\u201c{new}\\u201d"
-    return None
-"""
-    tree = build_tree(tmp_path, spec=spec, source=source)
+    tree = build_tree(tmp_path, spec=spec)
 
-    violations = producer_violations(tree)
-
-    assert [v.detail for v in violations] == ["the sentence 'moved to project X' has no producer"]
+    assert producer_violations(tree) == []
 
 
 def test_an_accepted_gap_is_accepted_and_an_unneeded_one_fails(tmp_path: Path) -> None:
@@ -247,6 +302,33 @@ def test_an_accepted_gap_is_accepted_and_an_unneeded_one_fails(tmp_path: Path) -
     report = claims.Report(exemptions=[accepted])
     stale = claims.stale(report, fixed, claims.account(fixed))
     assert [v.detail for v in stale] == ["stale exemption for dataclass:HistoryRow.dot_color"]
+
+
+def test_an_exemption_naming_a_ticket_the_registry_lacks_is_a_violation() -> None:
+    """A row is an owner only when the registry carries the ticket, the rule a deferral obeys."""
+    registry = claims.DebtRegistry.read()
+    row = claims.Exemption(
+        check="producer",
+        subject="dataclass:Repos.projects",
+        ticket="HIFA-9999",
+        reason="nobody issued this ticket",
+    )
+
+    violations = claims.check_exemptions([row], registry)
+
+    assert [v.detail for v in violations] == [
+        "the exemption for dataclass:Repos.projects names a ticket the registry does not carry"
+    ]
+    assert violations[0].location == "HIFA-9999"
+
+
+def test_every_exemption_in_force_names_a_ticket_the_registry_carries() -> None:
+    """The honest direction, over the real table: every ticket a row cites is a registered one."""
+    registry = claims.DebtRegistry.read()
+
+    assert claims.exemptions()
+    assert claims.check_exemptions(claims.exemptions(), registry) == []
+    assert {row.ticket for row in claims.exemptions()} <= registry.tickets
 
 
 # --- rule 2: a scenario needs a pointer, an exact title or a known ticket ------------------
@@ -415,15 +497,28 @@ def test_a_deferral_to_a_ticket_nobody_issued_is_a_violation(tmp_path: Path) -> 
     assert "does not carry" in violations[0].detail
 
 
-def test_a_deferral_with_no_ticket_accounts_for_nothing(tmp_path: Path) -> None:
-    """A bare tag is not an owner, in a spec or in a feature file."""
+def test_a_deferral_with_no_ticket_is_broken_and_an_accepted_key_cannot_hide_it(
+    tmp_path: Path,
+) -> None:
+    """A bare tag is not an owner, in a spec or in a feature file.
+
+    The key being in the accepted set is the wrong question: a tag that claims a deferral and
+    names nobody is a broken link, and accepting the key would silence the line that says so.
+    """
     spec = SPEC_SCENARIO.replace("  Scenario: history", "  @deferred\n  Scenario: history")
     tree = build_tree(tmp_path, spec=spec, tests=TEST_ELSEWHERE)
+    key = f"{SPEC_NAME}::history is written in a single batch"
 
-    violations = scenario_violations(tree, claims.DebtRegistry.read())
+    accepted = registry_for({key})
+    violations = scenario_violations(tree, accepted)
+    counts = claims.scenario_counts(claims.account(tree, accepted), accepted)
 
+    assert claims.check_scenario(claims.account(tree, accepted), accepted) != []
     assert [v.check for v in violations] == ["scenario"]
     assert "names no ticket" in violations[0].detail
+    assert "broken" not in violations[0].detail
+    assert counts["accepted"] == 0, counts
+    assert counts["broken"] == 1, counts
 
 
 def test_a_deferral_citing_a_malformed_ticket_is_broken(tmp_path: Path) -> None:
@@ -522,8 +617,8 @@ def test_an_accepted_key_no_scenario_carries_fails_until_accept_drops_it(tmp_pat
     assert [v.location for v in stale] == [f"{SPEC_NAME}::a scenario that was deleted"]
     assert "--accept" in stale[0].detail
 
-    written, kept, dropped = claims.accept(tree, registry)
-    assert (kept, dropped) == (2, 1)
+    written, kept, dropped, added = claims.accept(tree, registry)
+    assert (kept, dropped, added) == (2, 1, 1)
     assert f"{SPEC_NAME}::a scenario that was deleted" not in written.keys
 
 
@@ -533,10 +628,10 @@ def test_accept_writes_the_keys_of_every_unaccounted_scenario(tmp_path: Path) ->
     path = tmp_path / "debt.json"
     seed = claims.DebtRegistry([], frozenset({"HIFA-1"}), path, "HIFA-1")
 
-    written, kept, dropped = claims.accept(tree, seed)
+    written, kept, dropped, added = claims.accept(tree, seed)
     written.write(path)
 
-    assert (kept, dropped) == (2, 0)
+    assert (kept, dropped, added) == (2, 0, 2)
     again = claims.DebtRegistry.read(path)
     assert again.keys == {
         f"{SPEC_NAME}::the first unaccounted behaviour",
@@ -575,11 +670,53 @@ def test_the_cli_fails_then_accepts_and_then_passes(tmp_path: Path, capsys: Any)
     assert claims.main(argv) == 1
     assert "2 new" in capsys.readouterr().out
 
-    assert claims.main([*argv, "--accept"]) == 0
+    assert claims.main([*argv, "--accept", "--allow-growth"]) == 0
     assert "accepted 2 key(s)" in capsys.readouterr().out
 
     assert claims.main(argv) == 0
     assert "0 new" in capsys.readouterr().out
+
+
+def test_accept_refuses_to_add_a_key_unless_growth_is_asked_for(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """A new claim needs a test or a ticket: growth is a decision, not the remedy offered."""
+    build_tree(tmp_path, spec=SPEC_TWO_SCENARIOS, tests=TEST_ELSEWHERE)
+    specs, src, suite = tmp_path / "specs", tmp_path / "src", tmp_path / "tests"
+    debt = tmp_path / "debt.json"
+    debt.write_text(
+        json.dumps(
+            {"version": 1, "default_ticket": "HIFA-1", "tickets": ["HIFA-1"], "clusters": []}
+        ),
+        encoding="utf-8",
+    )
+    argv = [
+        "--specs",
+        str(specs),
+        "--src",
+        str(src),
+        "--tests",
+        str(suite),
+        "--debt",
+        str(debt),
+        "--only",
+        "scenario",
+        "--quiet",
+    ]
+
+    assert claims.main(argv) == 1
+    detail = capsys.readouterr().out
+    assert "2 new" in detail
+    assert "--accept" not in detail, detail
+
+    assert claims.main([*argv, "--accept"]) == 2
+    refused = capsys.readouterr().err
+    assert "refusing to grow" in refused
+    assert "--allow-growth" in refused
+    assert json.loads(debt.read_text(encoding="utf-8"))["clusters"] == []
+
+    assert claims.main([*argv, "--accept", "--allow-growth"]) == 0
+    assert claims.main(argv) == 0
 
 
 def test_a_registry_that_is_not_there_accepts_nothing(tmp_path: Path) -> None:
@@ -841,6 +978,71 @@ def test_a_row_error_exemption_covers_one_code_not_the_whole_table(tmp_path: Pat
     assert [v.detail for v in violations] == ["the name 'unknown_state' has no producer"]
 
 
+def test_a_string_a_call_raises_is_not_a_producer(tmp_path: Path) -> None:
+    """An exception takes a message: the words in it name the field, not a writer of the field."""
+    source = (
+        SOURCE_ENVELOPE
+        + '''
+
+def refuse(row: dict[str, object]) -> None:
+    """Name the missing key in the message, the way a validation error does."""
+    raise ValueError("actor_initials")
+
+
+def shout(row: dict[str, object]) -> None:
+    """Print the same word, which is also not a write."""
+    print("actor_initials")
+'''
+    )
+    tree = build_tree(tmp_path, spec=SPEC_HISTORY_ENVELOPE, source=source)
+
+    violations = producer_violations(tree)
+
+    assert [v.detail for v in violations] == ["the name 'actor_initials' has no producer"]
+    assert violations[0].subject == "field:actor_initials"
+
+
+def test_a_string_a_call_stores_is_still_a_producer(tmp_path: Path) -> None:
+    """The honest direction: a call that records the field is the writer the rule asks for."""
+    source = (
+        SOURCE_ENVELOPE
+        + '''
+
+def record(field: str) -> None:
+    """Store the name of the field a row is about."""
+    history.append(field)
+
+
+def note() -> None:
+    """The writer the vocabulary names."""
+    record("actor_initials")
+'''
+    )
+    tree = build_tree(tmp_path, spec=SPEC_HISTORY_ENVELOPE, source=source)
+
+    assert producer_violations(tree) == []
+
+
+def test_a_logger_and_a_cli_writer_are_message_sinks(tmp_path: Path) -> None:
+    """`logger.warning`, `warnings.warn` and `click.echo` print a message, so none is a producer."""
+    source = (
+        SOURCE_ENVELOPE
+        + '''
+
+def branch(row: dict[str, object]) -> None:
+    """Say the same thing three ways, and store nothing."""
+    logger.warning("actor_initials")
+    warnings.warn("actor_initials")
+    click.echo("actor_initials")
+'''
+    )
+    tree = build_tree(tmp_path, spec=SPEC_HISTORY_ENVELOPE, source=source)
+
+    assert [v.detail for v in producer_violations(tree)] == [
+        "the name 'actor_initials' has no producer"
+    ]
+
+
 # --- the provenance probes ----------------------------------------------------------------
 
 
@@ -921,5 +1123,5 @@ def test_the_real_tree_publishes_the_exemptions_it_carries() -> None:
     report = claims.build_report(tree)
 
     assert report.ok
-    assert (len(report.of("producer")), len(report.of("provenance"))) == (34, 6)
-    assert "40 exemption(s) in force (producer 34, provenance 6)" in claims.summary(report)
+    assert (len(report.of("producer")), len(report.of("provenance"))) == (33, 6)
+    assert "39 exemption(s) in force (producer 33, provenance 6)" in claims.summary(report)

@@ -12,9 +12,11 @@ producer
     A closed vocabulary table, a fenced JSON document or a dataclass declared in a fenced block
     enumerates names the code must be able to produce. For every name such a shape declares, a
     literal of that name must appear in a writer under `src/`: a target assigned inside a function
-    body, a subscript store, a keyword argument of a call, a string passed positionally, or a key
-    of a dict literal built inside a function. Nothing outside a function body is a writer, because
-    a declaration is not a write: `dot_color: str | None = None` in a class body, a module-level
+    body, a subscript store, a keyword argument of a call, a string passed positionally to a call
+    that stores it, or a key of a dict literal built inside a function. A string a call only
+    raises or prints is a message and names nothing: the callees that take one are listed in one
+    place. Nothing outside a function body is a writer, because a declaration is not a write:
+    `dot_color: str | None = None` in a class body, a module-level
     `DEAD = "actor_initials"`, and `getattr(row, "actor_initials")` all name a field and produce
     none, so a field a class declares and nothing ever assigns is a violation. Comments and
     docstrings do not count either — quoting a sentence is not producing it. A dataclass whose
@@ -26,9 +28,10 @@ scenario
     feature files, must be accounted for, in this order: `@test(<path>::<name>)` naming a test
     that exists; a test whose name is the scenario's title, compared exactly after both are
     normalised; or `@deferred(KEY-NN)` naming a ticket the accepted-gaps registry knows. Anything
-    else is unaccounted. There is no third guess: a literal quoted in the steps, a shared word or
-    a similar title does not pin a scenario, because a phrase that appears in a hundred tests
-    identifies none of them.
+    else is unaccounted, except a tag that claims an owner and names none — a bare `@deferred`, a
+    ticket nobody issued — which is broken and fails as such. There is no third guess: a literal
+    quoted in the steps, a shared word or a similar title does not pin a scenario, because a
+    phrase that appears in a hundred tests identifies none of them.
 
 provenance
     A sentence that publishes a count as a fact about a database must name where the number came
@@ -41,26 +44,31 @@ provenance
 
 Exemptions
 ----------
-The tree carries gaps of all three kinds with tickets against them. Each accepted gap is one row
-in the table of its rule: the subject as the spec states it, the ticket that closes it, and the
-reason. A row whose subject no longer appears in the specs is stale and fails, so the table can
-only shrink honestly. The number of rows in force is printed in the summary.
+The tree carries gaps with tickets against them, and a ticket is only a ticket when the registry
+carries it: a well-formed id somebody typed names nobody, so a row citing one fails the same way
+`@deferred(HIFA-9999)` does. Each accepted gap is one row in the table of its rule: the subject as
+the spec states it, the ticket that closes it, and the reason. A row whose subject no longer
+appears in the specs is stale and fails, so the table can only shrink honestly. The number of rows
+in force is printed in the summary.
 
 The scenario rule carries its legacy tail in a file rather than in this one: the specs name
 behaviours in prose and most of them were never joined to a test, so the unaccounted scenarios are
 accepted by key in `spec_claims_debt.json`, next to this script and versioned with it. A key is
 `<document>::<normalised title>`, and the file also holds the ticket that owns each cluster and the
-ticket ids a deferral may cite. The set is compared exactly, so it can only shrink: a scenario
-deleted from the corpus leaves a key no claim carries and fails until `--accept` drops it, and a
-scenario added without a test has no key and fails on the spot. `--accept` rewrites the file from
-the tree, which is the only way it changes.
+ticket ids a deferral or an exemption may cite. The set is compared exactly: a scenario deleted
+from the corpus leaves a key no claim carries and fails until `--accept` drops it, and a scenario
+added without a test has no key and fails on the spot. `--accept` rewrites the file from the tree,
+drops the keys the corpus no longer carries, and refuses to add one — a new claim needs a test or a
+registered ticket, and growing the set is a decision somebody makes in a pull request. The only
+way past the refusal is `--allow-growth`, which says so out loud.
 
 Usage
 -----
     python scripts/spec_claims_check.py                  # every check, human-readable
     python scripts/spec_claims_check.py --only producer  # one check
     python scripts/spec_claims_check.py --list-debt      # the accepted keys, by cluster
-    python scripts/spec_claims_check.py --accept         # rewrite the accepted keys from the tree
+    python scripts/spec_claims_check.py --accept         # drop the stale accepted keys
+    python scripts/spec_claims_check.py --accept --allow-growth  # and add new ones too
     python scripts/spec_claims_check.py --quiet          # only the summary line
     python scripts/spec_claims_check.py --json           # {ok, violations, exemptions, …}
 
@@ -110,7 +118,7 @@ SCENARIO_RE = re.compile(r"^\s*Scenario(?: Outline)?:[ \t]*(?P<title>.+?)[ \t]*$
 TAG_LINE_RE = re.compile(r"^\s*(?P<tags>@\S+(?:[ \t]+@\S+)*)[ \t]*$")
 DEFERRED_RE = re.compile(r"^@deferred(?:\((?P<ticket>[^)]*)\))?$")
 TEST_POINTER_RE = re.compile(r"^@test\((?P<path>[^:)]+?)::(?P<name>[^)]+)\)$")
-QUOTED_RE = re.compile(r"`([^`\n]{5,80})`|\"([^\"\n]{5,80})\"")
+
 
 #: A measurement of a file is about rows; a budget, a latency or a fixture is not this rule.
 ROW_NOUN = re.compile(
@@ -284,7 +292,6 @@ class Vocabulary:
     location: str
     kind: str
     names: tuple[str, ...]
-    values: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass
@@ -326,16 +333,13 @@ class Producers:
     the strings they build, with each interpolated string kept as one template.
 
     `names` and `values` are writes and nothing else — a target assigned inside a function body, a
-    subscript store, a keyword argument, a dict key, or a string a call receives positionally.
-    `literals` is every string the code builds, which is what the sentence grammar compares a
-    rendering against, and it is deliberately not a write.
+    subscript store, a keyword argument, a dict key, or a string a call receives positionally, less
+    the strings a call only prints or raises.
     """
 
     names: set[str] = field(default_factory=set)
     values: set[str] = field(default_factory=set)
     classes: set[str] = field(default_factory=set)
-    literals: list[str] = field(default_factory=list)
-    docstrings: set[int] = field(default_factory=set, repr=False)
 
     def writes(self, name: str) -> bool:
         """True when a function body writes `name` as a field: a target or a keyword argument.
@@ -361,6 +365,21 @@ class Producers:
 #: write, so it is a target with a keyword's standing, not a selector.
 REFLECTION = frozenset({"getattr", "hasattr", "attrgetter"})
 
+#: Calls that take a message: an exception (a name ending in `Error` or `Exception`, which is how
+#: the standard library and this repository spell one), `print`, a logger, `warnings.warn` and
+#: `click.echo`. One denylist, one reason: these calls show a string or raise it, so the string is
+#: prose about a failure and never a value a writer stores. Without this, `raise
+#: ValueError("zzz_probe_key")` and `print("zzz_probe_key")` made every typo a producer.
+MESSAGE_VERBS = frozenset(
+    {"print", "echo", "warn", "warning", "error", "critical", "info", "debug", "exception"}
+)
+EXCEPTION_SUFFIXES = ("Error", "Exception")
+
+
+def _is_message_sink(callee: str) -> bool:
+    """True when the callee raises or prints, so its positional strings are messages, not fields."""
+    return callee.endswith(EXCEPTION_SUFFIXES) or callee in MESSAGE_VERBS
+
 
 def producers(sources: dict[Path, str]) -> Producers:
     """Read the producers of every module once: one parse, one walk, no regex over the text."""
@@ -370,7 +389,6 @@ def producers(sources: dict[Path, str]) -> Producers:
             tree = ast.parse(text)
         except SyntaxError:
             continue
-        found.docstrings = _docstring_nodes(tree)
         _Reader(found).visit(tree)
     return found
 
@@ -433,16 +451,23 @@ class _Reader(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        """A keyword names a field its callee receives; a literal argument is a value it stores."""
-        if self.depth and _callee(node) not in REFLECTION:
+        """A keyword names a field its callee receives; a literal argument is a value it stores.
+
+        A positional string is a value only when the callee takes values: a call that raises or
+        prints takes a message, and a message names no field. `record("created", …)` still writes
+        the vocabulary it names; `raise ValueError("zzz_probe_key")` writes nothing.
+        """
+        callee = _callee(node)
+        if self.depth and callee not in REFLECTION:
             for keyword in node.keywords:
                 if keyword.arg:
                     self.found.names.add(keyword.arg)
                 if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
                     self.found.values.add(keyword.value.value)
-            for argument in node.args:
-                if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                    self.found.values.add(argument.value)
+            if not _is_message_sink(callee):
+                for argument in node.args:
+                    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                        self.found.values.add(argument.value)
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
@@ -453,32 +478,6 @@ class _Reader(ast.NodeVisitor):
                     self.found.names.add(key.value)
                     self.found.values.add(key.value)
         self.generic_visit(node)
-
-    def visit_Constant(self, node: ast.Constant) -> None:
-        """A string constant is a literal the code builds, unless it is a docstring."""
-        if isinstance(node.value, str) and id(node) not in self.found.docstrings:
-            self.found.literals.append(node.value)
-
-    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
-        """An interpolated string is one template; its parts are not literals of their own."""
-        self.found.literals.append(_template(node))
-
-
-def _docstring_nodes(tree: ast.AST) -> set[int]:
-    """The nodes that are docstrings: a string expression in the first position of a body."""
-    nodes: set[int] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        body = getattr(node, "body", [])
-        first = body[0] if body else None
-        if (
-            isinstance(first, ast.Expr)
-            and isinstance(first.value, ast.Constant)
-            and isinstance(first.value.value, str)
-        ):
-            nodes.add(id(first.value))
-    return nodes
 
 
 def _target_name(target: ast.AST, found: Producers) -> None:
@@ -516,17 +515,6 @@ def _callee(node: ast.Call) -> str:
     if isinstance(func, ast.Attribute):
         return func.attr
     return ""
-
-
-def _template(node: ast.JoinedStr) -> str:
-    """An interpolated string as one template, each substituted value a `{…}` gap."""
-    parts: list[str] = []
-    for value in node.values:
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            parts.append(value.value)
-        else:
-            parts.append("{…}")
-    return "".join(parts)
 
 
 def normalised_title(title: str) -> str:
@@ -568,8 +556,6 @@ class Tree:
         """Read the three trees once, so a check is a walk over memory."""
         sources = {p: p.read_text(encoding="utf-8") for p in src_dir.rglob("*.py")}
         written = producers(sources)
-        for path in src_dir.rglob("*.html"):
-            written.literals.append(path.read_text(encoding="utf-8"))
         test_files = sorted(tests_dir.rglob("*.py")) if tests_dir.is_dir() else []
         tests: dict[str, str] = {}
         for path in test_files:
@@ -631,8 +617,8 @@ def vocabulary_tables(text: str, location: str) -> list[Vocabulary]:
         if head not in {"field", "key", "code"}:
             continue
         if cells[-1].strip().strip("`").lower() == "sentence":
-            # A grammar table's first column names the fields its sentences are about; the
-            # vocabulary it declares is the wording, and `sentence_tables` reads that column.
+            # A grammar table lists the wordings of a sentence, not the values a writer may store:
+            # its first column says which field a row is about and enumerates no vocabulary.
             continue
         names: list[str] = []
         for row in lines[index + 1 :]:
@@ -743,50 +729,6 @@ def _json_document(body: str) -> object | None:
         return None
 
 
-def sentence_tables(text: str, location: str) -> list[Vocabulary]:
-    """The sentence grammar a spec declares: every row names a wording a renderer must produce."""
-    vocabularies: list[Vocabulary] = []
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if not line.lstrip().startswith("|"):
-            continue
-        cells = _cells(line)
-        if not cells or cells[-1].strip().strip("`").lower() != "sentence":
-            continue
-        sentences: list[str] = []
-        shown: dict[str, tuple[str, ...]] = {}
-        for row in lines[index + 1 :]:
-            if not row.lstrip().startswith("|"):
-                break
-            row_cells = _cells(row)
-            if len(row_cells) < 3 or set(row_cells[0]) <= set("-: "):
-                continue
-            values = tuple(
-                word
-                for cell in row_cells[1:3]
-                for word in re.findall(r"[A-Za-z0-9_’-]+", cell)
-                if word not in {"–", "-", "name", "ts", "X", "Y", "Z"}
-            )
-            for part in re.split(r"\s+/\s+", row_cells[-1]):
-                quoted = QUOTED_RE.findall(part)
-                if not quoted:
-                    continue
-                text_value = (quoted[0][0] or quoted[0][1]).strip()
-                if text_value:
-                    sentences.append(text_value)
-                    shown[text_value] = values
-        if sentences:
-            vocabularies.append(
-                Vocabulary(
-                    location=f"{location}:{index + 1}",
-                    kind="sentence",
-                    names=tuple(sentences),
-                    values=shown,
-                )
-            )
-    return vocabularies
-
-
 def _cells(row: str) -> list[str]:
     """The cells of a markdown table row."""
     stripped = row.strip()
@@ -798,7 +740,9 @@ def _cells(row: str) -> list[str]:
 def dataclass_fields(text: str, location: str) -> list[Vocabulary]:
     """The dataclasses a spec declares in a fenced block, with the fields a writer must fill.
 
-    A field with a default carries its own value, so it is not waiting for a producer.
+    Every annotated field is a declaration, default or not: a default is the class's own value and
+    not a producer, so `state: str | None = None` still names a field some writer has to fill. A
+    private field is internal, so the contract does not state it.
     """
     declared: list[Vocabulary] = []
     for block in FENCE_RE.finditer(text):
@@ -816,7 +760,6 @@ def dataclass_fields(text: str, location: str) -> list[Vocabulary]:
                 for statement in node.body
                 if isinstance(statement, ast.AnnAssign)
                 and isinstance(statement.target, ast.Name)
-                and statement.value is None
                 and not statement.target.id.startswith("_")
             ]
             if names:
@@ -860,30 +803,23 @@ def check_producer(
     for path in tree.specs:
         text = path.read_text(encoding="utf-8")
         location = path.name
-        declared = (
-            vocabulary_tables(text, location)
-            + json_fences(text, location)
-            + sentence_tables(text, location)
-        )
+        declared = vocabulary_tables(text, location) + json_fences(text, location)
         for vocabulary in declared:
             for name in vocabulary.names:
                 subject = _producer_subject(vocabulary, name)
-                if vocabulary.kind == "sentence":
-                    produced = _sentence_is_rendered(
-                        name, tree.producers.literals, vocabulary.values.get(name, ())
-                    )
-                    detail = f"the sentence {name!r} has no producer"
-                else:
-                    produced = tree.producers.stores(name)
-                    detail = f"the name {name!r} has no producer"
-                if produced:
+                if tree.producers.stores(name):
                     continue
                 if needed is not None:
                     needed.add(subject)
                 if subject in accepted:
                     continue
                 violations.append(
-                    Violation("producer", vocabulary.location, detail, subject=subject)
+                    Violation(
+                        "producer",
+                        vocabulary.location,
+                        f"the name {name!r} has no producer",
+                        subject=subject,
+                    )
                 )
         for declared in dataclass_fields(text, location):
             class_name = declared.location.rsplit(":", 1)[-1]
@@ -910,94 +846,10 @@ def check_producer(
 
 def _producer_subject(vocabulary: Vocabulary, name: str) -> str:
     """The stable key of one declared name, as the exemption table spells it."""
-    if vocabulary.kind == "sentence":
-        return f"sentence:{name}"
     if vocabulary.kind == "dataclass":
         class_name = vocabulary.location.rsplit(":", 1)[-1]
         return f"dataclass:{class_name}.{name}"
     return f"field:{name}"
-
-
-def _sentence_is_rendered(
-    sentence: str, literals: Sequence[str], values: Sequence[str] = ()
-) -> bool:
-    """True when some literal the code builds narrates the sentence, values and all.
-
-    The table writes the sentence with its values filled in (`moved from Backlog to Todo`) and the
-    code builds it from a template (`moved from {old} to {new}`): both sides are reduced to the
-    words that are fixed, each substituted value is a wildcard, and the two sequences have to agree
-    on almost all of them.
-    """
-    expected = _sentence_words(sentence, values)
-    if not expected:
-        return False
-    if expected == ["*"]:
-        return True
-    for literal in literals:
-        found = _literal_words(literal)
-        if found == expected:
-            return True
-        if len(found) < 2:
-            continue
-        if _agreement(expected, found) > 0.75:
-            return True
-    return False
-
-
-def _sentence_words(sentence: str, values: Sequence[str] = ()) -> list[str]:
-    """The words of a declared sentence: lowercased, each value the row shows a wildcard.
-
-    The values are the row's own — the table's `old` and `new` columns say which words are
-    instances — so a noun the wording keeps (`moved to project X` keeps `project`) stays a word
-    and has to be found in the literal the code builds.
-    """
-    known = {value.lower() for value in values}
-    flattened = re.sub(r"“[^”]*”", " * ", sentence)
-    tokens = re.findall(r"[A-Za-z0-9_*<>{}.':’-]+", flattened)
-    out: list[str] = []
-    for position, token in enumerate(tokens):
-        bare = token.lower()
-        if bare in {"x", "y", "z", "<field>"}:
-            continue
-        is_value = bare in known or (
-            position > 0 and (token[:1].isupper() or any(ch.isdigit() for ch in token))
-        )
-        out.append("*" if is_value else bare)
-    return _collapse(out)
-
-
-def _literal_words(literal: str) -> list[str]:
-    """The words of a string the code builds: lowercased, each `{…}` gap a wildcard."""
-    tokens = re.findall(r"[A-Za-z0-9_*<>{}.':’-]+", literal.lower())
-    out = ["*" if ("{" in token or "…" in token) else token for token in tokens]
-    return _collapse(out)
-
-
-def _collapse(tokens: list[str]) -> list[str]:
-    """One wildcard for a run of them, so a date and a name cost the same."""
-    out: list[str] = []
-    for token in tokens:
-        if token == "*" and out and out[-1] == "*":
-            continue
-        out.append(token)
-    return out
-
-
-def _agreement(expected: Sequence[str], found: Sequence[str]) -> float:
-    """The fraction of `expected` that `found` carries in order.
-
-    A wildcard of the sentence stands for a value and matches whatever the code puts there; a
-    word of the sentence has to be the code's word, so a gap in the literal cannot swallow it.
-    """
-    rows, columns = len(expected), len(found)
-    table = [[0] * (columns + 1) for _ in range(rows + 1)]
-    for i in range(1, rows + 1):
-        for j in range(1, columns + 1):
-            same = expected[i - 1] == "*" or expected[i - 1] == found[j - 1]
-            table[i][j] = max(
-                table[i - 1][j], table[i][j - 1], table[i - 1][j - 1] + (1 if same else 0)
-            )
-    return table[rows][columns] / rows
 
 
 # --- rule 2: every scenario has a test or a deferral --------------------------------------
@@ -1088,14 +940,44 @@ def _first_tag(tags: Sequence[str], pattern: re.Pattern[str]) -> re.Match[str] |
     return None
 
 
+def ticket_is_registered(ticket: str, registry: DebtRegistry) -> bool:
+    """True when a ticket is one the registry carries, which is what makes it an owner.
+
+    A deferral and an exemption ask the tree the same question — is somebody accountable for this
+    gap — so they ask it here, once. A ticket id checked for its shape alone accepts a ticket
+    nobody issued: `HIFA-9999` is a well-formed id and an owner of nothing.
+    """
+    return bool(ticket) and ticket in registry.tickets
+
+
+def check_exemptions(
+    exemptions: Sequence[Exemption],
+    registry: DebtRegistry,
+    checks: Sequence[str] = CHECKS,
+) -> list[Violation]:
+    """Every accepted gap names a ticket the registry carries, the rule a deferral already obeys."""
+    return [
+        Violation(
+            exemption.check,
+            exemption.ticket,
+            f"the exemption for {exemption.subject} names a ticket the registry does not carry",
+            subject=exemption.subject,
+        )
+        for exemption in exemptions
+        if exemption.check in checks and not ticket_is_registered(exemption.ticket, registry)
+    ]
+
+
 def account_for(claim: ScenarioClaim, tree: Tree, registry: DebtRegistry) -> tuple[str, str]:
     """How a scenario is accounted for, as `(kind, evidence)`; `("", "")` when nothing does.
 
     Four answers, in this order: a `@test(<path>::<name>)` that resolves; a test whose name is the
     title, normalised on both sides and compared whole; a `@deferred(<ticket>)` whose ticket the
     registry knows; nothing. `broken` is a tag that claims to account for the scenario and does
-    not — a pointer into thin air, a ticket nobody issued — and it fails as such, because a broken
-    link and a missing one are different defects and only one of them is a lie.
+    not — a pointer into thin air, a deferral with no ticket, a ticket nobody issued — and it fails
+    as such, because a broken link and a missing one are different defects and only one of them is
+    a lie. A bare `@deferred` is broken wherever it sits: a deferral that names nobody is nobody's,
+    so the accepted-key test is the wrong question to ask of it.
     """
     pointer = _first_tag(claim.tags, TEST_POINTER_RE)
     if pointer:
@@ -1113,10 +995,10 @@ def account_for(claim: ScenarioClaim, tree: Tree, registry: DebtRegistry) -> tup
     if deferral:
         ticket = (deferral.group("ticket") or "").strip()
         if not ticket:
-            return "", "@deferred names no ticket: a deferral without a ticket is nobody's"
+            return "broken", "@deferred names no ticket: a deferral without a ticket is nobody's"
         if not TICKET_RE.match(ticket):
             return "broken", f"{deferral.group(0)} names no ticket id"
-        if ticket not in registry.tickets:
+        if not ticket_is_registered(ticket, registry):
             return "broken", f"{deferral.group(0)} names a ticket the registry does not carry"
         return "deferred", ticket
     return "", ""
@@ -1137,6 +1019,16 @@ def account(tree: Tree, registry: DebtRegistry | None = None) -> list[Accounting
     return [Accounting(claim, *account_for(claim, tree, accepted)) for claim in scenarios(tree)]
 
 
+def unaccounted(reading: Accounting) -> bool:
+    """True when nothing accounts for the scenario, which is the only case a key may accept.
+
+    One predicate, because four places ask the question — whether a claim passes, whether a key is
+    still stale, what the summary counts, what `--accept` keeps — and a list of kinds spelled out
+    in each of them is how a broken tag came to be counted as an accepted one.
+    """
+    return reading.kind == ""
+
+
 def check_scenario(
     readings: Sequence[Accounting], registry: DebtRegistry | None = None
 ) -> list[Violation]:
@@ -1150,17 +1042,15 @@ def check_scenario(
     accepted = (registry or DebtRegistry()).keys
     violations: list[Violation] = []
     for reading in readings:
-        if reading.kind in {"test", "deferred"}:
-            continue
         key = claim_key(reading.claim)
         if reading.kind == "broken":
             violations.append(Violation("scenario", reading.claim.location, reading.evidence))
             continue
-        if key in accepted:
+        if not unaccounted(reading) or key in accepted:
             continue
         detail = reading.evidence or (
-            "no test pins it and no ticket defers it: add @test(<path>::<name>), name a test "
-            f"after the title, or accept the key {key!r} and run --accept"
+            "no test pins it and no ticket defers it: add @test(<path>::<name>) or name a test "
+            f"after the title; {key!r} is a claim that needs one, not a key to accept"
         )
         violations.append(Violation("scenario", reading.claim.location, detail))
     return violations
@@ -1169,14 +1059,30 @@ def check_scenario(
 def scenario_counts(
     readings: Sequence[Accounting], registry: DebtRegistry | None = None
 ) -> dict[str, int]:
-    """The four numbers the summary publishes: pinned, deferred, accepted, and new."""
+    """The five numbers the summary publishes: pinned, deferred, accepted, new and broken.
+
+    A broken tag is counted as broken and never as accepted: its key may well be in the set, and
+    that is precisely the reading the set must not swallow — a tag that claims an owner and names
+    none is a lie whether or not the scenario behind it was ever accepted.
+    """
     accepted = (registry or DebtRegistry()).keys
-    counts = {"scenarios": len(readings), "accounted": 0, "deferred": 0, "accepted": 0, "new": 0}
+    counts = {
+        "scenarios": len(readings),
+        "accounted": 0,
+        "deferred": 0,
+        "accepted": 0,
+        "new": 0,
+        "broken": 0,
+    }
     for reading in readings:
         if reading.kind == "test":
             counts["accounted"] += 1
         elif reading.kind == "deferred":
             counts["deferred"] += 1
+        elif reading.kind == "broken":
+            counts["broken"] += 1
+        elif not unaccounted(reading):
+            continue
         elif claim_key(reading.claim) in accepted:
             counts["accepted"] += 1
         else:
@@ -1186,7 +1092,7 @@ def scenario_counts(
 
 def debt_report(readings: Sequence[Accounting], registry: DebtRegistry | None = None) -> list[str]:
     """One line per cluster and one per accepted key: the debt, named rather than counted."""
-    live = {claim_key(reading.claim) for reading in readings if reading.kind in {"", "broken"}}
+    live = {claim_key(reading.claim) for reading in readings if unaccounted(reading)}
     accepted = (registry or DebtRegistry()).keys
     lines: list[str] = []
     for cluster in sorted((registry or DebtRegistry()).clusters, key=lambda c: c.ticket):
@@ -1330,8 +1236,9 @@ def check_provenance(
 # --- the accepted gaps --------------------------------------------------------------------
 
 #: Names a closed vocabulary, a fenced document or a dataclass declares that no function writes yet,
-#: one row per name. The transfer catalogue is per code rather than per table so that a code the
-#: component lands shrinks its own row and cannot ride on the others.
+#: one row per name, each carrying the ticket the registry knows. The transfer catalogue is per code
+#: rather than per table so that a code the component lands shrinks its own row and cannot ride on
+#: the others.
 PRODUCER_EXEMPTIONS: tuple[Exemption, ...] = (
     Exemption(
         check="producer",
@@ -1347,39 +1254,35 @@ PRODUCER_EXEMPTIONS: tuple[Exemption, ...] = (
     ),
     Exemption(
         check="producer",
-        subject="sentence:added to cycle Z",
-        ticket="HIFA-90",
-        reason="the cycle sentence waits for a name map no read carries",
+        subject="dataclass:RetryPolicy.attempts",
+        ticket="HIFA-103",
+        reason="the retry parameters are read from the class default and no function assigns one",
     ),
     Exemption(
         check="producer",
-        subject="sentence:removed it from cycle Z",
-        ticket="HIFA-90",
-        reason="the cycle sentence waits for a name map no read carries",
+        subject="dataclass:RetryPolicy.base_delay",
+        ticket="HIFA-103",
+        reason="the retry parameters are read from the class default and no function assigns one",
     ),
     Exemption(
         check="producer",
-        subject="sentence:moved to project X",
-        ticket="HIFA-90",
-        reason="the project sentence waits for a name map no read carries",
+        subject="dataclass:MoveIssue.rebalance",
+        ticket="HIFA-103",
+        reason="the command validates the switch and nothing sets it: the internal switch is never "
+        "thrown by a caller",
     ),
     Exemption(
         check="producer",
-        subject="sentence:removed it from project X",
-        ticket="HIFA-90",
-        reason="the project sentence waits for a name map no read carries",
+        subject="dataclass:CreateTeam.estimation_type",
+        ticket="HIFA-103",
+        reason="the command fills the field by name in one post-init and no function assigns it",
     ),
     Exemption(
         check="producer",
-        subject="sentence:set milestone Y",
-        ticket="HIFA-90",
-        reason="the milestone sentence waits for a name map no read carries",
-    ),
-    Exemption(
-        check="producer",
-        subject="sentence:removed it from milestone Y",
-        ticket="HIFA-90",
-        reason="the milestone sentence waits for a name map no read carries",
+        subject="dataclass:CreateTeam.default_state",
+        ticket="HIFA-103",
+        reason="the use case refuses the option the command declares, so the field has no writer "
+        "until the spec or the use case changes",
     ),
     *(
         Exemption(
@@ -1512,9 +1415,7 @@ def stale(
                 )
             )
     if "scenario" in checks:
-        carried_keys = {
-            claim_key(reading.claim) for reading in readings if reading.kind in {"", "broken"}
-        }
+        carried_keys = {claim_key(reading.claim) for reading in readings if unaccounted(reading)}
         for key in sorted(report.debts.keys - carried_keys):
             violations.append(
                 Violation(
@@ -1544,6 +1445,7 @@ def build_report(
         report.violations.extend(check_scenario(readings, debts))
     if "provenance" in only:
         report.violations.extend(check_provenance(tree, accepted, needed))
+    report.violations.extend(check_exemptions(accepted, debts, only))
     report.violations.extend(stale(report, tree, readings, needed, only))
     report.readings = readings
     report.counts = scenario_counts(readings, debts)
@@ -1561,22 +1463,27 @@ def summary(report: Report) -> str:
         f"(producer {len(report.of('producer'))}, provenance {len(report.of('provenance'))}); "
         f"scenario: {counts.get('accounted', 0)} accounted, "
         f"{counts.get('deferred', 0)} deferred by ticket, "
-        f"{counts.get('accepted', 0)} in the accepted set, {counts.get('new', 0)} new "
+        f"{counts.get('accepted', 0)} in the accepted set, {counts.get('new', 0)} new, "
+        f"{counts.get('broken', 0)} broken "
         f"of {counts.get('scenarios', 0)} in {counts.get('documents', 0)} document(s)"
     )
 
 
-def accept(tree: Tree, registry: DebtRegistry) -> tuple[DebtRegistry, int, int]:
+def accept(tree: Tree, registry: DebtRegistry) -> tuple[DebtRegistry, int, int, int]:
     """Rewrite the accepted set from the tree: every unaccounted key kept, stale ones dropped.
 
-    Returns the registry, how many keys it now holds and how many it dropped. The default cluster
-    is the one a new key joins; a key an existing cluster owns is left where a human put it.
+    Returns the registry, how many keys it now holds, how many it dropped and how many it would
+    add. An addition is the caller's decision, not this function's: a key that is not already in
+    the set is a claim nobody has tested, and writing it here would silence the gate that found it.
+    The default cluster is the one a new key joins; a key an existing cluster owns is left where a
+    human put it.
     """
     readings = account(tree, registry)
-    live = [claim_key(reading.claim) for reading in readings if reading.kind == ""]
+    live = [claim_key(reading.claim) for reading in readings if unaccounted(reading)]
     dropped = len(registry.keys - set(live))
+    added = len(set(live) - registry.keys)
     reason = next((cluster.reason for cluster in registry.clusters), "")
-    return registry.accepted(live, reason), len(live), dropped
+    return registry.accepted(live, reason), len(live), dropped, added
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1599,6 +1506,11 @@ def main(argv: list[str] | None = None) -> int:
         "--accept", action="store_true", help="rewrite the accepted scenarios from the tree"
     )
     parser.add_argument(
+        "--allow-growth",
+        action="store_true",
+        help="let --accept add a key no accepted scenario carried, which is a decision",
+    )
+    parser.add_argument(
         "--list-debt", action="store_true", help="print every accepted key, by cluster"
     )
     parser.add_argument("--quiet", action="store_true", help="only the summary line")
@@ -1616,11 +1528,20 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        written, kept, dropped = accept(tree, registry)
+        written, kept, dropped, added = accept(tree, registry)
+        if added and not args.allow_growth:
+            print(
+                f"refusing to grow the accepted set: {added} key(s) have no test and no ticket; "
+                "a claim needs a test or a registered ticket, and adding its key is a decision "
+                "somebody makes in a pull request, not the remedy this gate suggests. Pass "
+                "--allow-growth to make it here.",
+                file=sys.stderr,
+            )
+            return 2
         written.write(args.debt)
         print(
-            f"accepted {kept} key(s) in {args.debt}: "
-            f"{dropped} stale key(s) dropped, ticket(s) {', '.join(sorted(written.tickets))}"
+            f"accepted {kept} key(s) in {args.debt}: {dropped} stale key(s) dropped, "
+            f"{added} added, ticket(s) {', '.join(sorted(written.tickets))}"
         )
         return 0
 

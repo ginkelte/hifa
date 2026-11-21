@@ -2,7 +2,13 @@
   "version": 1,
   "default_ticket": "HIFA-105",
   "tickets": [
-    "HIFA-105"
+    "HIFA-103",
+    "HIFA-104",
+    "HIFA-105",
+    "HIFA-22",
+    "HIFA-8",
+    "HIFA-9",
+    "HIFA-90"
   ],
   "clusters": [
     {
@@ -31,13 +37,9 @@
         "02-teams-workflow-states.feature::a reorder writes the order and no migration",
         "02-teams-workflow-states.feature::a state type outside the enum is rejected",
         "02-teams-workflow-states.feature::a team created before the review column gains it with one command",
-        "02-teams-workflow-states.feature::an archived team disappears from listings but keeps its issues",
         "02-teams-workflow-states.feature::an invalid team key is rejected",
         "02-teams-workflow-states.feature::an old identifier still resolves",
-        "02-teams-workflow-states.feature::archiving a team with open issues requires yes",
         "02-teams-workflow-states.feature::changing the key rewrites the existing identifiers",
-        "02-teams-workflow-states.feature::deleting a state while reassigning its issues happens in one transaction",
-        "02-teams-workflow-states.feature::deleting a state with issues requires reassigning them",
         "02-teams-workflow-states.feature::going back to an open state clears the completion milestone",
         "02-teams-workflow-states.feature::new state with a free form name and a fixed type",
         "02-teams-workflow-states.feature::new team with a valid key",
