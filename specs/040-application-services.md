@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 11
-spec_revision: 39
+version: 12
+spec_revision: 40
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -12,7 +12,7 @@ implements:
 acceptance: specs/acceptance/040-application-services.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-20
+updated: 2026-11-21
 ---
 
 # SPEC-040 — Application services
@@ -1298,7 +1298,13 @@ Return conventions, mandatory:
   `NotFound(resource='relation')`.
 - Reads return tuples (immutable) and **never** generators: the edge can iterate them twice
   (count and render) without consuming them.
-- `issue_detail` accepts `ENG-123` or a ULID; `team_detail`, `project_detail`, `cycle_detail`,
+- `issue_detail` accepts the four reference forms of SPEC-050 §2.5.3.2 — a full ULID, a current
+  `identifier` compared **case-insensitively**, a previous identifier through `team_previous_key` (the
+  greatest `changed_at` answers when two teams left the same key behind), and a bare number inside the
+  team the call was given. The grammar, the order that settles two forms naming one issue, the codes, the
+  fields and the wording of the warning are that section's and are not restated here (D-076, D-077); what
+  this layer owns is that the read answers all four and reports a renamed reference to its caller, so the
+  edge can print the line. `team_detail`, `project_detail`, `cycle_detail`,
   `label_detail` and `member_detail` accept a ULID or name/key depending on the resource, and raise
   `NotFound(resource=..., key=...)` with the `key` as it arrived.
 - `list_issues` resolves `filters.team_id` by ULID **or** key: if it is not a 26-character ULID, it
@@ -3068,6 +3074,24 @@ contract it must meet.
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 40 (2026-11-21): **the losing side of the `REF` conflict is adjusted here, by reference
+  rather than by restating it (HIFA-83, D-076 as corrected by D-077).** `version` 11 → 12: §2.2's
+  `issue_detail` accepts four reference forms where it declared two, and that is the public signature of
+  the read.
+  (1) **What this section said, and why it was the losing text.** §2.2 stated as a closed convention that
+  `issue_detail` "accepts `ENG-123` or a ULID". SPEC-050 §2.5.3.2 now contracts four forms, two of them —
+  the previous identifier and the bare number — reads this layer does not produce. `AGENTS.md` §3 resolves
+  a conflict between specs in `DECISIONS.md` **and** adjusts the losing spec with a `spec_revision` bump,
+  not by writing code and not by a gap row, so the adjustment is here; GAP-09 of SPEC-050 §2.3.1 is only
+  the record that the producer is still missing.
+  (2) **The grammar is delegated, not copied.** The order of the four forms, the case-insensitive
+  comparison, the rotation rule (`changed_at`), the `missing_context` of a number with no team and the
+  wording of the warning are SPEC-050 §2.5.3.2's and are named here once, by reference: two statements of
+  one grammar is how the two documents came apart in the first place. What this section states is what the
+  layer it governs must do — answer all four forms and report a renamed reference to its caller.
+  (3) **Nothing else moves.** No signature, no `include` name, no key, no error code of this spec changes:
+  the four forms are inputs to the same function, which is why `version` moves and §6's table does not.
 
 - spec_revision 37 (2026-11-20): **round two of review: the order and the visibility of `issue_detail`'s
   two unfetched collections are declared here, where they are produced (HIFA-49, D-072).** `version`

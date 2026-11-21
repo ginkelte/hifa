@@ -516,8 +516,8 @@ It is distributed under the same MIT license as the code — use it, remix it, p
 |---|---|
 | Tests | **1930** collected by `pytest` (1930 passing, 0 skipped with the venv's `bin` on `PATH`, 1 otherwise): unit, integration, e2e CLI and web, plus one perf budget over 10 000 rows |
 | Code | ~19.6k lines in `src/` (19 588), ~28.2k in `tests/` (28 250), Python only |
-| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 74 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
-| Shipped | `init`, `issue create`, `issue show` (`--with`), `issue history` (`--limit`), `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `search`, `db reindex`, `serve` (board, list, detail, timeline, search, quick add, drag) |
+| Specs | 18 documents (`specs/*.md`) · 240 Gherkin scenarios (`specs/acceptance/`: 228 `Scenario` + 12 `Scenario Outline`) · 77 recorded decisions (`specs/DECISIONS.md`, one `D-0NN` heading each) |
+| Shipped | `init`, `issue create`, `issue show` (`--with`, `--team`), `issue history` (`--limit`), `team create\|list\|show`, `state list\|create\|update`, `label add\|list\|show\|update\|archive`, `issue label\|unlabel`, `search`, `db reindex`, `serve` (board, list, detail, timeline, search, quick add, drag) |
 | Next | the roadmap above — starting with editing and moving issues |
 | Guarantees | signed commits, green CI required to merge, no drift between spec and DDL |
 

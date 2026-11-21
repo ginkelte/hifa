@@ -4765,3 +4765,60 @@ REQ-S050-01). That is GAP-09 of SPEC-050 §2.3.1, the §7 scenarios that drive t
 adapter writer (`TeamRepo.add_previous_key`) and **no caller**: the rotation that would write a row is
 SPEC-001 REQ-F006, which SPEC-001 §10.1 item 8 lists among the verticals with no counterpart in SPEC-050 —
 so until `team set-key` is contracted, the historical form resolves rows a future command left behind.
+
+## D-077 — D-076's header is corrected: SPEC-040 was the losing spec, and the rotation settles form 3
+
+**Date:** 2026-11-21 · **Wins:** SPEC-050 §2.5.3.2 (the grammar of `REF`, its order, its codes and the
+wording of its warning) · **Touches:** SPEC-040 §2.2 and §Notes (`spec_revision` 39 → 40, `version` 11 →
+12); SPEC-050 §2.3.1, §2.5, §2.5.3, §2.5.3.2, §4, §7, §11; `README.md`; `specs/INDEX.md`; this file
+
+**Why a new entry rather than an edit.** D-076's header named no losing spec and listed neither SPEC-040
+nor `README.md`, and one of its sentences is false after the adjustment below. This file is append-only,
+so D-076 stands as written and this entry is the correction; the headers of D-076 are to be read through
+this one.
+
+**Where D-076's header was wrong.** (1) **The conflict was not with SPEC-001.** REQ-F012 is what SPEC-050
+obeys; 001 §10.1 item 8 assigns the CLI surface to 050 and nothing in 001 contradicts the delta. The two
+documents that disagreed were **SPEC-040 §2.2**, which closed `issue_detail` to "`ENG-123` or a ULID", and
+**SPEC-050 §2.5.3.2**, which contracts four forms. SPEC-050 wins; **SPEC-040 is the losing spec** and is
+adjusted at `spec_revision` 40, §2.2 delegating the grammar to §2.5.3.2 by reference and its §Notes
+pointing at D-076 and at this entry. That is `AGENTS.md` §3's mechanism, and it is the whole of the
+resolution: the GAP row below is a statement about the tree, not about the conflict. (2) **Touches.** §4
+is not touched by this change and was listed; SPEC-040 and `README.md` were omitted, and both move —
+`README.md` publishes `issue show` with `--with` only, while §2.5.3 now lists `--team`, and `AGENTS.md` §6
+item 8 requires README, `AGENTS.md` and `INDEX.md` in the same pull request. (3) **The count was wrong.**
+D-076 said the old text was "one form short"; `REF` — an identifier or a ULID — declared **two** of the
+four, so it was two short. The claims gate cannot see this class of error: its provenance rule reads counts
+of database rows, and a count of reference forms is prose.
+
+**What D-076 left open, decided here.**
+
+(1) **Case-insensitivity belongs to GAP-09, not to a second gap.** §2.5.3.2 compares both identifier forms
+case-insensitively, and the read the verb calls binds `i.identifier = :ref` exactly: probed on this tree,
+`hifa issue show hifa-1` exits 3 against a workspace that holds `HIFA-1`. The implementer who widens
+`issue_detail` for the previous identifier and the number normalises the identifier in the same widening —
+one resolver for `show` and `edit` rather than a CLI that resolves `hifa-1` for one verb and not for the
+other. GAP-09's row and paragraph name the normalisation as part of the widening, so the gap is one row
+for one resolver and not a form count.
+
+(2) **The rotation makes form 3 total.** `team_previous_key` is `PRIMARY KEY (team_id, key)` with a
+non-unique index on `key`: a team may leave `ENG` for PLAT, a team created later as `ENG` may leave it for
+OPS, and then two rows carry `key = 'ENG'` while each of those teams numbers an issue 3 — `ENG-3` would
+answer twice with no rule in force. The form is answered by the row with the greatest `changed_at`, an
+exact tie broken by the greater `team_id`, because `changed_at` exists on the row for exactly this and is
+otherwise a dead column. A refusal there would leave a legal pair of rotations unresolvable; the corpus's
+ambiguity rule is for one form answering twice, not for two rotations that the schema allows.
+
+(3) **The scenarios are absent, not deferred.** A `@deferred(HIFA-83)` tag in the commit that contracts
+the behaviour names the ticket that writes the tests, and no code path ever reports such a tag stale: the
+accounting prefers a test when one exists, so the tag can neither fail nor pass with the work. The eight
+§7 scenarios were withdrawn with it, `HIFA-83` was unregistered from `scripts/spec_claims_debt.json`, and
+they arrive in the implementation's commit each pinned by a test whose name is its title or by
+`@test(<path>::<name>)`. The gate now fails a `@deferred` that a test has caught up with, which is what
+makes a deferral a debt rather than a permanent claim.
+
+(4) **`--team` is a leaf option, and three verbs carry it.** D-076 called it "the §2.2 duplicate the verbs
+that already consult the team list (`create`, `list`, `assign`, `blocked`)": the root callback refuses
+`hifa --team ENG` with exit 2 and `No such option`, `assign` declares no `--team`, and the members of this
+family that do are `create`, `list` and `blocked`. What is true, and what §2.5.3.2 and its Notes now say,
+is that `--team` is read at the leaf by the verb that needs it, with no global value to win over.
