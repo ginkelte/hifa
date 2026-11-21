@@ -1,3 +1,10 @@
+# [0.15.0](https://github.com/ginkelte/hifa/compare/v0.14.0...v0.15.0) (2026-11-21)
+
+
+### Features
+
+* **scripts:** the spec claims are checked by CI, not by a reviewer eye (HIFA-103) ([#41](https://github.com/ginkelte/hifa/issues/41)) ([611fc69](https://github.com/ginkelte/hifa/commit/611fc6943b1e1edc0e48c8cda1363e6455b4d214))
+
 # [0.14.0](https://github.com/ginkelte/hifa/compare/v0.13.0...v0.14.0) (2026-11-20)
 
 
