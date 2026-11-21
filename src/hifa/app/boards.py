@@ -254,11 +254,11 @@ def issue_detail(
 ) -> IssueDetail:
     """Detail of one issue named four ways; `NotFound(issue, key=ref)` when none answers.
 
-    `ref` is a ULID, a current identifier (compared case-insensitively), an identifier whose
-    team has since left that key behind, or a bare number inside `team`. The first two are
-    answered by the detail read directly; the last two are resolved to the issue they name
-    before that one call, because the read itself answers a ULID and a current identifier and
-    no third vocabulary. `team` (a key, case-insensitive, or a ULID) is consulted by the number
+    `ref` is a ULID, a current identifier (compared with the caller's spelling folded), an
+    identifier whose team has since left that key behind, or a bare number inside `team`. The
+    form is resolved to an issue id first — in that order, which is the order the four forms are
+    read in — and the detail read is then asked for that id **once**, so every form costs one
+    read of one issue. `team` (a key, case-insensitive, or a ULID) is consulted by the number
     form alone: an identifier names its own team, so a `team` that disagrees with one is
     accepted and has no effect on the answer.
 
@@ -288,6 +288,15 @@ def issue_detail(
     return replace(detail, relations=_ordered_relations(detail.relations, detail.issue.id))
 
 
+def is_number_ref(text: str) -> bool:
+    """True when `text` is ASCII digits, the one reference form that is a number and not a name.
+
+    The edge asks this of a reference before it resolves the team the number belongs to, so the
+    test of "is this the number form" is written once, here, where the four forms are.
+    """
+    return text.isascii() and text.isdigit()
+
+
 def _detail_of(
     conn: sqlite3.Connection,
     ref: str,
@@ -298,58 +307,70 @@ def _detail_of(
 ) -> IssueDetail | None:
     """The detail of the issue `ref` names, over the caller's one connection.
 
-    The order the four forms are read in is the contract, so it is written once, here: a bare
-    number first (it cannot be an identifier), then the read itself — which answers a ULID and a
-    current identifier — and only when that answers nothing, the key the team left behind. A
-    current identifier therefore shadows a previous key of the same spelling, and the resolution
-    of the number form runs before the issue is read, so a team the workspace does not hold is
-    refused as such and never as a missing issue.
+    The order the four forms are read in is the contract, so it is written once, here: a ULID,
+    then a current identifier, then the key the team left behind, then a bare number inside `team`.
+    Resolution answers an id and the read is asked for that id **once**, so a reference that needs
+    the rotation or the number costs the same one read as one that names the issue directly, and
+    the body of a detail — its history, its comments, its children — is never built twice.
+
+    A team the workspace does not hold is refused as a team, before any issue is looked up, and a
+    number with no team to place it answers nothing: the refusal behind that is the edge's.
     """
     text = (ref or "").strip()
     if not text:
         return None
 
-    if _is_number(text):
+    issue_id, previous_identifier = _issue_id_of(conn, text, team=team)
+    if issue_id is None:
+        return None
+
+    found = reads.issue_detail(conn, issue_id, include=include, include_trashed=include_trashed)
+    if found is None or previous_identifier is None:
+        return found
+    return replace(found, previous_identifier=previous_identifier)
+
+
+def _issue_id_of(
+    conn: sqlite3.Connection, text: str, *, team: str | None
+) -> tuple[str | None, str | None]:
+    """`(issue id, previous identifier)` of the one issue `text` names, in the declared order.
+
+    The four forms, in order: a ULID, a current identifier (compared with the caller's spelling
+    folded), the key the team left behind, and a bare number inside `team`. The first two are one
+    statement — no identifier can be shaped like a ULID, so the two branches cannot both answer —
+    and a hit there is final, which is what makes a current identifier shadow a previous key of the
+    same spelling. `team` is consulted by the number form alone.
+    """
+    if is_number_ref(text):
         if team is None:
-            return None
+            return None, None
         owner = reads.team_by_ref(conn, team)
         if owner is None:
             raise NotFound(resource="team", key=team)
-        issue_id = reads.issue_id_by_number(conn, team_id=owner.id, number=int(text))
-        if issue_id is None:
-            return None
-        return reads.issue_detail(conn, issue_id, include=include, include_trashed=include_trashed)
+        return reads.issue_id_by_number(conn, team_id=owner.id, number=int(text)), None
 
-    direct = reads.issue_detail(conn, text, include=include, include_trashed=include_trashed)
+    direct = reads.issue_id_by_ref(conn, text)
     if direct is not None:
-        return direct
+        return direct, None
 
     previous = _split_identifier(text)
     if previous is None:
-        return None
+        return None, None
     key, number = previous
     left_behind = reads.team_by_previous_key(conn, key)
     if left_behind is None:
-        return None
+        return None, None
     owner, stored_key = left_behind
     issue_id = reads.issue_id_by_number(conn, team_id=owner.id, number=number)
     if issue_id is None:
-        return None
-    found = reads.issue_detail(conn, issue_id, include=include, include_trashed=include_trashed)
-    if found is None:
-        return None
-    return replace(found, previous_identifier=f"{stored_key}-{number}")
-
-
-def _is_number(text: str) -> bool:
-    """True when `text` is ASCII digits, the one form that is a number and not a name."""
-    return text.isascii() and text.isdigit()
+        return None, None
+    return issue_id, f"{stored_key}-{number}"
 
 
 def _split_identifier(text: str) -> tuple[str, int] | None:
     """`(key, number)` of a `KEY-123` token, or `None` when the token is not shaped like one."""
     key, separator, number = text.rpartition("-")
-    if not separator or not key or not _is_number(number):
+    if not separator or not key or not is_number_ref(number):
         return None
     return key, int(number)
 
@@ -413,6 +434,7 @@ __all__ = [
     "database_ok",
     "detail_collections",
     "issue_detail",
+    "is_number_ref",
     "list_board",
     "list_blocked",
     "list_issues",

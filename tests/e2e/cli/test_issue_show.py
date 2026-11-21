@@ -787,6 +787,12 @@ def test_an_identifier_is_resolved_without_a_team(cli: Cli) -> None:
     assert result.exit_code == 0, out(result)
     assert payload(result)["identifier"] == "ENG-1"
 
+    unplaced = cli.run("issue", "show", "1", "--json")
+
+    assert unplaced.exit_code == 2, out(unplaced)
+    assert error_of(unplaced)["code"] == "missing_context"
+    assert error_of(unplaced)["field"] == "team"
+
 
 def test_a_current_identifier_is_read_without_regard_to_case(cli: Cli) -> None:
     """`eng-1` names `ENG-1`: the identifier is compared with its case folded."""
@@ -799,15 +805,22 @@ def test_a_current_identifier_is_read_without_regard_to_case(cli: Cli) -> None:
 
 
 def test_a_number_the_team_does_not_wear_is_not_found_with_3(cli: Cli) -> None:
-    """A number no issue wears is the verb's missing issue, not a special case for zero."""
+    """The number is looked up inside one team: `1` is ENG's issue and OPS's missing one."""
     cli.create("Fix SSO login")
+    add_team(cli, "OPS")
 
-    result = cli.run("issue", "show", "999", "--team", "ENG", "--json")
+    worn = cli.run("issue", "show", "1", "--team", "ENG", "--json")
+
+    assert worn.exit_code == 0, out(worn)
+    assert payload(worn)["identifier"] == "ENG-1"
+
+    result = cli.run("issue", "show", "1", "--team", "OPS", "--json")
 
     assert result.exit_code == 3, out(result)
     assert result.stdout == ""
     assert error_of(result)["code"] == "not_found"
     assert error_of(result)["field"] == "issue"
+    assert "issue '1' does not exist" in error_of(result)["message"]
 
 
 def test_a_team_the_workspace_does_not_hold_is_not_found_with_3(cli: Cli) -> None:
@@ -866,6 +879,14 @@ def test_a_current_identifier_shadows_a_previous_key_of_the_same_spelling(cli: C
     assert result.exit_code == 0, out(result)
     assert payload(result)["identifier"] == "ENG-7"
     assert "identifier renamed" not in result.stderr
+
+    # The shadow only means something if the form it shadows answers: `ENG-3` is the team that
+    # left `ENG` behind, and reaching it is what makes `ENG-7` above a decision and not a default.
+    renamed = cli.run("issue", "show", "ENG-3", "--json")
+
+    assert renamed.exit_code == 0, out(renamed)
+    assert payload(renamed)["identifier"] == "PLAT-3"
+    assert "identifier renamed: ENG-3 is now PLAT-3" in renamed.stderr
 
 
 def test_two_teams_that_left_the_same_key_are_settled_by_the_most_recent_rotation(

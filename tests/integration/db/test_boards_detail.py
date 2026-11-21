@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 import pytest
 
 from helpers_world import World, make_issue
+from hifa.adapters.sqlite import reads
 from hifa.adapters.sqlite.connection import Database
 from hifa.adapters.sqlite.reads import IssueDetail
 from hifa.app import boards
@@ -285,6 +286,41 @@ def test_a_previous_identifier_resolves_and_is_reported(world: World) -> None:
 
     assert detail.issue.identifier == "PLAT-3"
     assert detail.previous_identifier == "ENG-3"
+
+
+def test_a_resolved_form_asks_the_detail_read_once_and_by_id(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rotation resolves to an id first, and the read is asked for that id once.
+
+    A read called with the reference the caller typed and again with the id it resolves to builds
+    the detail twice: the whole body — children, relations, states — of an issue that was never
+    in doubt. One call, and the token it carries is the issue's id, not the previous key.
+    """
+    with world.uow.write() as tx:
+        issue = make_issue(tx, world, number=3, identifier="ENG-3")
+        rotate(
+            tx,
+            team=world.team,
+            old="ENG",
+            new="PLAT",
+            at=datetime(2026, 11, 20, tzinfo=UTC),
+            issues=[issue],
+        )
+
+    seen: list[str] = []
+    real = reads.issue_detail
+
+    def spy(conn: object, ref: str, **kwargs: object) -> IssueDetail:
+        seen.append(ref)
+        return real(conn, ref, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(reads, "issue_detail", spy)
+
+    detail = boards.issue_detail(Database(world.path), "ENG-3")
+
+    assert detail.issue.identifier == "PLAT-3"
+    assert seen == [issue.id]
 
 
 def test_a_current_identifier_shadows_a_previous_key_of_the_same_spelling(world: World) -> None:

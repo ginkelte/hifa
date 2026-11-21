@@ -40,6 +40,7 @@ from hifa.app.boards import (
     DETAIL_COLLECTIONS,
     RENDERED_INCLUDE,
     detail_collections,
+    is_number_ref,
     issue_detail,
     list_blocked,
     list_issues,
@@ -920,7 +921,7 @@ def _team_of_number(db_flag: str | None, db_path: Path, ref: str, flag: str | No
     `missing_context` and never a missing row.
     """
     text = (ref or "").strip()
-    if not (text.isascii() and text.isdigit()):
+    if not is_number_ref(text):
         return None
     cfg = resolve_config(db_flag=db_flag)
     uow = UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())

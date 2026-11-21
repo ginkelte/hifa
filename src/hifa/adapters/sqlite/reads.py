@@ -665,6 +665,10 @@ def team_by_previous_key(conn: sqlite3.Connection, key: str) -> tuple[Team, str]
     most recent rotation answers, and an exact tie of `changed_at` is settled by the greater
     `team_id` so that the answer is the same on every run. The stored spelling travels beside
     the team: a caller renders the rotation's own key, never the one it typed.
+
+    The key is compared with the caller's spelling folded, and the rotation stores it folded
+    too, so `upper(:key)` is the whole comparison and `idx_team_previous_key_key` answers it;
+    a collation on the column would leave the index unreadable and scan the table.
     """
     from hifa.adapters.sqlite.team_repo import team_from_row
 
@@ -675,12 +679,30 @@ def team_by_previous_key(conn: sqlite3.Connection, key: str) -> tuple[Team, str]
         "SELECT t.*, pk.key AS previous_key"
         " FROM team_previous_key pk"
         " JOIN team t ON t.id = pk.team_id"
-        " WHERE pk.key = :key COLLATE NOCASE"
+        " WHERE pk.key = upper(:key)"
         " ORDER BY pk.changed_at DESC, pk.team_id DESC"
         " LIMIT 1",
         {"key": text},
     ).fetchone()
     return None if row is None else (team_from_row(row), str(row["previous_key"]))
+
+
+def issue_id_by_ref(conn: sqlite3.Connection, ref: str) -> str | None:
+    """`issue.id` of the issue a ULID or a current identifier names, `None` when neither does.
+
+    The two direct forms in one statement: the identifier branch folds the caller's spelling
+    (`upper(:ref)`), the ULID branch compares what was typed, and each branch is its own index
+    seek. This is the detail read's own predicate, projected to the one column a resolution
+    needs, so a caller that has to decide which form was typed pays a seek and not a read.
+    """
+    text = (ref or "").strip()
+    if not text:
+        return None
+    row = conn.execute(
+        "SELECT id FROM issue WHERE identifier = upper(:ref) OR id = :ref LIMIT 1",
+        {"ref": text},
+    ).fetchone()
+    return None if row is None else str(row["id"])
 
 
 def issue_id_by_number(conn: sqlite3.Connection, *, team_id: str, number: int) -> str | None:
@@ -878,8 +900,15 @@ def issue_detail(
     include: frozenset[str] = frozenset(),
     include_trashed: bool = False,
 ) -> IssueDetail | None:
-    """Detail of one issue by identifier, compared case-insensitively, or ULID; `None` when
-    it does not exist.
+    """Detail of one issue by identifier or ULID; `None` when it does not exist.
+
+    The identifier is compared with the caller's spelling folded — `upper(:ref)`, a function of
+    the bound parameter — and never with the column collated: `issue.identifier` is written
+    normalised (the team's key is uppercased on the way in and the number is digits), so folding
+    what the caller typed is the whole of the comparison, and `upper(:ref)` is a constant to the
+    planner, which keeps both branches of the `OR` on their own index. `COLLATE NOCASE` on the
+    column reads as the same comparison and is not one: it makes neither index usable, and every
+    detail read in the tree — `show`, the board card, the issue panel — becomes a scan of `issue`.
 
     `include` gates the heavy collections (`comments`, `history`, `attachments`). A name outside
     `DETAIL_INCLUDE` is a `Validation(rule="INCLUDE_INVALID")`, not a silent no-op.
@@ -920,8 +949,7 @@ def issue_detail(
         return None
     header = _one_item(
         conn,
-        "(i.identifier = :ref COLLATE NOCASE OR i.id = :ref)"
-        " AND (:include_trashed = 1 OR i.trashed = 0)",
+        "(i.identifier = upper(:ref) OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)",
         {"ref": text, "include_trashed": int(include_trashed)},
     )
     if header is None:
@@ -1536,6 +1564,7 @@ __all__ = [
     "encode_cursor",
     "issue_detail",
     "issue_id_by_number",
+    "issue_id_by_ref",
     "list_teams",
     "local_member",
     "list_view",
