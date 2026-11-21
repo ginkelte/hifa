@@ -1255,32 +1255,32 @@ PRODUCER_EXEMPTIONS: tuple[Exemption, ...] = (
     Exemption(
         check="producer",
         subject="dataclass:RetryPolicy.attempts",
-        ticket="HIFA-103",
+        ticket="HIFA-106",
         reason="the retry parameters are read from the class default and no function assigns one",
     ),
     Exemption(
         check="producer",
         subject="dataclass:RetryPolicy.base_delay",
-        ticket="HIFA-103",
+        ticket="HIFA-106",
         reason="the retry parameters are read from the class default and no function assigns one",
     ),
     Exemption(
         check="producer",
         subject="dataclass:MoveIssue.rebalance",
-        ticket="HIFA-103",
+        ticket="HIFA-106",
         reason="the command validates the switch and nothing sets it: the internal switch is never "
         "thrown by a caller",
     ),
     Exemption(
         check="producer",
         subject="dataclass:CreateTeam.estimation_type",
-        ticket="HIFA-103",
+        ticket="HIFA-106",
         reason="the command fills the field by name in one post-init and no function assigns it",
     ),
     Exemption(
         check="producer",
         subject="dataclass:CreateTeam.default_state",
-        ticket="HIFA-103",
+        ticket="HIFA-106",
         reason="the use case refuses the option the command declares, so the field has no writer "
         "until the spec or the use case changes",
     ),
