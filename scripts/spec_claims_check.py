@@ -9,14 +9,17 @@ it came from. This script is that check. It is the mechanical form of the review
 The three rules
 ---------------
 producer
-    A closed vocabulary table, or a dataclass declared in a fenced block, enumerates names the
-    code must be able to produce. For every name the table or the class declares, a literal of
-    that name must appear in a writer under `src/`: a keyword argument of a call, a key of a
-    dict literal, or an assignment. A field a class declares and nothing ever assigns is a
-    violation, and so is a sentence a grammar table declares that no string literal renders.
-    Comments and docstrings do not count — quoting a sentence is not producing it. A dataclass
-    whose class does not exist in `src/` is not checked: the contract of a component that has
-    not been built yet declares nothing the tree can contradict.
+    A closed vocabulary table, a fenced JSON document or a dataclass declared in a fenced block
+    enumerates names the code must be able to produce. For every name such a shape declares, a
+    literal of that name must appear in a writer under `src/`: a target assigned inside a function
+    body, a subscript store, a keyword argument of a call, a string passed positionally, or a key
+    of a dict literal built inside a function. Nothing outside a function body is a writer, because
+    a declaration is not a write: `dot_color: str | None = None` in a class body, a module-level
+    `DEAD = "actor_initials"`, and `getattr(row, "actor_initials")` all name a field and produce
+    none, so a field a class declares and nothing ever assigns is a violation. Comments and
+    docstrings do not count either — quoting a sentence is not producing it. A dataclass whose
+    class does not exist in `src/` is not checked: the contract of a component that has not been
+    built yet declares nothing the tree can contradict.
 
 scenario
     Every `Scenario` a spec states as an acceptance case, and every one of the acceptance
@@ -29,8 +32,12 @@ scenario
 
 provenance
     A sentence that publishes a count as a fact about a database must name where the number came
-    from: the path of the file, the command that answered it, or the date it was read. A number
-    with none of the three rots silently — the file changes and the sentence keeps asserting.
+    from, in that same sentence: a backticked token that is a command (a path with a `/` and a
+    `.py`, `.db` or `.sql`, or one that begins with `sqlite3 `, `python`, `.venv/bin/`, `pytest`
+    or `hifa `), or a backticked path together with a date. A path on its own is not a source and
+    neither is a date on its own: the file changes and the sentence keeps asserting. A count
+    inside a fence is a published count and is read like any other, and no document is exempt for
+    being a log — the decision log is where a count rotted.
 
 Exemptions
 ----------
@@ -84,9 +91,13 @@ DEBT_VERSION = 1
 
 CHECKS = ("producer", "scenario", "provenance")
 
-#: Files that are records rather than live claims: an index, the reading guide, the template,
-#: the decision log (each entry dated) and the dated review reports.
+#: Files that are records rather than live claims: an index, the reading guide, the template.
+#: The decision log is a record too, and it is read by the provenance rule all the same: it is
+#: where a published count rotted, so excluding it by name was the defect.
 NOT_A_CLAIM = frozenset({"INDEX.md", "README.md", "_template.md", "DECISIONS.md", "notes.md"})
+
+#: Records that declare no vocabulary and state no scenario, but do publish counts.
+PROSE_ONLY = frozenset({"DECISIONS.md"})
 
 #: Ticket ids are `KEY-NNN`: a deferral or an exemption is not free text.
 TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
@@ -113,10 +124,14 @@ MEASUREMENT = (
 NOT_A_DATABASE_COUNT = re.compile(
     r"\bfixture\b|\bp50\b|\bp95\b|\bbudget\b|\bms\b|10[ ,]?000", re.IGNORECASE
 )
-PROVENANCE = re.compile(
-    r"\.db\b|~/[\w./-]+|`hifa +[a-z]|`sqlite3 +\S|\b(?:sqlite3|grep|pytest|python) +-?\w"
-    r"|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2} [A-Z][a-z]{2}\.? \d{4}\b"
-)
+#: A source is a command, and a command is written in a fence the reader can run: backticks are
+#: the spelling, so a bare path in prose names nothing anybody can repeat.
+BACKTICK = re.compile(r"`([^`\n]+)`")
+DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2} [A-Z][a-z]{2}\.? \d{4}\b")
+#: The words a command begins with; the rest of the token is its arguments.
+COMMAND_PREFIXES = ("sqlite3 ", "python", ".venv/bin/", "pytest", "hifa ")
+#: A path is a file a command reads: it has a directory or a data or script extension.
+PATH_SUFFIX = re.compile(r"\.(?:py|db|sql)$")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*“(])")
 
 
@@ -307,30 +322,44 @@ def feature_files(acceptance_dir: Path = ACCEPTANCE_DIR) -> list[Path]:
 
 @dataclass
 class Producers:
-    """What the modules of `src/` write: the names they produce, the classes they define, and
-    the strings they build, with each interpolated string kept as one template."""
+    """What the functions of `src/` write: the names they produce, the classes they define, and
+    the strings they build, with each interpolated string kept as one template.
+
+    `names` and `values` are writes and nothing else — a target assigned inside a function body, a
+    subscript store, a keyword argument, a dict key, or a string a call receives positionally.
+    `literals` is every string the code builds, which is what the sentence grammar compares a
+    rendering against, and it is deliberately not a write.
+    """
 
     names: set[str] = field(default_factory=set)
+    values: set[str] = field(default_factory=set)
     classes: set[str] = field(default_factory=set)
     literals: list[str] = field(default_factory=list)
-    values: set[str] = field(default_factory=set)
     docstrings: set[int] = field(default_factory=set, repr=False)
 
     def writes(self, name: str) -> bool:
-        """True when some code writes `name` as a field: a keyword argument, a key or a target.
+        """True when a function body writes `name` as a field: a target or a keyword argument.
 
-        A declaration is not a write: a field a class annotates and nothing ever assigns has no
-        producer, which is the defect this rule exists to find.
+        A declaration is not a write: a field a class annotates — with a default or without — and
+        nothing ever assigns has no producer, which is the defect this rule exists to find. A
+        module-level constant is not a write either, and neither is a name reached by `getattr`.
         """
         return name in self.names
 
     def stores(self, name: str) -> bool:
-        """True when some code writes `name` as a value: a literal, or a key of a dict.
+        """True when a function body stores `name` as a value: a literal or a key it writes.
 
         A vocabulary table enumerates the values a writer stores, and a stored value reaches the
-        code as a string — the column's name is the payload, so a literal is its producer.
+        code as a string — the column's name is the payload, so a literal a function passes is its
+        producer. A literal outside a function is not: it is a constant nothing reads.
         """
         return name in self.values or name in self.names
+
+
+#: Calls that name an attribute by a string. The string is a selector, not a write: `getattr` and
+#: `hasattr` read a name, and reading one is exactly what the rule must not accept. `setattr` does
+#: write, so it is a target with a keyword's standing, not a selector.
+REFLECTION = frozenset({"getattr", "hasattr", "attrgetter"})
 
 
 def producers(sources: dict[Path, str]) -> Producers:
@@ -347,53 +376,88 @@ def producers(sources: dict[Path, str]) -> Producers:
 
 
 class _Reader(ast.NodeVisitor):
-    """Collect what each kind of node writes; the walk is the visitor's, not an isinstance chain."""
+    """Collect what each node writes, and count nothing outside a function body as a write."""
 
     def __init__(self, found: Producers) -> None:
-        """Read into the producers being built."""
+        """Read into the producers being built, at module scope."""
         self.found = found
+        self.depth = 0
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """A class defines a name the specs may declare a dataclass for."""
+        """A class defines a name; its body declares fields, and a declaration is not a write."""
         self.found.classes.add(node.name)
+        outer = self.depth
+        self.depth = 0
         self.generic_visit(node)
+        self.depth = outer
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """A function body is where the code writes."""
+        self._enter(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        """An async function body is where the code writes, the same as a plain one."""
+        self._enter(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        """A lambda has no assignments, but its calls and dicts are writes all the same."""
+        self._enter(node)
+
+    def _enter(self, node: ast.AST) -> None:
+        """Walk a function body with the depth raised, so only its statements write."""
+        self.depth += 1
+        self.generic_visit(node)
+        self.depth -= 1
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        """An assignment writes its targets."""
-        for target in node.targets:
-            _target_name(target, self.found)
+        """An assignment inside a function writes its targets."""
+        if self.depth:
+            for target in node.targets:
+                _target_name(target, self.found)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        """An annotated assignment writes its target only when it carries a value."""
-        if node.value is not None:
+        """An annotated assignment writes its target inside a function and only when it has a value.
+
+        A bare annotation declares a name without producing one; a class body's annotation, default
+        or not, is a field the code still has to fill somewhere.
+        """
+        if self.depth and node.value is not None:
             _target_name(node.target, self.found)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        """An augmented assignment writes its target."""
-        _target_name(node.target, self.found)
+        """An augmented assignment inside a function writes its target."""
+        if self.depth:
+            _target_name(node.target, self.found)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        """A keyword argument names a field its callee receives."""
-        for keyword in node.keywords:
-            if keyword.arg:
-                self.found.names.add(keyword.arg)
+        """A keyword names a field its callee receives; a literal argument is a value it stores."""
+        if self.depth and _callee(node) not in REFLECTION:
+            for keyword in node.keywords:
+                if keyword.arg:
+                    self.found.names.add(keyword.arg)
+                if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                    self.found.values.add(keyword.value.value)
+            for argument in node.args:
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                    self.found.values.add(argument.value)
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
-        """A string key of a dict literal is a name the code produces."""
-        for key in node.keys:
-            if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                self.found.names.add(key.value)
+        """A string key of a dict literal a function builds is a name the code produces."""
+        if self.depth:
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    self.found.names.add(key.value)
+                    self.found.values.add(key.value)
         self.generic_visit(node)
 
     def visit_Constant(self, node: ast.Constant) -> None:
         """A string constant is a literal the code builds, unless it is a docstring."""
         if isinstance(node.value, str) and id(node) not in self.found.docstrings:
             self.found.literals.append(node.value)
-            self.found.values.add(node.value)
 
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
         """An interpolated string is one template; its parts are not literals of their own."""
@@ -418,14 +482,40 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
 
 
 def _target_name(target: ast.AST, found: Producers) -> None:
-    """The name an assignment writes, whether to a local or to an attribute."""
+    """The name an assignment writes, whether to a local, an attribute or a subscript key."""
     if isinstance(target, ast.Name):
         found.names.add(target.id)
     elif isinstance(target, ast.Attribute):
         found.names.add(target.attr)
+    elif isinstance(target, ast.Subscript):
+        _subscript_key(target, found)
     elif isinstance(target, (ast.Tuple, ast.List)):
         for element in target.elts:
             _target_name(element, found)
+
+
+def _subscript_key(node: ast.Subscript, found: Producers) -> None:
+    """The string key of a subscript store: `row["field"] = …` writes the field's value.
+
+    A subscript read is not a write, so the key counts only when the store is the assignment's
+    target — the node's context says which it is.
+    """
+    if not isinstance(node.ctx, ast.Store):
+        return
+    key = node.slice
+    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+        found.names.add(key.value)
+        found.values.add(key.value)
+
+
+def _callee(node: ast.Call) -> str:
+    """The name of the function a call applies, whether it is bare or reached through a module."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
 
 
 def _template(node: ast.JoinedStr) -> str:
@@ -486,8 +576,13 @@ class Tree:
             for where, name in test_names(path, path.read_text(encoding="utf-8")):
                 tests.setdefault(test_key(name), where)
         spec_texts = {p.name: p.read_text(encoding="utf-8") for p in spec_files(specs_dir)}
+        records = {
+            name: (specs_dir / name).read_text(encoding="utf-8")
+            for name in sorted(PROSE_ONLY)
+            if (specs_dir / name).is_file()
+        }
         return cls(
-            prose={name: prose_units(text) for name, text in spec_texts.items()},
+            prose={name: prose_units(text) for name, text in {**spec_texts, **records}.items()},
             root=tests_dir.parent,
             specs=spec_files(specs_dir),
             features=feature_files(acceptance_dir),
@@ -554,6 +649,98 @@ def vocabulary_tables(text: str, location: str) -> list[Vocabulary]:
                 Vocabulary(location=f"{location}:{index + 1}", kind="field", names=tuple(names))
             )
     return vocabularies
+
+
+def json_fences(text: str, location: str) -> list[Vocabulary]:
+    """The keys a fenced JSON document declares: the first object's, which is the shape it shows.
+
+    A read model or a wire document is published as a JSON literal, and its keys are the names the
+    code has to write — the same claim a `field` table makes, in a shape no table describes. A
+    block that is not a JSON document (a fragment, a config with an ellipsis) declares nothing.
+    """
+    declared: list[Vocabulary] = []
+    for block in FENCE_RE.finditer(text):
+        if block.group("lang") != "json":
+            continue
+        first = _first_object(_json_document(block.group("body")))
+        if not isinstance(first, dict):
+            continue
+        names = tuple(str(key) for key in first if _KEY.fullmatch(str(key)))
+        if names:
+            line = text.count("\n", 0, block.start()) + 1
+            declared.append(Vocabulary(location=f"{location}:{line}", kind="json", names=names))
+    return declared
+
+
+#: A key a document declares: any name a writer can receive or store, camel case and all, but not
+#: a phrase or a number, which no keyword argument spells.
+_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _first_object(document: object) -> object | None:
+    """The first object a fenced document shows: the document itself, or the head of its list."""
+    if isinstance(document, dict):
+        return document
+    if isinstance(document, list) and document:
+        return document[0]
+    return None
+
+
+def _json_document(body: str) -> object | None:
+    """A fenced block as the JSON it is, with the comments a spec writes in it removed.
+
+    The fences annotate their keys (`# the id of the row`), and a comment is not JSON. The block is
+    read character by character so a `#` inside a string stays part of it, and a block that does
+    not parse declares nothing rather than guessing at its keys.
+    """
+    out: list[str] = []
+    index, length = 0, len(body)
+    in_string = escaped = in_line_comment = in_block_comment = False
+    while index < length:
+        char = body[index]
+        pair = body[index : index + 2]
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+                out.append(char)
+            index += 1
+            continue
+        if in_block_comment:
+            if pair == "*/":
+                in_block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == "#" or pair == "//":
+            in_line_comment = True
+            index += 2 if pair == "//" else 1
+            continue
+        if pair == "/*":
+            in_block_comment = True
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    try:
+        return json.loads("".join(out))
+    except ValueError:
+        return None
 
 
 def sentence_tables(text: str, location: str) -> list[Vocabulary]:
@@ -673,8 +860,12 @@ def check_producer(
     for path in tree.specs:
         text = path.read_text(encoding="utf-8")
         location = path.name
-        for vocabulary in vocabulary_tables(text, location) + sentence_tables(text, location):
-            table = f"table:{vocabulary.location}"
+        declared = (
+            vocabulary_tables(text, location)
+            + json_fences(text, location)
+            + sentence_tables(text, location)
+        )
+        for vocabulary in declared:
             for name in vocabulary.names:
                 subject = _producer_subject(vocabulary, name)
                 if vocabulary.kind == "sentence":
@@ -689,8 +880,7 @@ def check_producer(
                     continue
                 if needed is not None:
                     needed.add(subject)
-                    needed.add(table)
-                if table in accepted or subject in accepted:
+                if subject in accepted:
                     continue
                 violations.append(
                     Violation("producer", vocabulary.location, detail, subject=subject)
@@ -1017,24 +1207,32 @@ def debt_report(readings: Sequence[Accounting], registry: DebtRegistry | None = 
 
 
 def prose_units(text: str) -> list[tuple[str, str]]:
-    """A document's prose as `(unit, sentence)` pairs.
+    """A document's prose as `(unit, sentence)` pairs, a fence included and read on its own.
 
     A unit is a paragraph or a bullet: wrapped lines are one unit, and the sentences of a unit are
-    what the rule reads, so a number and its provenance have to travel together.
+    what the rule reads, so a number and its provenance have to travel together. A fenced block is
+    a unit too, one line at a time: a count inside a fence is a published count, and the file it
+    came from has to be in that line, because the paragraph above it is not its source.
     """
     units: list[tuple[str, str]] = []
+    cursor = 0
+    for block in FENCE_RE.finditer(text):
+        units.extend(_paragraphs(text[cursor : block.start()]))
+        for line in block.group("body").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("|"):
+                units.append(_unit([stripped]))
+        cursor = block.end()
+    units.extend(_paragraphs(text[cursor:]))
+    return units
+
+
+def _paragraphs(text: str) -> list[tuple[str, str]]:
+    """The prose of a chunk of a document as units: a blank line, a heading or a table ends one."""
+    units: list[tuple[str, str]] = []
     buffer: list[str] = []
-    in_fence = False
     for raw in text.splitlines():
         stripped = raw.strip()
-        if stripped.startswith("```"):
-            in_fence = not in_fence
-            if buffer:
-                units.append(_unit(buffer))
-                buffer = []
-            continue
-        if in_fence:
-            continue
         if not stripped or stripped.startswith("|") or stripped.startswith("#"):
             if buffer:
                 units.append(_unit(buffer))
@@ -1067,17 +1265,52 @@ def _publishes_a_count(sentence: str) -> bool:
     return any(pattern.search(sentence) for pattern in MEASUREMENT)
 
 
+def _backticked(sentence: str) -> list[str]:
+    """The tokens a sentence writes in backticks, which is the only form the rule reads."""
+    return [match.group(1).strip() for match in BACKTICK.finditer(sentence)]
+
+
+def _is_command(token: str) -> bool:
+    """True when a token is a command: something a reader could run and get the number from.
+
+    A database file is data, not a command: `` `~/.local/share/hifa/hifa.db` `` names where the
+    rows live and not what counted them, which is why a path on its own is the weaker clause.
+    """
+    if token.startswith(COMMAND_PREFIXES):
+        return True
+    return "/" in token and bool(re.search(r"\.(?:py|sql)\b", token))
+
+
+def _is_path(token: str) -> bool:
+    """True when a token names a file: it has a directory, or it ends in a script or data file."""
+    return "/" in token or bool(PATH_SUFFIX.search(token))
+
+
+def names_its_source(sentence: str) -> bool:
+    """True when the sentence carries, in backticks, a command, or a path and a date.
+
+    A path alone names where the number lives and not what read it, and a date alone names when
+    somebody looked and not at what; neither can be repeated, so neither is a source. A command can
+    be run again, and a path beside a date says which file on which day, which is the least a
+    count needs to be checked.
+    """
+    tokens = _backticked(sentence)
+    if any(_is_command(token) for token in tokens):
+        return True
+    return bool(DATE.search(sentence)) and any(_is_path(token) for token in tokens)
+
+
 def check_provenance(
     tree: Tree, exemptions: Sequence[Exemption], needed: set[str] | None = None
 ) -> list[Violation]:
-    """A count published as a fact about a database names its file, its command or its day."""
+    """A published count names, in its sentence, the command or the file and day it came from."""
     accepted = [e for e in exemptions if e.check == "provenance"]
     violations: list[Violation] = []
     for name, units in tree.prose.items():
         for where, sentence in units:
             if not _publishes_a_count(sentence):
                 continue
-            if PROVENANCE.search(sentence):
+            if names_its_source(sentence):
                 continue
             if needed is not None:
                 needed.add(sentence)
@@ -1087,7 +1320,7 @@ def check_provenance(
                 Violation(
                     "provenance",
                     f"{name}:{where[:60]}",
-                    f"a measured count names no file, command or date: {sentence[:120]!r}",
+                    f"a measured count names no command or dated file: {sentence[:120]!r}",
                     subject=sentence,
                 )
             )
@@ -1096,7 +1329,9 @@ def check_provenance(
 
 # --- the accepted gaps --------------------------------------------------------------------
 
-#: Names a closed vocabulary declares that no code writes yet, one row per name.
+#: Names a closed vocabulary, a fenced document or a dataclass declares that no function writes yet,
+#: one row per name. The transfer catalogue is per code rather than per table so that a code the
+#: component lands shrinks its own row and cannot ride on the others.
 PRODUCER_EXEMPTIONS: tuple[Exemption, ...] = (
     Exemption(
         check="producer",
@@ -1146,33 +1381,92 @@ PRODUCER_EXEMPTIONS: tuple[Exemption, ...] = (
         ticket="HIFA-90",
         reason="the milestone sentence waits for a name map no read carries",
     ),
-    Exemption(
-        check="producer",
-        subject="table:080-transfer-csv-json.md:708",
-        ticket="HIFA-9",
-        reason="the row-error catalogue of the transfer component, which the tree does not carry",
+    *(
+        Exemption(
+            check="producer",
+            subject=f"field:{code}",
+            ticket="HIFA-9",
+            reason="the row-error catalogue of the transfer component, which the tree lacks",
+        )
+        for code in (
+            "missing_title",
+            "invalid_priority",
+            "invalid_due_date",
+            "invalid_estimate",
+            "unknown_state",
+            "unknown_label",
+            "ambiguous_label",
+            "too_many_labels",
+            "unknown_assignee",
+            "ambiguous_assignee",
+            "unknown_project",
+            "ambiguous_project",
+            "unknown_cycle",
+            "ambiguous_cycle",
+            "identifier_team_mismatch",
+            "invalid_identifier",
+            "duplicate_in_file",
+            "duplicate_issue",
+            "number_conflict",
+        )
+    ),
+    *(
+        Exemption(
+            check="producer",
+            subject=f"field:{key}",
+            ticket="HIFA-9",
+            reason="the export envelope of the transfer component, which the tree does not carry",
+        )
+        for key in ("format", "schema_version", "exported_at", "app_version")
+    ),
+    *(
+        Exemption(
+            check="producer",
+            subject=f"field:{key}",
+            ticket="HIFA-22",
+            reason="the release engine reads its contract from a config file, not from a module",
+        )
+        for key in ("branches", "tagFormat", "plugins")
     ),
 )
 
-#: Published counts that name no file, command or date.
+#: Published counts that name no command and no dated file.
 PROVENANCE_EXEMPTIONS: tuple[Exemption, ...] = (
-    Exemption(
-        check="provenance",
-        subject="the measured database has 34 such rows",
-        ticket="HIFA-104",
-        reason="the count names no file or date; the ticket puts the provenance in the sentence",
-    ),
     Exemption(
         check="provenance",
         subject="the measured database has zero",
         ticket="HIFA-104",
-        reason="the count names no file or date; the ticket puts the provenance in the sentence",
+        reason="the count names no command or dated file; the ticket puts the provenance in it",
     ),
     Exemption(
         check="provenance",
         subject="33 of the 34 rows of the measured database",
         ticket="HIFA-104",
-        reason="the count names no file or date; the ticket puts the provenance in the sentence",
+        reason="the count names no command or dated file; the ticket puts the provenance in it",
+    ),
+    Exemption(
+        check="provenance",
+        subject="holds batched rank rows",
+        ticket="HIFA-104",
+        reason="the sentence names the file and not the command or the day; the ticket adds them",
+    ),
+    Exemption(
+        check="provenance",
+        subject="33 of its 34 rows share their",
+        ticket="HIFA-104",
+        reason="the decision log published the rotted count; the ticket dates it",
+    ),
+    Exemption(
+        check="provenance",
+        subject="33 of the measured database's 34 `board_order` rows",
+        ticket="HIFA-104",
+        reason="the decision log published the rotted count; the ticket dates it",
+    ),
+    Exemption(
+        check="provenance",
+        subject="The measured database agreed with the rule",
+        ticket="HIFA-104",
+        reason="the decision log published the rotted count; the ticket dates it",
     ),
 )
 

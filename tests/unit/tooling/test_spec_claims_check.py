@@ -602,7 +602,7 @@ def test_a_measured_count_with_no_source_is_a_violation(tmp_path: Path) -> None:
     violations = provenance_violations(tree)
 
     assert [v.check for v in violations] == ["provenance"]
-    assert "names no file, command or date" in violations[0].detail
+    assert "names no command or dated file" in violations[0].detail
 
 
 def test_a_measured_count_that_names_its_file_is_not_a_violation(tmp_path: Path) -> None:
@@ -673,3 +673,253 @@ def test_the_json_envelope_names_every_accepted_gap(capsys: object) -> None:
     assert report.exemptions
     assert all(claims.TICKET_RE.match(e.ticket) for e in report.exemptions)
     assert all(e.reason for e in report.exemptions)
+
+
+# --- the probes: ordinary code that used to satisfy a rule it does not satisfy -------------
+
+#: The declaration as the spec states it, verbatim, comment and all: a field of the history row.
+REAL_DECLARED_FIELD = (
+    "    dot_color: str | None  "
+    "# workflow_state.color for a `state_id` row, None for every other field"
+)
+
+#: The contract, with the field the reader could not fill and no default to hide it.
+SPEC_DEFAULTED_FIELD = (
+    "## 2. The row\n\n```python\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class HistoryRow:\n"
+    "    id: int\n" + REAL_DECLARED_FIELD + "\n"
+    "```\n"
+)
+
+#: The same field declared the ordinary way in the code: annotated, with a default, and never set.
+SOURCE_DEFAULTED_FIELD = """from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRow:
+    id: int
+    dot_color: str | None = None
+
+
+def build() -> HistoryRow:
+    return HistoryRow(id=1)
+"""
+
+#: A read model published as a JSON document, with a key no table enumerates.
+SPEC_HISTORY_ENVELOPE = (
+    "## 2. The read model\n\n```json\n"
+    "{\n"
+    '  "id": 412,\n'
+    '  "field": "state_id",\n'
+    '  "actor_label": "Ginkelte",\n'
+    '  "actor_initials": "G",\n'
+    '  "sentence": "moved from Todo to In Progress"\n'
+    "}\n"
+    "```\n"
+)
+
+#: The envelope the template reads, with every key but the one the probe adds.
+SOURCE_ENVELOPE = '''def history_row(row: dict[str, object]) -> dict[str, object]:
+    """The envelope the history template reads, key by key."""
+    return {
+        "id": row["id"],
+        "field": row["field"],
+        "actor_label": row["actor_label"],
+        "sentence": row["sentence"],
+    }
+'''
+
+#: The count that rotted: the path appended to it was enough to satisfy the token check.
+SPEC_COUNT_PATH_ONLY = """
+## 2. The vocabulary
+
+The measured database has 999 rows (`~/.local/share/hifa/hifa.db`), and the rule rests on it.
+"""
+
+#: The same number, with the statement that answered it.
+SPEC_COUNT_COMMAND = (
+    "\n## 2. The vocabulary\n\n"
+    "The measured database has 999 rows "
+    "(`sqlite3 ~/.local/share/hifa/hifa.db 'select count(*) from issue_history'`), and the rule "
+    "rests on it.\n"
+)
+
+
+def test_a_default_in_the_class_body_is_not_a_producer(tmp_path: Path) -> None:
+    """An annotated field with a default is the normal way to declare it, and it writes nothing."""
+    tree = build_tree(tmp_path, spec=SPEC_DEFAULTED_FIELD, source=SOURCE_DEFAULTED_FIELD)
+
+    violations = producer_violations(tree)
+
+    assert [v.detail for v in violations] == [
+        "the field HistoryRow.dot_color is declared and nothing assigns it"
+    ]
+
+
+def test_a_field_a_function_assigns_is_a_producer(tmp_path: Path) -> None:
+    """The honest direction: the same default, and one function that actually sets the field."""
+    source = SOURCE_DEFAULTED_FIELD.replace(
+        "    return HistoryRow(id=1)",
+        "    row = HistoryRow(id=1)\n    row.dot_color = None\n    return row",
+    )
+    tree = build_tree(tmp_path, spec=SPEC_DEFAULTED_FIELD, source=source)
+
+    assert producer_violations(tree) == []
+
+
+def test_a_module_level_constant_is_not_a_producer(tmp_path: Path) -> None:
+    """A constant nothing reads names the field and stores nothing: it is a dead literal."""
+    source = 'DEAD = "actor_initials"\n\n\n' + SOURCE_ENVELOPE
+    tree = build_tree(tmp_path, spec=SPEC_HISTORY_ENVELOPE, source=source)
+
+    violations = producer_violations(tree)
+
+    assert [v.detail for v in violations] == ["the name 'actor_initials' has no producer"]
+
+
+def test_a_getattr_string_is_not_a_producer(tmp_path: Path) -> None:
+    """Reaching a field by a string reads it: the write the rule wants is nowhere in the tree."""
+    source = (
+        SOURCE_ENVELOPE
+        + '''
+
+def initials_of(row: dict[str, object]) -> object:
+    """Reach for the field the envelope is supposed to carry."""
+    return getattr(row, "actor_initials")
+'''
+    )
+    tree = build_tree(tmp_path, spec=SPEC_HISTORY_ENVELOPE, source=source)
+
+    violations = producer_violations(tree)
+
+    assert [v.detail for v in violations] == ["the name 'actor_initials' has no producer"]
+
+
+def test_a_key_a_function_writes_is_a_producer(tmp_path: Path) -> None:
+    """The honest direction: the envelope builds the key, so the document declares nothing new."""
+    source = SOURCE_ENVELOPE.replace(
+        '        "sentence": row["sentence"],',
+        '        "sentence": row["sentence"],\n'
+        '        "actor_initials": initials(row["actor_label"]),',
+    )
+    tree = build_tree(tmp_path, spec=SPEC_HISTORY_ENVELOPE, source=source)
+
+    assert producer_violations(tree) == []
+
+
+def test_an_unwritten_key_in_a_json_fence_is_a_violation(tmp_path: Path) -> None:
+    """A key the document publishes and no function writes is a claim in a shape no table showed."""
+    tree = build_tree(tmp_path, spec=SPEC_HISTORY_ENVELOPE, source=SOURCE_ENVELOPE)
+
+    violations = producer_violations(tree)
+
+    assert [v.detail for v in violations] == ["the name 'actor_initials' has no producer"]
+    assert violations[0].subject == "field:actor_initials"
+
+
+def test_a_row_error_exemption_covers_one_code_not_the_whole_table(tmp_path: Path) -> None:
+    """One code accepted leaves the other failing: a per-code row can shrink, a table row cannot."""
+    spec = """
+## 6. The codes
+
+| `code` | Meaning | Effect |
+|---|---|---|
+| `missing_title` | empty title | row rejected |
+| `unknown_state` | no such state | row rejected |
+"""
+    accepted = claims.Exemption(
+        check="producer",
+        subject="field:missing_title",
+        ticket="HIFA-9",
+        reason="the transfer component is not in the tree",
+    )
+    tree = build_tree(tmp_path, spec=spec)
+
+    violations = producer_violations(tree, (accepted,))
+
+    assert [v.detail for v in violations] == ["the name 'unknown_state' has no producer"]
+
+
+# --- the provenance probes ----------------------------------------------------------------
+
+
+def test_a_backticked_path_with_no_command_and_no_day_is_not_a_source(tmp_path: Path) -> None:
+    """A path says where the rows live, not what counted them: the number can rot beside it."""
+    tree = build_tree(tmp_path, spec=SPEC_COUNT_PATH_ONLY)
+
+    violations = provenance_violations(tree)
+
+    assert [v.check for v in violations] == ["provenance"]
+    assert "names no command or dated file" in violations[0].detail
+
+
+def test_a_backticked_command_is_a_source(tmp_path: Path) -> None:
+    """The honest direction: a statement a reader can run again is provenance."""
+    tree = build_tree(tmp_path, spec=SPEC_COUNT_COMMAND)
+
+    assert provenance_violations(tree) == []
+
+
+def test_a_date_with_no_file_is_not_a_source(tmp_path: Path) -> None:
+    """A day says when somebody looked and not at what: on its own it repeats nothing."""
+    spec = """
+## 2. The vocabulary
+
+The measured database has 34 such rows, read on 2026-11-20.
+"""
+    tree = build_tree(tmp_path, spec=spec)
+
+    violations = provenance_violations(tree)
+
+    assert [v.check for v in violations] == ["provenance"]
+
+
+def test_a_count_inside_a_fence_is_a_published_count(tmp_path: Path) -> None:
+    """A fenced block is a unit of its own: a number there is published, not quoted."""
+    spec = """
+## 3. The rows
+
+```console
+The measured database has 255 rows and the rule rests on it.
+```
+"""
+    tree = build_tree(tmp_path, spec=spec)
+
+    violations = provenance_violations(tree)
+
+    assert [v.check for v in violations] == ["provenance"]
+
+
+def test_the_decision_log_publishes_counts_the_provenance_rule_reads(tmp_path: Path) -> None:
+    """The log is a record, so it declares no field and states no scenario, and it is still read."""
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "030-adapter.md").write_text("## 1. The row\n\nA sentence.\n", encoding="utf-8")
+    (specs / "DECISIONS.md").write_text(
+        "## D-1 the count that rotted\n\nThe measured database had 255 rows and 92 matched.\n",
+        encoding="utf-8",
+    )
+    src, suite = tmp_path / "src", tmp_path / "tests"
+    src.mkdir()
+    suite.mkdir()
+
+    tree = claims.Tree.read(specs, src, suite, specs / "acceptance")
+    violations = claims.check_provenance(tree, [])
+
+    assert [p.name for p in tree.specs] == ["030-adapter.md"]
+    assert claims.scenarios(tree) == []
+    assert [v.location.split(":", 1)[0] for v in violations] == ["DECISIONS.md"]
+
+
+def test_the_real_tree_publishes_the_exemptions_it_carries() -> None:
+    """The count is printed: a gap that lands shrinks it, and an addition shows in the diff."""
+    tree = claims.Tree.read(
+        claims.SPECS_DIR, claims.SRC_DIR, claims.TESTS_DIR, claims.ACCEPTANCE_DIR
+    )
+
+    report = claims.build_report(tree)
+
+    assert report.ok
+    assert (len(report.of("producer")), len(report.of("provenance"))) == (34, 6)
+    assert "40 exemption(s) in force (producer 34, provenance 6)" in claims.summary(report)
