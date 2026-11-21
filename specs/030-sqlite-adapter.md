@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 10
-spec_revision: 24
+spec_revision: 25
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -2281,6 +2281,16 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 25 (2026-11-21): **row 3's index is `key` alone, and the tie-break is a sort (HIFA-83,
+  D-078).** `version` stays 10: no name, signature or DDL moves. `idx_team_previous_key_key` is created
+  on `key` and nothing else (SPEC-010 §3.6, migration 003), so `EXPLAIN QUERY PLAN` for
+  `team_by_previous_key` is `SEARCH pk USING INDEX idx_team_previous_key_key (key=?)` followed by
+  `USE TEMP B-TREE FOR ORDER BY`: the equality filter is one seek, and the `changed_at DESC, team_id DESC`
+  tie-break is a sort over the rows that share the key. Revision 24's note (2) said the index answers and
+  stopped there, and SPEC-050 §2.5.3.2 published the index as `(key, changed_at)`; both now say what the
+  plan says. No index is proposed: §10's rule answers a `SCAN`, this is not one, and the sort's width is
+  the rotations recorded for one key.
+
 - spec_revision 24 (2026-11-21): **the identifier comparison folds the parameter, and the resolution is
   declared as the three lookups it is (HIFA-83, D-078).** `version` 9 → 10: `reads` exports one more public
   function (`issue_id_by_ref`), which is §2's ground, and no DDL moves.
@@ -2293,8 +2303,9 @@ Feature: SQLite adapter
   sqlite_autoindex_issue_1 (id=?)`. No migration and no index are involved: §10's rule asks for a new index
   when one is missing, and here nothing was.
   (2) **`team_by_previous_key` had the same defect and the same fix** — `pk.key = :key COLLATE NOCASE`
-  scanned the table; it now binds `upper(:key)` and `idx_team_previous_key_key` answers. The write path
-  stores the key normalised, so the two statements are the same rule with a readable plan.
+  scanned the table; it now binds `upper(:key)` and `idx_team_previous_key_key` answers the equality
+  filter (the `changed_at` tie-break is the sort revision 25 records). The write path stores the key
+  normalised, so the two statements are the same rule with a readable plan.
   (3) **The resolution is three lookups, not two, and it runs before the read.** `issue_id_by_ref` answers a
   ULID or a current identifier in one statement — the first two forms, in the order SPEC-050 §2.5.3.2
   declares them — and the application layer resolves a reference to an id with it, with
