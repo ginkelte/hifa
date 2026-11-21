@@ -4,7 +4,7 @@ title: SQLite adapter
 component: persistence
 status: review
 version: 8
-spec_revision: 21
+spec_revision: 22
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -562,16 +562,20 @@ direction together pick the sentence; which side is `NULL` picks between the two
   `update_issue`'s diff writes **no** row for them (the measured database has zero). They are listed
   because the `UPDATE_FIELDS` tuple can write all three the day the repositories land, and a writer with
   no row in this table would write a name the formatter reads as unknown.
-- **`board_order` is the move's consequence, and the read does not hand it over when it is.** `update_issue`
-  and `move_issue` write `state_id` and `board_order` in one `record` call, so the two rows are consecutive
-  `id`s of the same issue and the rank is a second row of an event the `state_id` row already names. The
-  read excludes a `board_order` row **when the immediately preceding history row of the same issue, by
-  `id`, is a `state_id` row** (SQL-7 row 11's `WHERE`): the discriminator is the record **batch**, which is
-  a fact of the write, and not `created_at`'s second precision, which is a fact of the clock. The measured
-  database (`~/.local/share/hifa/hifa.db`, 2026-11-20) says the two agree: **33 of its 34 `board_order`
-  rows** share an instant with a `state_id` row and every one of the 33 is exactly `id − 1` from it — the
-  writers' batch, measured. The 34th shares no instant with one, is a drag inside a single column, and
-  renders `reordered it in the column` like any `board_order` row the rule does not filter.
+- **`board_order` is the move's consequence, and the read does not hand it over when it is.** A move that
+  changes a state writes the `state_id` row and — **when the rank moves with it** — the `board_order` row,
+  both from one `record` call; a move into an empty column, or any move whose slot comes out equal to the
+  stored one, writes the `state_id` row **alone**. The two rows are therefore not always consecutive, and
+  the rank is not always a second row of an event the `state_id` row already names. The read excludes a
+  `board_order` row **when the immediately preceding history row of the same issue, by `id`, is a
+  `state_id` row that carries the same `created_at`** (SQL-7 row 11's `WHERE`). Both conditions together
+  are the record **batch**: one call stamps one instant, and the `id` order says the two rows left the
+  writer together. Adjacency alone is not the batch — a drag written after a state-only move is the very
+  next row by `id` and carries an instant of its own, so dropping it would lose an event that no count, no
+  error and no floor line would ever report. The rule rests on what the writers do, never on a count: the
+  measured database (`~/.local/share/hifa/hifa.db`) holds batched rank rows and, after a state-only move,
+  rank rows of their own; **the counts drift as the file is used, the rule does not.** A `board_order` row
+  the rule does not filter is a drag inside a single column and renders `reordered it in the column`.
 - **No row is dropped by the formatter.** The exclusion is the read's, so the set `history_rows` receives is
   already the timeline's. **Three surfaces publish the window the read returned and never cut it — the
   `HISTORY` section of `issue show --with`, the REST array of SPEC-060 §2.4.2 and the page's list — while
@@ -848,7 +852,7 @@ of row 1 instead of adding a statement; no statement of this read is a `COUNT(*)
 | 8 | statement 1's projection with `WHERE i.parent_id = :parent AND i.trashed = 0 ORDER BY i.sub_issue_sort_order, i.number` | `children` | always |
 | 9 | `SELECT * FROM issue_relation WHERE issue_id = ? OR related_issue_id = ?`, then statement 1's projection `WHERE i.id = :other AND i.trashed = 0` **once per relation row** — the first in fetch order, the read returning it **unordered** | `relations` | always; one statement when the issue has no relation |
 | 10 | `SELECT * FROM comment WHERE issue_id = ? ORDER BY created_at, id` | `comments` | `comments` ∈ `include` |
-| 11 | `SELECT h.* FROM issue_history h WHERE h.issue_id = ? AND NOT (h.field = 'board_order' AND COALESCE((SELECT p.field FROM issue_history p WHERE p.issue_id = h.issue_id AND p.id < h.id ORDER BY p.id DESC LIMIT 1), '') = 'state_id') ORDER BY h.created_at DESC, h.id DESC LIMIT 100` | `history`: the window, newest first, **with the rank of a move already removed** (§2.4) | `history` ∈ `include` |
+| 11 | `SELECT h.* FROM issue_history h WHERE h.issue_id = ? AND NOT (h.field = 'board_order' AND COALESCE((SELECT p.field = 'state_id' AND p.created_at = h.created_at FROM issue_history p WHERE p.issue_id = h.issue_id AND p.id < h.id ORDER BY p.id DESC LIMIT 1), 0) ORDER BY h.created_at DESC, h.id DESC LIMIT 100` | `history`: the window, newest first, **with the rank of a move already removed** (§2.4) | `history` ∈ `include` |
 | 12 | `SELECT * FROM attachment WHERE issue_id = ? ORDER BY created_at` | `attachments` | `attachments` ∈ `include` |
 | 13 | `SELECT id, display_name FROM member WHERE id IN (SELECT author_id FROM comment WHERE issue_id = ? AND author_id IS NOT NULL UNION SELECT actor_id FROM issue_history WHERE issue_id = ? AND actor_id IS NOT NULL)` | `members` | `comments` ∈ `include` or `history` ∈ `include` |
 | 14 | `SELECT * FROM member WHERE id = ?` | `assignee` | the row has an `assignee_id` |
@@ -860,7 +864,10 @@ of row 1 instead of adding a statement; no statement of this read is a `COUNT(*)
 `WHERE` are literal constants of the statement — §7's no-interpolation scenario looks for an f-string, `%`
 or `+` around a **value**, and a constant is none of the three — and the correlated subquery asks one
 question of each candidate row inside the same statement: *is the row immediately before this one, by
-`id`, a `state_id` row?* A rank the move produced is therefore absent from every payload that carries the
+`id`, a `state_id` row **of the same instant**?* Two conditions because one is not the batch: the `id`
+says the two rows left together and the instant says they left in one `record` call, and a drag written
+after a state-only move is the next row by `id` with an instant of its own — dropping it would lose an
+event and nothing in the payload would report the loss. A rank the move produced is therefore absent from every payload that carries the
 window, and the statement count does not move: a filter is not a second statement.
 
 **The two totals, and what they count.** For the issue §7's scenario declares — a creator, no
@@ -2107,6 +2114,19 @@ Feature: SQLite adapter
     Then 1 INSERT statement with executemany is executed
     And 3 rows exist in issue_history with the same created_at
 
+  Scenario: the rank a state change carried is not a row of its own
+    Given an issue moved to another state, whose rank moved with it in the same record call
+    When the issue's history is read
+    Then the move is one row
+    And no row of the window carries the field "board_order"
+
+  Scenario: a drag written after a state-only move is a row of its own
+    Given an issue moved into an empty column, whose rank did not move with the state
+    And a drag recorded after that move
+    When the issue's history is read
+    Then the move is one row
+    And the drag is a row of its own, reading "reordered it in the column"
+
   @REQ-F030-21
   Scenario: no operation deletes issues physically
     Given a persisted issue
@@ -2213,6 +2233,13 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 22 (2026-11-20): **the rank rule is the batch, not a position (D-075).** The bullet above
+  now states what the writers do — a state move writes the rank row **only when the rank moves**, so a move
+  into an empty column writes the `state_id` row alone — and SQL-7 row 11 asks for **both** the `id`
+  adjacency **and** the shared `created_at`, because either one alone is not the batch. The previous
+  revision's inference from `id − 1` alone dropped a real drag written after a state-only move. §7 goes
+  30 → **32** (the rank of a batched move is not a row; a drag after a state-only move is one). No
+  signature, statement count, index or `.feature` file moves.
 - spec_revision 21 (2026-11-20): **the `field` vocabulary is enumerated with its writers, the `created`
   row stops echoing the identifier, and the resolution is the read's, bulk and free where it can be
   (HIFA-46, D-074).** `version` 7 → 8: §2.6's `IssueDetail` gains one field, SQL-7 gains one statement,

@@ -3,7 +3,7 @@ Feature: HTTP dashboard
 
   # Single-process local server (port 7777, SPEC-040 §2 / D-012) with server-rendered
   # views under /{team}/…, htmx fragments under /_/… and JSON API under /api/v1.
-  # The schema is user_version = 3 (migrations 001/002/003 from SPEC-010).
+  # The schema is user_version = 4 (migrations 001/002/003/004 from SPEC-010).
 
   @REQ-F033 @smoke @slow
   Scenario: serve listens on loopback and on the default port
