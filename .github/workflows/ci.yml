@@ -43,3 +43,6 @@ jobs:
 
       - name: Spec vs code drift
         run: .venv/bin/python scripts/ci_drift_check.py
+
+      - name: Spec claims (producers, scenarios, provenance)
+        run: .venv/bin/python scripts/spec_claims_check.py
