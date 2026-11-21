@@ -1326,7 +1326,7 @@ PRODUCER_EXEMPTIONS: tuple[Exemption, ...] = (
         Exemption(
             check="producer",
             subject=f"field:{key}",
-            ticket="HIFA-22",
+            ticket="HIFA-107",
             reason="the release engine reads its contract from a config file, not from a module",
         )
         for key in ("branches", "tagFormat", "plugins")
@@ -1463,7 +1463,7 @@ def summary(report: Report) -> str:
         f"(producer {len(report.of('producer'))}, provenance {len(report.of('provenance'))}); "
         f"scenario: {counts.get('accounted', 0)} accounted, "
         f"{counts.get('deferred', 0)} deferred by ticket, "
-        f"{counts.get('accepted', 0)} in the accepted set, {counts.get('new', 0)} new, "
+        f"{counts.get('accepted', 0)} unaccounted but accepted, {counts.get('new', 0)} new, "
         f"{counts.get('broken', 0)} broken "
         f"of {counts.get('scenarios', 0)} in {counts.get('documents', 0)} document(s)"
     )

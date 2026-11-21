@@ -796,7 +796,7 @@ def test_the_real_tree_passes_every_rule() -> None:
     assert report.violations == []
     text = claims.summary(report)
     assert "exemption(s) in force" in text
-    assert "in the accepted set" in text
+    assert "unaccounted but accepted" in text
 
 
 def test_the_json_envelope_names_every_accepted_gap(capsys: object) -> None:
