@@ -287,9 +287,12 @@ Coverage of the requirements that have no scenario of their own (they are verifi
    `dynamic` or `[tool.hatch.version]`.
 2. Create the tree of §4.3 with empty modules that respect the allowed imports.
 3. `.importlinter` with the `domain`, `app` and `web` contracts (A1, A2, P8/D-032).
-4. `scripts/spec_contract_check.py` implemented before writing features.
-5. CI: ruff + pytest + import-linter + spec_contract_check. The pytest gate also **executes** the governed
-   shell files of the release pipeline (`.github/release/tag-message.sh`,
+4. `scripts/spec_contract_check.py` implemented before writing features, and
+   `scripts/spec_claims_check.py` beside it: a declared name with no producer, a scenario no test
+   names and no ticket defers, and a published count with no file, command or date are three
+   defects a reader finds by hand and this check finds first.
+5. CI: ruff + pytest + import-linter + spec_contract_check + spec_claims_check. The pytest gate also
+   **executes** the governed shell files of the release pipeline (`.github/release/tag-message.sh`,
    `.github/release/assert-outcome.sh`), because P8 is satisfied by a test that observes behaviour, not by a
    test that reads a document (SPEC-110 §2.9, D-040).
 
