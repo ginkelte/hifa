@@ -4822,3 +4822,69 @@ that already consult the team list (`create`, `list`, `assign`, `blocked`)": the
 `hifa --team ENG` with exit 2 and `No such option`, `assign` declares no `--team`, and the members of this
 family that do are `create`, `list` and `blocked`. What is true, and what §2.5.3.2 and its Notes now say,
 is that `--team` is read at the leaf by the verb that needs it, with no global value to win over.
+
+---
+
+## D-078 — The case is folded in the parameter, the form is resolved before the read, and the edge owns its context
+
+**Date:** 2026-11-21 · **Wins:** SPEC-030 §2.6 SQL-7 and §2 · **Touches:** SPEC-030 §2, §2.6 and §Notes;
+SPEC-040 §2.2 and §Notes; SPEC-050 §2.5.3.2, §7 and §Notes; `src/hifa/adapters/sqlite/reads.py`,
+`src/hifa/app/boards.py`, `src/hifa/cli/commands/issue.py`, `tests/integration/db/test_boards_detail.py`,
+`tests/e2e/cli/test_issue_show.py`, `README.md`
+
+D-076 and D-077 contracted the four reference forms and were implemented; this entry corrects the four
+sentences they left false and one performance defect they introduced. Nothing here reverses D-076: the
+forms, their order, the rotation tie, the warning and the single-read rule stand, and this is the record of
+what was wrong around them.
+
+(1) **`COLLATE NOCASE` was the wrong side of the comparison, and it cost every detail read its index.**
+SPEC-030 revision 23 put the collation on `i.identifier`. `EXPLAIN QUERY PLAN` answers `SCAN i` for that
+statement: a collation on the column makes `sqlite_autoindex_issue_2` unusable, both branches of the `OR`
+collapse, and the one statement `show`, the board card and the issue panel all run reads every row of
+`issue` — O(issues) on every detail read, against a spec whose §10 says a `SCAN` is answered by a new index
+in a migration and never by a change in the adapter. No index was missing: `upper(:ref)` is a constant to
+the planner, the plan is `MULTI-INDEX OR` with both `SEARCH` lines back, and the comparison is the whole of
+the same rule, because `issue.identifier` is written normalised (`normalize_key` uppercases the team's key)
+and folding the parameter is all the case-insensitivity there is. No migration, no new index, no Unicode
+claim. `team_by_previous_key` carried the same defect on `pk.key` — a scan of `team_previous_key` — and got
+the same one-line fix, the rotation storing its key normalised too.
+
+(2) **SPEC-050's shape was the better one, so the code moved and not the spec.** §2.5.3.2 said the two
+lookups run **before** the read and that the read is called **once**; the tree read first and resolved
+second (`boards.py` read the reference, then read again by id), which is two reads of one issue and three
+header statements for a form-3 `show`. `REF` is now resolved to an issue id first — ULID, current
+identifier, previous identifier, number, in the order the table declares, where the code had been trying
+the number first — and the detail read is asked for that id once. `reads` gains `issue_id_by_ref` for the
+first two forms (one statement, both branches on their own index) and the app layer keeps the order. The
+read's own statements and the two totals of SPEC-030 §2.5 do not move: the lookups were never its rows.
+
+(3) **The edge resolves the context, and the specs now say so.** §2.5.3.2 said the edge "writes no SQL,
+opens no second read and holds no vocabulary of its own" while `cli/commands/issue.py` opened a read to
+resolve the team the number form needs and re-implemented the digit test `app/boards.py` already held.
+§2.2.2 puts context resolution at the edge, so that sentence was wrong about the layer that owns it: the
+edge resolves `--team`/`HIFA_TEAM`/`[cli].default_team`/the one team **once**, before the read, and it asks
+`app.boards.is_number_ref` instead of keeping a second copy of the grammar. The *form* resolution stays in
+`app/`, and the edge still writes no SQL.
+
+(4) **SPEC-040 delegates and does not restate.** §2.2 said the grammar was SPEC-050 §2.5.3.2's "and is not
+restated here" five words before restating the case rule, the rotation rule and the number rule — and the
+restatement was incomplete, because the rotation tie picks the **team** and the team's `number` then picks
+the issue. The restatement is deleted: §2.2 keeps that `issue_detail` answers all four forms and reports the
+rename, and names that section for everything else. That is D-076's own lesson, applied to the layer that
+wrote it.
+
+(5) **Two counts became enumerations.** The revision 41 note said the one-team workspace is answered by
+§2.2.2's **fifth** source (it is the fourth; the fifth is the refusal) and that three verbs carry `--team`
+(it is ten: `issue create`, `issue list`, `issue blocked`, `issue show`, `label add`, `label list`,
+`search`, `state list`, `state create`, `state update`). Both sentences are corrected in place, and the
+count is replaced by the list, because a count of a set the same document enumerates is a claim that rots
+on the next verb.
+
+(6) **A test that pins a refusal does not pin a form.** Four of the eleven new e2e tests passed with forms
+3 and 4 deleted from the tree: a digit token can never be an identifier, so "not found" is what both paths
+say, and a number the team does not wear was indistinguishable from an unknown token. Each now runs the
+reference that separates the form from the fallthrough — a number another team wears is that team's
+missing issue, an identifier resolves where an unplaced number is `missing_context`, and the shadowed form
+is shown to answer before the one that shadows it; the §7 scenarios carry the same steps, so their `@test`
+pointers claim what the tests do. The case test cannot bite against forms 3–4 and is not asked to: its
+subject is form 2's comparison, and it fails when the fold is removed.

@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 13
-spec_revision: 41
+version: 14
+spec_revision: 42
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -1300,18 +1300,24 @@ Return conventions, mandatory:
 - Reads return tuples (immutable) and **never** generators: the edge can iterate them twice
   (count and render) without consuming them.
 - `issue_detail` accepts the four reference forms of SPEC-050 §2.5.3.2 — a full ULID, a current
-  `identifier` compared **case-insensitively**, a previous identifier through `team_previous_key` (the
-  greatest `changed_at` answers when two teams left the same key behind), and a bare number inside the
-  team the call was given. The grammar, the order that settles two forms naming one issue, the codes, the
-  fields and the wording of the warning are that section's and are not restated here (D-076, D-077); what
-  this layer owns is that the read answers all four and reports a renamed reference to its caller, so the
-  edge can print the line. `team` — a key, case-insensitive, or a ULID — is keyword-only and defaulted,
-  and the number form alone consults it: an identifier names its own team, so a `team` that disagrees
-  with one has no effect on the answer and an unknown one is `NotFound(team, key=team)`. The answer's
-  `previous_identifier` carries the identifier the previous key stood for and is `None` on every other
-  form; the issue's own `identifier` is the current one in all four. `team_detail`, `project_detail`, `cycle_detail`,
+  `identifier`, a previous identifier and a bare number inside the team the call was given — and the
+  grammar, the order that settles two forms naming one issue, the comparison of an identifier, the
+  rotation rule, the codes, the fields and the wording of the warning are that section's and are not
+  restated here (D-076, D-077, D-078). What this layer owns is that the read answers all four forms and
+  that it reports a renamed reference to its caller, so the edge can print the line. `team` — a key,
+  case-insensitive, or a ULID — is keyword-only and defaulted, and the number form alone consults it: an
+  identifier names its own team, so a `team` that disagrees with one has no effect on the answer and an
+  unknown one is `NotFound(team, key=team)`. The answer's `previous_identifier` carries the identifier
+  the previous key stood for and is `None` on every other form; the issue's own `identifier` is the
+  current one in all four. The form is resolved to an issue id before the detail read is called, and the
+  read is called once: which lookups that costs, and the one predicate they share with the read, are
+  SPEC-030 §2.6's. `team_detail`, `project_detail`, `cycle_detail`,
   `label_detail` and `member_detail` accept a ULID or name/key depending on the resource, and raise
   `NotFound(resource=..., key=...)` with the `key` as it arrived.
+- `is_number_ref(text)` is the one test of "is this reference the number form" — ASCII digits — and it
+  is public because the CLI asks it before it resolves the context that form alone needs (§2.2.2). One
+  copy, in the layer that owns the four forms; an edge that keeps its own copy is how the two ends came
+  apart.
 - `list_issues` resolves `filters.team_id` by ULID **or** key: if it is not a 26-character ULID, it
   treats it as a key, resolves it with `TeamRepo.get_by_key` and replaces the filter with the ULID before
   calling `reads.list_view` (which only compares against `issue.team_id`).
@@ -3080,20 +3086,38 @@ contract it must meet.
 
 ## Notes
 
+- spec_revision 42 (2026-11-21): **the four forms are delegated and not restated, the edge's context
+  resolution is named, and one public test of the number form moves here (HIFA-83, D-078).** `version`
+  13 → 14: §2.2 gains `is_number_ref`, a public function of the layer, so the version moves.
+  (1) **§2.2 keeps the delegation and what this layer owns, and nothing else.** It restated the case rule,
+  the rotation rule and the number rule five words after saying the grammar was SPEC-050 §2.5.3.2's — and
+  the restatement was incomplete (the tie of two rotations picks the *team*, whose `number` then picks the
+  issue). Two statements of one grammar is how the documents came apart in the first place, so the
+  restatement is gone: what is left is that `issue_detail` answers all four forms, that the rule of each
+  is that section's, and that a rename is reported to the caller.
+  (2) **The form is resolved before the read and the read is called once**, which §2.2 now says in one
+  sentence and SPEC-030 §2.6 owns: the resolution this layer performs is a lookup by id, a lookup
+  by previous key and a lookup by number, and the detail read is asked for an id.
+  (3) **`is_number_ref` is public because the edge must ask it, and because there must be one copy.**
+  SPEC-050 §2.2.2 puts context resolution at the edge, so the CLI decides whether the number form is in
+  play before it resolves a team; it now calls this function instead of holding a second digit test.
+
 - spec_revision 41 (2026-11-21): **`issue_detail`'s signature gains the team the number form needs, and
   the answer gains the one fact the warning prints (HIFA-83).** `version` 12 → 13: a keyword of a
   published signature and a field of the value it returns are public contract, so the version moves.
   Revision 40 declared that the read answers four reference forms and reports a rename, while the
   signature it published carried neither a team nor a way to report one; this revision closes that gap.
   (1) **`team` is keyword-only and defaulted**, so no caller moves: the CLI passes the leaf `--team` and
-  the context resolution behind it, the web passes nothing (it names issues by ULID or identifier), and a
-  number with no team answers `None` a number names no issue — which is the edge's refusal to make, not
+  the context resolution behind it, and the web passes nothing (it names issues by ULID or identifier).
+  A number the call has no team for resolves to nothing, so that call is `NotFound(issue, key=ref)` like
+  any reference that answers nowhere; the `missing_context` behind it is the edge's refusal to make, not
   this layer's. An unknown team is `NotFound(team, key=team)`, the same refusal `require_team` produces.
   (2) **`previous_identifier` is the reported rename**, declared with `IssueDetail` in SPEC-030 §2.6
   (revision 23): additive and defaulted, `None` unless the reference resolved through a key rotation, and
-  never part of a JSON object of SPEC-050 §2.4.2. (3) **The resolution stays here.** The two lookups run
-  in the adapter and the choice of form runs in this layer, so the edge still resolves nothing and writes
-  no SQL (D-012).
+  never part of a JSON object of SPEC-050 §2.4.2. (3) **The resolution of the form stays here.** The
+  lookups run in the adapter and the choice of form runs in this layer, so the edge resolves no form and
+  writes no SQL (D-012); what the edge does own is the *context* of §2.2.2, and SPEC-050 §2.5.3.2 says so
+  (corrected at spec_revision 42).
 
 - spec_revision 40 (2026-11-21): **the losing side of the `REF` conflict is adjusted here, by reference
   rather than by restating it (HIFA-83, D-076 as corrected by D-077).** `version` 11 → 12: §2.2's
