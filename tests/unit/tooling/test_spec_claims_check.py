@@ -10,8 +10,11 @@ from drift.
 from __future__ import annotations
 
 import importlib.util
+import json
+import shutil
 import sys
 from pathlib import Path
+from textwrap import dedent
 from types import ModuleType
 from typing import Any
 
@@ -119,9 +122,10 @@ def producer_violations(tree: ModuleType, exemptions: tuple[Any, ...] = ()) -> l
     return claims.check_producer(tree, list(exemptions))
 
 
-def scenario_violations(tree: ModuleType, debts: tuple[Any, ...] = ()) -> list[Any]:
-    """The scenario violations of one tree."""
-    return claims.check_scenario(claims.account(tree), list(debts))
+def scenario_violations(tree: ModuleType, registry: Any = None) -> list[Any]:
+    """The scenario violations of one tree, judged against an accepted set or an empty one."""
+    accepted = registry if registry is not None else claims.DebtRegistry.read()
+    return claims.check_scenario(claims.account(tree, accepted), accepted)
 
 
 def provenance_violations(tree: ModuleType, exemptions: tuple[Any, ...] = ()) -> list[Any]:
@@ -245,7 +249,73 @@ def test_an_accepted_gap_is_accepted_and_an_unneeded_one_fails(tmp_path: Path) -
     assert [v.detail for v in stale] == ["stale exemption for dataclass:HistoryRow.dot_color"]
 
 
-# --- rule 2: a scenario needs a test or a ticketed deferral -------------------------------
+# --- rule 2: a scenario needs a pointer, an exact title or a known ticket ------------------
+
+#: Two scenarios in one document, neither pinned by a test, in the shape of the real corpus.
+SPEC_TWO_SCENARIOS = """
+## 7. Acceptance
+
+```gherkin
+  Scenario: the first unaccounted behaviour
+    Given a thing
+    Then it happens
+
+  Scenario: the second unaccounted behaviour
+    Given another thing
+    Then it happens too
+```
+"""
+
+
+def registry_for(keys: set[str], ticket: str = "HIFA-1") -> Any:
+    """A debt registry that accepts exactly `keys` under one ticket."""
+    cluster = claims.ScenarioDebt(ticket=ticket, reason="a probe", keys=frozenset(keys))
+    return claims.DebtRegistry([cluster], frozenset({ticket}))
+
+
+def corpus_report(tmp_path: Path, document: str, text: str, registry: Any) -> Any:
+    """The whole corpus with one document edited: the only defect is the edit.
+
+    Every document is copied, because the accepted set is keyed by document and a tree of one
+    file would report every other key as stale.
+    """
+    specs = tmp_path / "specs"
+    shutil.copytree(claims.SPECS_DIR, specs)
+    (specs / document).write_text(text, encoding="utf-8")
+    (tmp_path / "src").mkdir(exist_ok=True)
+    tree = claims.Tree.read(specs, tmp_path / "src", claims.TESTS_DIR, specs / "acceptance")
+    return claims.build_report(tree, ["scenario"], registry)
+
+
+def with_scenario(text: str, scenario: str) -> str:
+    """The document with one more acceptance section at the end, holding one scenario."""
+    return f"{text}\n\n## 7. Acceptance\n\n```gherkin\n{scenario}\n```\n"
+
+
+def without_scenario(text: str, document: str, key: str) -> str:
+    """The document with the scenario that `key` names cut out, its tags included."""
+    lines = text.splitlines(keepends=True)
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if (match := claims.SCENARIO_RE.match(line))
+        and f"{document}::{claims.normalised_title(match.group('title'))}" == key
+    )
+    end = start + 1
+    while end < len(lines) and not (
+        claims.SCENARIO_RE.match(lines[end]) or lines[end].strip() == "```"
+    ):
+        end += 1
+    while start and (not lines[start - 1].strip() or lines[start - 1].strip().startswith("@")):
+        start -= 1
+    return "".join(lines[:start] + lines[end:])
+
+
+def corpus() -> str:
+    """The joined source of the real suite, which is what the old matcher searched."""
+    return "".join(
+        path.read_text(encoding="utf-8") for path in sorted(claims.TESTS_DIR.rglob("*.py"))
+    )
 
 
 def test_a_scenario_no_test_names_is_a_violation(tmp_path: Path) -> None:
@@ -259,39 +329,114 @@ def test_a_scenario_no_test_names_is_a_violation(tmp_path: Path) -> None:
     assert "no test pins it" in violations[0].detail
 
 
-def test_a_scenario_a_test_names_is_not_a_violation(tmp_path: Path) -> None:
-    """A test whose name reads as the scenario pins it."""
-    tests = '''def test_history_is_written_in_a_single_batch() -> None:
-    """One statement, three rows, one instant."""
-    assert True
-'''
+def test_a_test_named_after_the_title_accounts_for_the_scenario(tmp_path: Path) -> None:
+    """A test whose name is the title, compared whole, is the link the rule asks for."""
+    tests = dedent(
+        '''
+        def test_history_is_written_in_a_single_batch() -> None:
+            """One statement, three rows, one instant."""
+            assert True
+        '''
+    )
     tree = build_tree(tmp_path, spec=SPEC_SCENARIO, tests=tests)
 
     assert scenario_violations(tree) == []
 
 
-def test_a_scenario_deferring_to_a_ticket_is_accounted_for(tmp_path: Path) -> None:
-    """An explicit deferral is a claim with an owner, and the owner is a ticket."""
-    spec = SPEC_SCENARIO.replace(
-        "  Scenario: history", "  @deferred(HIFA-112)\n  Scenario: history"
+def test_a_test_sharing_most_of_the_words_is_not_a_match(tmp_path: Path) -> None:
+    """Three of four words is not the title: similarity is what the old matcher guessed with."""
+    tests = dedent(
+        '''
+        def test_history_is_written_batchwise_by_a_cron() -> None:
+            """A batch, written by a cron, three times a day."""
+            assert True
+        '''
     )
-    tree = build_tree(tmp_path, spec=spec, tests=TEST_ELSEWHERE)
-
-    assert scenario_violations(tree) == []
-
-
-def test_an_unticketed_deferral_in_a_spec_is_a_violation(tmp_path: Path) -> None:
-    """A deferral without a ticket is a claim nobody owns."""
-    spec = SPEC_SCENARIO.replace("  Scenario: history", "  @deferred\n  Scenario: history")
-    tree = build_tree(tmp_path, spec=spec, tests=TEST_ELSEWHERE)
+    tree = build_tree(tmp_path, spec=SPEC_SCENARIO, tests=tests)
 
     violations = scenario_violations(tree)
 
     assert [v.check for v in violations] == ["scenario"]
-    assert "must carry the ticket" in violations[0].detail
+    assert "history is written in a single batch" in violations[0].location
 
 
-def test_a_test_pointer_that_resolves_pins_the_scenario(tmp_path: Path) -> None:
+def test_a_quoted_step_that_appears_in_the_suite_accounts_for_nothing(tmp_path: Path) -> None:
+    """A literal quoted in the steps is not evidence: the same words sit in hundreds of tests."""
+    quoted = "In Progress"
+    assert quoted in corpus(), (
+        "the phrase has to occur in the suite for this probe to mean anything"
+    )
+    scenario = "".join(
+        (
+            "  Scenario: a scenario added this revision that quotes a state literal\n",
+            f"    Given an issue whose state is `{quoted}`\n",
+            "    Then the board shows it\n",
+        )
+    )
+    registry = claims.DebtRegistry.read()
+    document = sorted(registry.keys)[0].split("::", 1)[0]
+    key = f"{document}::a scenario added this revision that quotes a state literal"
+    assert key not in registry.keys
+    text = (claims.SPECS_DIR / document).read_text(encoding="utf-8")
+
+    report = corpus_report(tmp_path, document, with_scenario(text, scenario), registry)
+
+    assert [v.check for v in report.violations] == ["scenario"]
+    assert key in report.violations[0].detail
+    assert "no test pins it" in report.violations[0].detail
+
+
+def test_a_deferral_to_a_ticket_the_registry_carries_is_deferred(tmp_path: Path) -> None:
+    """A deferral is a claim with an owner, and the owner has to be a ticket that exists."""
+    registry = claims.DebtRegistry.read()
+    ticket = sorted(registry.tickets)[0]
+    spec = SPEC_SCENARIO.replace(
+        "  Scenario: history", f"  @deferred({ticket})\n  Scenario: history"
+    )
+    tree = build_tree(tmp_path, spec=spec, tests=TEST_ELSEWHERE)
+
+    assert scenario_violations(tree, registry) == []
+    assert claims.scenario_counts(claims.account(tree, registry), registry)["deferred"] == 1
+
+
+def test_a_deferral_to_a_ticket_nobody_issued_is_a_violation(tmp_path: Path) -> None:
+    """A ticket id checked for its shape alone accepts a ticket that does not exist."""
+    registry = claims.DebtRegistry.read()
+    assert "HIFA-9999" not in registry.tickets
+    spec = SPEC_SCENARIO.replace(
+        "  Scenario: history", "  @deferred(HIFA-9999)\n  Scenario: history"
+    )
+    tree = build_tree(tmp_path, spec=spec, tests=TEST_ELSEWHERE)
+
+    violations = scenario_violations(tree, registry)
+
+    assert [v.check for v in violations] == ["scenario"]
+    assert "HIFA-9999" in violations[0].detail
+    assert "does not carry" in violations[0].detail
+
+
+def test_a_deferral_with_no_ticket_accounts_for_nothing(tmp_path: Path) -> None:
+    """A bare tag is not an owner, in a spec or in a feature file."""
+    spec = SPEC_SCENARIO.replace("  Scenario: history", "  @deferred\n  Scenario: history")
+    tree = build_tree(tmp_path, spec=spec, tests=TEST_ELSEWHERE)
+
+    violations = scenario_violations(tree, claims.DebtRegistry.read())
+
+    assert [v.check for v in violations] == ["scenario"]
+    assert "names no ticket" in violations[0].detail
+
+
+def test_a_deferral_citing_a_malformed_ticket_is_broken(tmp_path: Path) -> None:
+    """`@deferred(someday)` is not a ticket id, so nothing owns the scenario."""
+    spec = SPEC_SCENARIO.replace("  Scenario: history", "  @deferred(someday)\n  Scenario: history")
+    tree = build_tree(tmp_path, spec=spec, tests=TEST_ELSEWHERE)
+
+    violations = scenario_violations(tree, claims.DebtRegistry.read())
+
+    assert "names no ticket id" in violations[0].detail
+
+
+def test_a_test_pointer_to_a_test_that_exists_accounts_for_the_scenario(tmp_path: Path) -> None:
     """A pointer names the test; the gate resolves it instead of trusting the words."""
     spec = SPEC_SCENARIO.replace(
         "  Scenario: history",
@@ -316,50 +461,135 @@ def test_a_test_pointer_that_resolves_to_nothing_is_a_violation(tmp_path: Path) 
     ]
 
 
-def test_the_debt_of_a_document_cannot_grow(tmp_path: Path) -> None:
-    """A document already in debt still fails when a revision adds a scenario with no test."""
-    tree = build_tree(tmp_path, spec=SPEC_SCENARIO, tests=TEST_ELSEWHERE)
-    debt = claims.ScenarioDebt(
-        SPEC_NAME, "HIFA-105", 1, "the corpus names behaviour, not scenarios"
+def test_an_accepted_key_is_accounted_for_and_nothing_else_is(tmp_path: Path) -> None:
+    """The key is matched exactly: same document, same normalised title."""
+    tree = build_tree(tmp_path, spec=SPEC_TWO_SCENARIOS, tests=TEST_ELSEWHERE)
+    key = f"{SPEC_NAME}::the first unaccounted behaviour"
+
+    violations = scenario_violations(tree, registry_for({key}))
+
+    assert [violation.location for violation in violations] == [
+        f"{SPEC_NAME}:the second unaccounted behaviour"
+    ]
+
+
+def test_deleting_an_accepted_scenario_and_adding_another_fails(tmp_path: Path) -> None:
+    """The debt is a set, so one key cannot be traded for a different scenario.
+
+    The document keeps the same number of accepted keys before and after the edit, which is
+    exactly what a count per document accepted; the set does not.
+    """
+    registry = claims.DebtRegistry.read()
+    key = sorted(registry.keys)[0]
+    document = key.split("::", 1)[0]
+    text = (claims.SPECS_DIR / document).read_text(encoding="utf-8")
+    assert key in registry.keys
+
+    before = corpus_report(tmp_path / "before", document, text, registry)
+    assert before.violations == []
+
+    added = "".join(
+        (
+            "  Scenario: a behaviour nobody has a test for\n",
+            "    Given a thing nobody built\n",
+            "    Then nothing pins it\n",
+        )
     )
+    edited = with_scenario(without_scenario(text, document, key), added)
+    after = corpus_report(tmp_path / "after", document, edited, registry)
 
-    assert scenario_violations(tree, (debt,)) == []
-
-    two_scenarios = SPEC_SCENARIO.replace(
-        "```\n",
-        """
-  Scenario: the rank a state change carried is not a row of its own
-    Given a move whose rank moved with it in one call
-    Then the move is one row
-```
-""",
+    details = [violation.detail for violation in after.violations]
+    assert any("accepted key names no unaccounted scenario" in detail for detail in details), (
+        details
     )
-    grown = build_tree(tmp_path / "grown", spec=two_scenarios, tests=TEST_ELSEWHERE)
-
-    violations = scenario_violations(grown, (debt,))
-    assert len(violations) == 1
-    assert "the rank a state change carried" in violations[0].location
+    assert any("a behaviour nobody has a test for" in detail for detail in details), details
+    assert len(registry.keys) == len(claims.DebtRegistry.read().keys)
 
 
-def test_a_debt_row_the_document_no_longer_needs_fails_until_it_is_lowered(
-    tmp_path: Path,
-) -> None:
-    """Paying debt is not enough: the row has to be lowered, or it keeps accepting the next gap."""
-    tests = """def test_history_is_written_in_a_single_batch() -> None:
-    assert True
-"""
-    tree = build_tree(tmp_path, spec=SPEC_SCENARIO, tests=tests)
-    debt = claims.ScenarioDebt(
-        SPEC_NAME, "HIFA-105", 1, "the corpus names behaviour, not scenarios"
+def test_an_accepted_key_no_scenario_carries_fails_until_accept_drops_it(tmp_path: Path) -> None:
+    """A key the corpus no longer needs is stale: the set shrinks by running --accept."""
+    registry = registry_for(
+        {
+            f"{SPEC_NAME}::a scenario that was deleted",
+            f"{SPEC_NAME}::the first unaccounted behaviour",
+        }
     )
+    tree = build_tree(tmp_path, spec=SPEC_TWO_SCENARIOS, tests=TEST_ELSEWHERE)
 
-    violations = scenario_violations(tree, (debt,))
-    assert violations == []
+    report = claims.build_report(tree, ["scenario"], registry)
 
-    report = claims.Report(debts=[debt])
-    stale = claims.stale(report, tree, claims.account(tree))
-    assert [v.check for v in stale] == ["scenario"]
-    assert "lower it" in stale[0].detail
+    stale = [v for v in report.violations if "accepted key names no unaccounted" in v.detail]
+    assert [v.location for v in stale] == [f"{SPEC_NAME}::a scenario that was deleted"]
+    assert "--accept" in stale[0].detail
+
+    written, kept, dropped = claims.accept(tree, registry)
+    assert (kept, dropped) == (2, 1)
+    assert f"{SPEC_NAME}::a scenario that was deleted" not in written.keys
+
+
+def test_accept_writes_the_keys_of_every_unaccounted_scenario(tmp_path: Path) -> None:
+    """`--accept` is the only writer, and it takes its keys from the tree it just read."""
+    tree = build_tree(tmp_path, spec=SPEC_TWO_SCENARIOS, tests=TEST_ELSEWHERE)
+    path = tmp_path / "debt.json"
+    seed = claims.DebtRegistry([], frozenset({"HIFA-1"}), path, "HIFA-1")
+
+    written, kept, dropped = claims.accept(tree, seed)
+    written.write(path)
+
+    assert (kept, dropped) == (2, 0)
+    again = claims.DebtRegistry.read(path)
+    assert again.keys == {
+        f"{SPEC_NAME}::the first unaccounted behaviour",
+        f"{SPEC_NAME}::the second unaccounted behaviour",
+    }
+    assert again.tickets == {"HIFA-1"}
+    assert again.document()["version"] == claims.DEBT_VERSION
+    assert claims.check_scenario(claims.account(tree, again), again) == []
+
+
+def test_the_cli_fails_then_accepts_and_then_passes(tmp_path: Path, capsys: Any) -> None:
+    """Exit 1 for an unaccounted scenario, then 0 once `--accept` wrote its key."""
+    build_tree(tmp_path, spec=SPEC_TWO_SCENARIOS, tests=TEST_ELSEWHERE)
+    specs, src, suite = tmp_path / "specs", tmp_path / "src", tmp_path / "tests"
+    debt = tmp_path / "debt.json"
+    debt.write_text(
+        json.dumps(
+            {"version": 1, "default_ticket": "HIFA-1", "tickets": ["HIFA-1"], "clusters": []}
+        ),
+        encoding="utf-8",
+    )
+    argv = [
+        "--specs",
+        str(specs),
+        "--src",
+        str(src),
+        "--tests",
+        str(suite),
+        "--debt",
+        str(debt),
+        "--only",
+        "scenario",
+        "--quiet",
+    ]
+
+    assert claims.main(argv) == 1
+    assert "2 new" in capsys.readouterr().out
+
+    assert claims.main([*argv, "--accept"]) == 0
+    assert "accepted 2 key(s)" in capsys.readouterr().out
+
+    assert claims.main(argv) == 0
+    assert "0 new" in capsys.readouterr().out
+
+
+def test_a_registry_that_is_not_there_accepts_nothing(tmp_path: Path) -> None:
+    """A missing file is not a licence: every unaccounted scenario fails, and says how to fix it."""
+    tree = build_tree(tmp_path, spec=SPEC_TWO_SCENARIOS, tests=TEST_ELSEWHERE)
+
+    registry = claims.DebtRegistry.read(tmp_path / "absent.json")
+
+    assert registry.keys == frozenset()
+    assert len(scenario_violations(tree, registry)) == 2
 
 
 # --- rule 3: a published count names where it came from -----------------------------------
@@ -429,7 +659,7 @@ def test_the_real_tree_passes_every_rule() -> None:
     assert report.violations == []
     text = claims.summary(report)
     assert "exemption(s) in force" in text
-    assert "scenario debt" in text
+    assert "in the accepted set" in text
 
 
 def test_the_json_envelope_names_every_accepted_gap(capsys: object) -> None:

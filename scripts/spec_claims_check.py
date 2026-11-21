@@ -20,13 +20,12 @@ producer
 
 scenario
     Every `Scenario` a spec states as an acceptance case, and every one of the acceptance
-    feature files, must be accounted for: a test that pins it, or an explicit deferral. A
-    scenario is pinned when a test names it — the normalised title appears in a test name, a
-    docstring or a comment, or a requirement id it carries is cited there, or a literal of its
-    steps appears there, or most of its title's words appear in one test's name and docstring —
-    or when it carries `@test(<path>::<name>)` and that test exists. A scenario nothing pins must
-    carry `@deferred(KEY-NN)`; an unticketed deferral in a spec is a violation, because a
-    deferral without a ticket is a claim nobody owns.
+    feature files, must be accounted for, in this order: `@test(<path>::<name>)` naming a test
+    that exists; a test whose name is the scenario's title, compared exactly after both are
+    normalised; or `@deferred(KEY-NN)` naming a ticket the accepted-gaps registry knows. Anything
+    else is unaccounted. There is no third guess: a literal quoted in the steps, a shared word or
+    a similar title does not pin a scenario, because a phrase that appears in a hundred tests
+    identifies none of them.
 
 provenance
     A sentence that publishes a count as a fact about a database must name where the number came
@@ -40,19 +39,21 @@ in the table of its rule: the subject as the spec states it, the ticket that clo
 reason. A row whose subject no longer appears in the specs is stale and fails, so the table can
 only shrink honestly. The number of rows in force is printed in the summary.
 
-The scenario rule carries its legacy tail differently, because the tail is not a list of defects
-but one fact about the corpus: the specs name behaviours in prose and the tests name them after
-the behaviour, and nothing joins the two. A row there is a document and the number of its
-scenarios that no test names, with the ticket that adds the link; the count may not grow, so a
-scenario added without a test fails even where the document already carries debt, and a count the
-document no longer needs fails until it is lowered. `--list-debt` prints every accepted scenario
-by name and every document's count, so the debt is visible without being a list the check trusts.
+The scenario rule carries its legacy tail in a file rather than in this one: the specs name
+behaviours in prose and most of them were never joined to a test, so the unaccounted scenarios are
+accepted by key in `spec_claims_debt.json`, next to this script and versioned with it. A key is
+`<document>::<normalised title>`, and the file also holds the ticket that owns each cluster and the
+ticket ids a deferral may cite. The set is compared exactly, so it can only shrink: a scenario
+deleted from the corpus leaves a key no claim carries and fails until `--accept` drops it, and a
+scenario added without a test has no key and fails on the spot. `--accept` rewrites the file from
+the tree, which is the only way it changes.
 
 Usage
 -----
     python scripts/spec_claims_check.py                  # every check, human-readable
     python scripts/spec_claims_check.py --only producer  # one check
-    python scripts/spec_claims_check.py --list-debt      # the accepted scenarios, by name
+    python scripts/spec_claims_check.py --list-debt      # the accepted keys, by cluster
+    python scripts/spec_claims_check.py --accept         # rewrite the accepted keys from the tree
     python scripts/spec_claims_check.py --quiet          # only the summary line
     python scripts/spec_claims_check.py --json           # {ok, violations, exemptions, …}
 
@@ -77,6 +78,10 @@ SRC_DIR = REPO_ROOT / "src"
 TESTS_DIR = REPO_ROOT / "tests"
 ACCEPTANCE_DIR = SPECS_DIR / "acceptance"
 
+#: The accepted unaccounted scenarios, read and written as a set of keys rather than counted.
+DEBT_FILE = Path(__file__).resolve().parent / "spec_claims_debt.json"
+DEBT_VERSION = 1
+
 CHECKS = ("producer", "scenario", "provenance")
 
 #: Files that are records rather than live claims: an index, the reading guide, the template,
@@ -92,95 +97,9 @@ FENCE_RE = re.compile(
 SECTION_RE = re.compile(r"^##[ \t]+(?P<number>\d+)\.[ \t]*(?P<title>.*)$", re.MULTILINE)
 SCENARIO_RE = re.compile(r"^\s*Scenario(?: Outline)?:[ \t]*(?P<title>.+?)[ \t]*$", re.MULTILINE)
 TAG_LINE_RE = re.compile(r"^\s*(?P<tags>@\S+(?:[ \t]+@\S+)*)[ \t]*$")
-DEFERRED_RE = re.compile(r"^@deferred(?:\((?P<ticket>[^)]+)\))?$")
+DEFERRED_RE = re.compile(r"^@deferred(?:\((?P<ticket>[^)]*)\))?$")
 TEST_POINTER_RE = re.compile(r"^@test\((?P<path>[^:)]+?)::(?P<name>[^)]+)\)$")
-REQUIREMENT_RE = re.compile(r"^@(REQ-[A-Z]?[0-9]{3}-[0-9]+)$")
 QUOTED_RE = re.compile(r"`([^`\n]{5,80})`|\"([^\"\n]{5,80})\"")
-WORDS = re.compile(r"[A-Za-z0-9]+")
-
-#: A word this common names a hundred tests, so it cannot be what identifies one of them.
-COMMON_WORD_LIMIT = 300
-
-#: The line a test is defined on: module-level and class-level tests read the same.
-TEST_DEF_RE = re.compile(r"^\s*(?:async[ \t]+)?def[ \t]+(?P<name>test\w*)[ \t]*\(")
-
-#: Words that carry no subject of their own; they are what makes a title read like a sentence.
-GLUE = frozenset(
-    (
-        "a",
-        "an",
-        "the",
-        "of",
-        "to",
-        "in",
-        "on",
-        "for",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "does",
-        "do",
-        "did",
-        "its",
-        "it",
-        "by",
-        "with",
-        "and",
-        "or",
-        "not",
-        "no",
-        "as",
-        "that",
-        "this",
-        "these",
-        "those",
-        "from",
-        "at",
-        "can",
-        "has",
-        "have",
-        "had",
-        "when",
-        "then",
-        "given",
-        "each",
-        "every",
-        "one",
-        "two",
-        "also",
-        "into",
-        "than",
-        "there",
-        "which",
-        "whose",
-        "will",
-        "still",
-        "only",
-        "both",
-        "same",
-        "other",
-        "such",
-        "what",
-        "must",
-        "may",
-        "now",
-        "all",
-        "any",
-        "but",
-        "so",
-        "if",
-        "while",
-        "during",
-        "before",
-        "after",
-        "once",
-        "per",
-    )
-)
 
 #: A measurement of a file is about rows; a budget, a latency or a fixture is not this rule.
 ROW_NOUN = re.compile(
@@ -239,12 +158,108 @@ class ScenarioClaim:
 
 @dataclass(frozen=True)
 class ScenarioDebt:
-    """The scenarios of one document that no test names, and the ticket that closes them."""
+    """One cluster of accepted unaccounted scenarios: the ticket that owns them and their keys."""
 
-    document: str
     ticket: str
-    accepted: int
     reason: str
+    keys: frozenset[str] = frozenset()
+
+
+class DebtRegistry:
+    """The committed set of accepted unaccounted scenarios, and the tickets a deferral may cite.
+
+    The set is the whole point: a scenario is accepted because its key is in here, never because
+    its document has room left. Keys therefore cannot be repurposed — dropping one and adding
+    another is a change to the file, visible in the diff, and `--accept` is what writes it.
+    """
+
+    def __init__(
+        self,
+        clusters: Sequence[ScenarioDebt] = (),
+        tickets: frozenset[str] = frozenset(),
+        path: Path = DEBT_FILE,
+        default_ticket: str = "",
+    ) -> None:
+        """Hold the clusters, the ticket registry and where the file lives."""
+        self.clusters = tuple(clusters)
+        self.tickets = frozenset(tickets) | {cluster.ticket for cluster in clusters}
+        self.path = path
+        self.default_ticket = default_ticket or next(iter(sorted(self.tickets)), "")
+
+    @property
+    def keys(self) -> frozenset[str]:
+        """Every accepted key, whichever cluster owns it."""
+        return frozenset(key for cluster in self.clusters for key in cluster.keys)
+
+    def owner(self, key: str) -> str:
+        """The ticket that owns an accepted key, or an empty string when nothing accepts it."""
+        for cluster in self.clusters:
+            if key in cluster.keys:
+                return cluster.ticket
+        return ""
+
+    @classmethod
+    def read(cls, path: Path = DEBT_FILE) -> DebtRegistry:
+        """Read the registry; a file that is absent or malformed accepts nothing."""
+        if not path.is_file():
+            return cls(path=path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            clusters = tuple(
+                ScenarioDebt(
+                    ticket=str(cluster["ticket"]),
+                    reason=str(cluster.get("reason", "")),
+                    keys=frozenset(str(key) for key in cluster.get("keys", ())),
+                )
+                for cluster in data.get("clusters", ())
+            )
+            tickets = frozenset(str(ticket) for ticket in data.get("tickets", ()))
+            default = str(data.get("default_ticket", ""))
+        except (ValueError, KeyError, TypeError):
+            return cls(path=path)
+        return cls(clusters, tickets, path, default)
+
+    def document(self) -> dict[str, object]:
+        """The registry as the JSON it is stored as: versioned, sorted, one cluster per ticket."""
+        return {
+            "version": DEBT_VERSION,
+            "default_ticket": self.default_ticket,
+            "tickets": sorted(self.tickets),
+            "clusters": [
+                {
+                    "ticket": cluster.ticket,
+                    "reason": cluster.reason,
+                    "keys": sorted(cluster.keys),
+                }
+                for cluster in sorted(self.clusters, key=lambda cluster: cluster.ticket)
+            ],
+        }
+
+    def write(self, path: Path | None = None) -> Path:
+        """Write the registry, one key per line so a diff reads as a set of rows."""
+        target = path or self.path
+        lines = json.dumps(self.document(), indent=2, ensure_ascii=False)
+        target.write_text(f"{lines}\n", encoding="utf-8")
+        return target
+
+    def accepted(self, keys: Sequence[str], reason: str = "") -> DebtRegistry:
+        """The registry with `keys` accepted: the cluster that owns each keeps it, the rest arrive.
+
+        This is what `--accept` builds. A key already in a cluster stays in it, so the ownership a
+        human assigned survives a regeneration; a new key goes to the default cluster.
+        """
+        kept: dict[str, list[str]] = {cluster.ticket: [] for cluster in self.clusters}
+        reasons = {cluster.ticket: cluster.reason for cluster in self.clusters}
+        for key in keys:
+            owner = self.owner(key) or self.default_ticket
+            kept.setdefault(owner, []).append(key)
+            reasons.setdefault(owner, reason)
+        clusters = tuple(
+            ScenarioDebt(ticket=ticket, reason=reasons[ticket], keys=frozenset(sorted(found)))
+            for ticket, found in sorted(kept.items())
+            if ticket
+        )
+        return DebtRegistry(clusters, self.tickets, self.path, self.default_ticket)
 
 
 @dataclass(frozen=True)
@@ -263,7 +278,7 @@ class Report:
 
     violations: list[Violation] = field(default_factory=list)
     exemptions: list[Exemption] = field(default_factory=list)
-    debts: list[ScenarioDebt] = field(default_factory=list)
+    debts: DebtRegistry = field(default_factory=DebtRegistry)
     readings: list[Accounting] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
 
@@ -424,27 +439,23 @@ def _template(node: ast.JoinedStr) -> str:
     return "".join(parts)
 
 
-def words(text: str) -> set[str]:
-    """The subject words of a phrase: lowercased, stemmed, glue removed."""
-    out: set[str] = set()
-    for raw in WORDS.findall(text.lower()):
-        if len(raw) <= 3 or raw in GLUE:
-            continue
-        out.add(_stem(raw))
-    return out
+def normalised_title(title: str) -> str:
+    """A title as one comparable string: lowercase words, punctuation and spacing flattened.
+
+    The same function reads a scenario's title and a test's name, which is what makes the
+    comparison exact: nothing here is a prefix, a stem or a similarity score.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
 
 
-def _stem(word: str) -> str:
-    """A crude suffix strip, enough to match `reordered` with `reorder` and `rows` with `row`."""
-    for suffix in ("ing", "ed", "es", "s"):
-        if len(word) > 4 and word.endswith(suffix):
-            return word[: -len(suffix)]
-    return word
+def test_key(name: str) -> str:
+    """The normalised form of a test's name, with pytest's `test` prefix taken off."""
+    return normalised_title(re.sub(r"^test_?", "", name))
 
 
-def slug(title: str) -> str:
-    """The hyphenated form of a title, which is how a test name can carry it."""
-    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+def claim_key(claim: ScenarioClaim) -> str:
+    """The key an accepted scenario is stored under: its document and its normalised title."""
+    return f"{claim.document}::{normalised_title(claim.title)}"
 
 
 # --- the tree under test ------------------------------------------------------------------
@@ -457,12 +468,10 @@ class Tree:
     specs: list[Path]
     features: list[Path]
     producers: Producers
-    test_text: str
-    test_text_slug: str
-    test_units: list[tuple[str, set[str]]]
     prose: dict[str, list[tuple[str, str]]]
-    units_by_word: dict[str, list[int]]
     root: Path
+    #: Every test of the suite by its normalised name, so a title is one dict lookup, not a scan.
+    tests: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def read(cls, specs_dir: Path, src_dir: Path, tests_dir: Path, acceptance_dir: Path) -> Tree:
@@ -472,59 +481,38 @@ class Tree:
         for path in src_dir.rglob("*.html"):
             written.literals.append(path.read_text(encoding="utf-8"))
         test_files = sorted(tests_dir.rglob("*.py")) if tests_dir.is_dir() else []
-        texts = {p: p.read_text(encoding="utf-8") for p in test_files}
-        test_text = "\n".join(texts.values())
-        units: list[tuple[str, set[str]]] = []
-        for path, text in texts.items():
-            units.extend(_test_units(path, text))
-        index: dict[str, list[int]] = {}
-        for position, (_, unit_words) in enumerate(units):
-            for word in unit_words:
-                index.setdefault(word, []).append(position)
+        tests: dict[str, str] = {}
+        for path in test_files:
+            for where, name in test_names(path, path.read_text(encoding="utf-8")):
+                tests.setdefault(test_key(name), where)
         spec_texts = {p.name: p.read_text(encoding="utf-8") for p in spec_files(specs_dir)}
         return cls(
             prose={name: prose_units(text) for name, text in spec_texts.items()},
-            units_by_word=index,
             root=tests_dir.parent,
             specs=spec_files(specs_dir),
             features=feature_files(acceptance_dir),
             producers=written,
-            test_text=test_text,
-            test_text_slug=re.sub(r"[^a-z0-9]+", "-", test_text.lower()),
-            test_units=units,
+            tests=tests,
         )
 
 
-def _test_units(path: Path, text: str) -> Iterator[tuple[str, set[str]]]:
-    """Every test of a module as `(where, its words)` — the name, the docstring and the comment.
+def test_names(path: Path, text: str) -> Iterator[tuple[str, str]]:
+    """Every test of a module as `(where, name)`, the way a pointer or a title can reach it.
 
-    The lines are read rather than parsed: the check needs the name and the prose around it, and a
-    test that the reader cannot see from the source text is not one a scenario can be named by.
+    The module is parsed, not scanned: a `def test_…(` inside a string literal — a fixture that
+    writes a test file, a spec quoted in a test — is not a test, and treating it as one would let
+    a document be accounted for by the fixture that quotes it.
     """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:  # pragma: no cover - the suite is parsed by the tests themselves
+        return
     label = str(path.relative_to(REPO_ROOT)) if path.is_relative_to(REPO_ROOT) else str(path)
-    lines = text.splitlines()
-    starts = [index for index, line in enumerate(lines) if TEST_DEF_RE.match(line)]
-    for position, start in enumerate(starts):
-        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
-        match = TEST_DEF_RE.match(lines[start])
-        if match is None:  # pragma: no cover - the line matched to get here
-            continue
-        name = match.group("name")
-        following = "\n".join(lines[start + 1 : min(start + 14, end)])
-        quoted = re.search(r'"""(?P<doc>.*?)"""', following, re.DOTALL) or re.search(
-            r"'''(?P<doc>.*?)'''", following, re.DOTALL
-        )
-        docstring = quoted.group("doc") if quoted else ""
-        comments: list[str] = []
-        index = start - 1
-        while index >= 0:
-            stripped = lines[index].strip()
-            if stripped.startswith("#") or stripped.startswith("@"):
-                comments.append(stripped)
-            elif stripped:
-                break
-            index -= 1
-        yield f"{label}::{name}", words(f"{name} {docstring} {' '.join(comments)}")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
+            "test"
+        ):
+            yield f"{label}::{node.name}", node.name
 
 
 # --- rule 1: every declared name has a producer -------------------------------------------
@@ -884,67 +872,64 @@ def _scenarios_in(text: str, *, origin: str, location: str) -> list[ScenarioClai
     return claims
 
 
-def account_for(
-    claim: ScenarioClaim, tree: Tree, cache: dict[str, bool] | None = None
-) -> tuple[str, str]:
-    """How a scenario is accounted for, as `(kind, evidence)`; `("", "")` when nothing pins it."""
-    for tag in claim.tags:
-        deferred = DEFERRED_RE.match(tag)
-        if deferred:
-            ticket = deferred.group("ticket") or ""
-            if ticket and not TICKET_RE.match(ticket):
-                return "broken", f"{tag} names no ticket id"
-            if not ticket and claim.origin == "spec":
-                return "broken", "a deferral in a spec must carry the ticket that closes it"
-            return "deferred", ticket
-        pointer = TEST_POINTER_RE.match(tag)
-        if pointer:
-            target = tree.root / pointer.group("path")
-            name = pointer.group("name")
-            if not target.is_file():
-                return "broken", f"{tag} names a file that does not exist"
-            if f"def {name}(" not in target.read_text(encoding="utf-8"):
-                return "broken", f"{tag} names a test that does not exist"
-            return "test", f"{pointer.group('path')}::{name}"
-    evidence = named_by_test(claim, tree, {} if cache is None else cache)
-    if evidence:
-        return "test", evidence
-    return "", ""
+def _defines(path: Path, name: str) -> bool:
+    """True when the module at `path` defines a function called `name`, parsed not grepped.
 
-
-def named_by_test(claim: ScenarioClaim, tree: Tree, cache: dict[str, bool]) -> str:
-    """The name of the test that pins a scenario, or an empty string when none does."""
-    title_slug = slug(claim.title)
-    if title_slug and _in_test_text(title_slug, tree.test_text_slug, cache):
-        return "the title appears in the tests"
-    for tag in claim.tags:
-        requirement = REQUIREMENT_RE.match(tag)
-        if not requirement:
-            continue
-        identifier = requirement.group(1)
-        if identifier in tree.test_text or identifier.split("-", 1)[1] in tree.test_text:
-            return f"a test cites {identifier}"
-    literals = sorted(
-        {(backticked or quoted).strip() for backticked, quoted in QUOTED_RE.findall(claim.body)},
-        key=len,
-        reverse=True,
+    A pointer is a claim that a test exists. Searching the text for `def name(` would accept one
+    written inside a string literal — a fixture that builds a test, a test that quotes one — so
+    the module is parsed and only a real definition counts.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return False
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+        for node in ast.walk(tree)
     )
-    for literal in [value for value in literals if " " in value]:
-        if _in_test_text(literal, tree.test_text, cache):
-            return f"a test carries {literal!r}"
-    title_words = words(claim.title)
-    if title_words:
-        threshold = 0.6 * len(title_words)
-        seen: dict[int, int] = {}
-        for word in title_words:
-            postings = tree.units_by_word.get(word, ())
-            if len(postings) > COMMON_WORD_LIMIT:
-                continue
-            for position in postings:
-                seen[position] = seen.get(position, 0) + 1
-                if seen[position] >= threshold:
-                    return f"{tree.test_units[position][0]} reads as this scenario"
-    return ""
+
+
+def _first_tag(tags: Sequence[str], pattern: re.Pattern[str]) -> re.Match[str] | None:
+    """The first tag of a scenario that a pattern matches, or nothing when no tag does."""
+    for tag in tags:
+        match = pattern.match(tag)
+        if match:
+            return match
+    return None
+
+
+def account_for(claim: ScenarioClaim, tree: Tree, registry: DebtRegistry) -> tuple[str, str]:
+    """How a scenario is accounted for, as `(kind, evidence)`; `("", "")` when nothing does.
+
+    Four answers, in this order: a `@test(<path>::<name>)` that resolves; a test whose name is the
+    title, normalised on both sides and compared whole; a `@deferred(<ticket>)` whose ticket the
+    registry knows; nothing. `broken` is a tag that claims to account for the scenario and does
+    not — a pointer into thin air, a ticket nobody issued — and it fails as such, because a broken
+    link and a missing one are different defects and only one of them is a lie.
+    """
+    pointer = _first_tag(claim.tags, TEST_POINTER_RE)
+    if pointer:
+        where, name = pointer.group("path"), pointer.group("name")
+        target = tree.root / where
+        if not target.is_file():
+            return "broken", f"@test({where}::{name}) names a file that does not exist"
+        if not _defines(target, name):
+            return "broken", f"@test({where}::{name}) names a test that does not exist"
+        return "test", f"{where}::{name}"
+    matched = tree.tests.get(normalised_title(claim.title))
+    if matched:
+        return "test", f"{matched} carries the title"
+    deferral = _first_tag(claim.tags, DEFERRED_RE)
+    if deferral:
+        ticket = (deferral.group("ticket") or "").strip()
+        if not ticket:
+            return "", "@deferred names no ticket: a deferral without a ticket is nobody's"
+        if not TICKET_RE.match(ticket):
+            return "broken", f"{deferral.group(0)} names no ticket id"
+        if ticket not in registry.tickets:
+            return "broken", f"{deferral.group(0)} names a ticket the registry does not carry"
+        return "deferred", ticket
+    return "", ""
 
 
 @dataclass(frozen=True)
@@ -956,76 +941,76 @@ class Accounting:
     evidence: str
 
 
-def account(tree: Tree) -> list[Accounting]:
-    """Every scenario of the corpus with what accounts for it, read once and shared."""
-    cache: dict[str, bool] = {}
-    return [Accounting(claim, *account_for(claim, tree, cache)) for claim in scenarios(tree)]
-
-
-def _in_test_text(needle: str, haystack: str, cache: dict[str, bool]) -> bool:
-    """Whether a phrase occurs in the tests, remembered across the scenarios that quote it."""
-    found = cache.get(needle)
-    if found is not None:
-        return found
-    found = needle in haystack
-    cache[needle] = found
-    return found
+def account(tree: Tree, registry: DebtRegistry | None = None) -> list[Accounting]:
+    """Every scenario of the corpus with what accounts for it; nothing is guessed."""
+    accepted = registry or DebtRegistry()
+    return [Accounting(claim, *account_for(claim, tree, accepted)) for claim in scenarios(tree)]
 
 
 def check_scenario(
-    readings: Sequence[Accounting], debts: Sequence[ScenarioDebt]
+    readings: Sequence[Accounting], registry: DebtRegistry | None = None
 ) -> list[Violation]:
-    """Every scenario is pinned by a test or deferred with a ticket; the tail is a bounded debt.
+    """Every scenario is pinned by a test, deferred by a known ticket, or accepted by its own key.
 
-    A scenario no test names and no ticket defers is a violation unless its document's debt row
-    accepts it. The row is a count, so a revision that adds a scenario without a test fails here
-    even though the document already carries debt: the count cannot grow. `--list-debt` prints
-    every accepted scenario by name, so the debt is visible without being a list the check trusts.
+    Each unaccounted scenario is judged alone: its key is either in the committed set or it is a
+    violation, so a defect inserted anywhere in a document is reported against itself and not
+    against whichever claim happens to sit at the same ordinal. A key the corpus no longer needs
+    fails too, with the command that drops it, which is what makes the set shrink and never grow.
     """
-    accepted = {debt.document: debt for debt in debts}
-    unaccounted: dict[str, list[ScenarioClaim]] = {}
+    accepted = (registry or DebtRegistry()).keys
     violations: list[Violation] = []
     for reading in readings:
         if reading.kind in {"test", "deferred"}:
             continue
+        key = claim_key(reading.claim)
         if reading.kind == "broken":
             violations.append(Violation("scenario", reading.claim.location, reading.evidence))
             continue
-        unaccounted.setdefault(reading.claim.document, []).append(reading.claim)
-    for document, claims in unaccounted.items():
-        debt = accepted.get(document)
-        allowed = debt.accepted if debt else 0
-        for claim in claims[allowed:]:
-            violations.append(
-                Violation(
-                    "scenario",
-                    claim.location,
-                    "no test pins it and it carries no deferral with a ticket",
-                )
-            )
+        if key in accepted:
+            continue
+        detail = reading.evidence or (
+            "no test pins it and no ticket defers it: add @test(<path>::<name>), name a test "
+            f"after the title, or accept the key {key!r} and run --accept"
+        )
+        violations.append(Violation("scenario", reading.claim.location, detail))
     return violations
 
 
-def debt_report(readings: Sequence[Accounting], debts: Sequence[ScenarioDebt]) -> list[str]:
-    """One line per document: the debt it accepts and the debt it carries today."""
-    carried: dict[str, int] = {}
+def scenario_counts(
+    readings: Sequence[Accounting], registry: DebtRegistry | None = None
+) -> dict[str, int]:
+    """The four numbers the summary publishes: pinned, deferred, accepted, and new."""
+    accepted = (registry or DebtRegistry()).keys
+    counts = {"scenarios": len(readings), "accounted": 0, "deferred": 0, "accepted": 0, "new": 0}
     for reading in readings:
-        if reading.kind in {"", "broken"}:
-            carried[reading.claim.document] = carried.get(reading.claim.document, 0) + 1
+        if reading.kind == "test":
+            counts["accounted"] += 1
+        elif reading.kind == "deferred":
+            counts["deferred"] += 1
+        elif claim_key(reading.claim) in accepted:
+            counts["accepted"] += 1
+        else:
+            counts["new"] += 1
+    return counts
+
+
+def debt_report(readings: Sequence[Accounting], registry: DebtRegistry | None = None) -> list[str]:
+    """One line per cluster and one per accepted key: the debt, named rather than counted."""
+    live = {claim_key(reading.claim) for reading in readings if reading.kind in {"", "broken"}}
+    accepted = (registry or DebtRegistry()).keys
     lines: list[str] = []
-    for document in sorted(set(carried) | {debt.document for debt in debts}):
-        debt = next((entry for entry in debts if entry.document == document), None)
-        allowed = debt.accepted if debt else 0
-        ticket = debt.ticket if debt else "-"
+    for cluster in sorted((registry or DebtRegistry()).clusters, key=lambda c: c.ticket):
+        needed = sum(1 for key in cluster.keys if key in live)
         lines.append(
-            f"  {document}: {carried.get(document, 0)} unaccounted, {allowed} accepted ({ticket})"
+            f"  {cluster.ticket}: {needed} of {len(cluster.keys)} accepted keys still "
+            f"unaccounted — {cluster.reason}"
         )
+        lines.extend(f"    accepted: {key}" for key in sorted(cluster.keys))
+    loose = sorted(live - accepted)
+    if loose:
+        lines.append(f"  not accepted: {len(loose)}")
+        lines.extend(f"    unaccounted: {key}" for key in loose)
     return lines
-
-
-def unaccounted_names(readings: Sequence[Accounting]) -> list[str]:
-    """Every scenario no test names and no deferral covers, in reading order."""
-    return [reading.claim.location for reading in readings if reading.kind in {"", "broken"}]
 
 
 # --- rule 3: every published measurement names its provenance -----------------------------
@@ -1169,180 +1154,6 @@ PRODUCER_EXEMPTIONS: tuple[Exemption, ...] = (
     ),
 )
 
-#: Scenarios each document states that no test in the tree names, with the ticket that adds the
-#: linkage. One row per document: the counts are what the corpus carries today, so a revision that
-#: adds a scenario without a test fails even where the document already carries debt.
-SCENARIO_DEBT: tuple[ScenarioDebt, ...] = (
-    ScenarioDebt(
-        "000-system-architecture.md",
-        "HIFA-105",
-        2,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "01-init.feature",
-        "HIFA-105",
-        3,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "010-data-model.md",
-        "HIFA-105",
-        1,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "02-teams-workflow-states.feature",
-        "HIFA-105",
-        7,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "020-domain-core.md",
-        "HIFA-105",
-        12,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "03-issues-crud.feature",
-        "HIFA-105",
-        4,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "030-sqlite-adapter.md",
-        "HIFA-105",
-        15,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "04-soft-delete.feature",
-        "HIFA-105",
-        3,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "040-application-services.md",
-        "HIFA-105",
-        18,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "05-list-filters-order.feature",
-        "HIFA-105",
-        17,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "050-cli.md",
-        "HIFA-105",
-        16,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "06-board-ranking.feature",
-        "HIFA-105",
-        2,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "060-api-rest.md",
-        "HIFA-105",
-        16,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "07-hierarchy-relations.feature",
-        "HIFA-105",
-        3,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "070-web-dashboard.md",
-        "HIFA-105",
-        29,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "08-comments-attachments.feature",
-        "HIFA-105",
-        6,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "080-transfer-csv-json.md",
-        "HIFA-105",
-        11,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "090-search-fts.md",
-        "HIFA-105",
-        5,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "10-search.feature",
-        "HIFA-105",
-        1,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "100-config-bootstrap.md",
-        "HIFA-105",
-        13,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "11-cycles-projects.feature",
-        "HIFA-105",
-        6,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "110-release.md",
-        "HIFA-105",
-        22,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "12-history.feature",
-        "HIFA-105",
-        3,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "13-transfer-csv.feature",
-        "HIFA-105",
-        6,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "14-transfer-json.feature",
-        "HIFA-105",
-        1,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "15-cli-contract.feature",
-        "HIFA-105",
-        6,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "16-dashboard.feature",
-        "HIFA-105",
-        14,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-    ScenarioDebt(
-        "17-dashboard-hardening.feature",
-        "HIFA-105",
-        3,
-        "the corpus names behaviour in tests and titles in specs, and nothing joins the two",
-    ),
-)
-
 #: Published counts that name no file, command or date.
 PROVENANCE_EXEMPTIONS: tuple[Exemption, ...] = (
     Exemption(
@@ -1382,7 +1193,9 @@ def stale(
 
     A row is needed while the claim it accepts still fails: a spec that stopped declaring the name,
     or a writer that landed, leaves the row behind and the row fails until it is deleted. `needed`
-    is what the checks collected; a caller that ran none of them gets the claim set here.
+    is what the checks collected; a caller that ran none of them gets the claim set here. The
+    accepted scenario keys are staleness of the same kind: a key no unaccounted claim carries is a
+    scenario the corpus no longer has, and it fails until `--accept` rewrites the set.
     """
     violations: list[Violation] = []
     declared = needed if needed is not None else set()
@@ -1404,23 +1217,16 @@ def stale(
                     exemption.check, exemption.ticket, f"stale exemption for {exemption.subject}"
                 )
             )
-    documents = {path.name for path in [*tree.specs, *tree.features]}
-    carried: dict[str, int] = {}
-    for reading in readings:
-        if reading.kind in {"", "broken"}:
-            carried[reading.claim.document] = carried.get(reading.claim.document, 0) + 1
-    for debt in report.debts:
-        if debt.document not in documents:
-            violations.append(
-                Violation("scenario", debt.ticket, f"stale debt row for {debt.document}")
-            )
-        elif carried.get(debt.document, 0) < debt.accepted:
+    if "scenario" in checks:
+        carried_keys = {
+            claim_key(reading.claim) for reading in readings if reading.kind in {"", "broken"}
+        }
+        for key in sorted(report.debts.keys - carried_keys):
             violations.append(
                 Violation(
                     "scenario",
-                    debt.ticket,
-                    f"{debt.document} carries {carried.get(debt.document, 0)} unaccounted, "
-                    f"the row accepts {debt.accepted}: lower it",
+                    key,
+                    "accepted key names no unaccounted scenario: re-run --accept to drop it",
                 )
             )
     return violations
@@ -1429,40 +1235,54 @@ def stale(
 # --- the report ---------------------------------------------------------------------------
 
 
-def build_report(tree: Tree, only: Sequence[str] = CHECKS) -> Report:
+def build_report(
+    tree: Tree, only: Sequence[str] = CHECKS, registry: DebtRegistry | None = None
+) -> Report:
     """Run the checks and collect their verdicts, with the exemptions in force."""
     accepted = exemptions()
-    report = Report(exemptions=list(accepted), debts=list(SCENARIO_DEBT))
-    readings = account(tree)
+    debts = registry if registry is not None else DebtRegistry.read()
+    report = Report(exemptions=list(accepted), debts=debts)
+    readings = account(tree, debts)
     needed: set[str] = set()
     if "producer" in only:
         report.violations.extend(check_producer(tree, accepted, needed))
     if "scenario" in only:
-        report.violations.extend(check_scenario(readings, report.debts))
+        report.violations.extend(check_scenario(readings, debts))
     if "provenance" in only:
         report.violations.extend(check_provenance(tree, accepted, needed))
     report.violations.extend(stale(report, tree, readings, needed, only))
     report.readings = readings
-    report.counts = {
-        "scenarios": len(readings),
-        "unaccounted": sum(1 for reading in readings if reading.kind in {"", "broken"}),
-        "documents": len(tree.specs) + len(tree.features),
-    }
+    report.counts = scenario_counts(readings, debts)
+    report.counts["documents"] = len(tree.specs) + len(tree.features)
     return report
 
 
 def summary(report: Report) -> str:
-    """The one line every run prints: the verdict and the exemptions in force."""
+    """The one line every run prints: the verdict, the exemptions, and the scenarios by answer."""
     accepted = len(report.exemptions)
-    debt = sum(debt.accepted for debt in report.debts)
+    counts = report.counts
     verdict = "ok" if report.ok else f"{len(report.violations)} violation(s)"
     return (
         f"spec claims: {verdict}; {accepted} exemption(s) in force "
-        f"(producer {len(report.of('producer'))}, provenance {len(report.of('provenance'))}), "
-        f"scenario debt {debt} in {len(report.debts)} document(s), "
-        f"{report.counts.get('unaccounted', 0)} of {report.counts.get('scenarios', 0)}"
-        " scenarios unaccounted"
+        f"(producer {len(report.of('producer'))}, provenance {len(report.of('provenance'))}); "
+        f"scenario: {counts.get('accounted', 0)} accounted, "
+        f"{counts.get('deferred', 0)} deferred by ticket, "
+        f"{counts.get('accepted', 0)} in the accepted set, {counts.get('new', 0)} new "
+        f"of {counts.get('scenarios', 0)} in {counts.get('documents', 0)} document(s)"
     )
+
+
+def accept(tree: Tree, registry: DebtRegistry) -> tuple[DebtRegistry, int, int]:
+    """Rewrite the accepted set from the tree: every unaccounted key kept, stale ones dropped.
+
+    Returns the registry, how many keys it now holds and how many it dropped. The default cluster
+    is the one a new key joins; a key an existing cluster owns is left where a human put it.
+    """
+    readings = account(tree, registry)
+    live = [claim_key(reading.claim) for reading in readings if reading.kind == ""]
+    dropped = len(registry.keys - set(live))
+    reason = next((cluster.reason for cluster in registry.clusters), "")
+    return registry.accepted(live, reason), len(live), dropped
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1479,7 +1299,13 @@ def main(argv: list[str] | None = None) -> int:
         "--only", action="append", choices=CHECKS, default=None, help="run one check only"
     )
     parser.add_argument(
-        "--list-debt", action="store_true", help="print every accepted scenario by name"
+        "--debt", type=Path, default=DEBT_FILE, help="the accepted scenarios and known tickets"
+    )
+    parser.add_argument(
+        "--accept", action="store_true", help="rewrite the accepted scenarios from the tree"
+    )
+    parser.add_argument(
+        "--list-debt", action="store_true", help="print every accepted key, by cluster"
     )
     parser.add_argument("--quiet", action="store_true", help="only the summary line")
     parser.add_argument("--json", action="store_true", help="the verdict as JSON")
@@ -1487,7 +1313,24 @@ def main(argv: list[str] | None = None) -> int:
 
     acceptance = args.acceptance if args.acceptance is not None else args.specs / "acceptance"
     tree = Tree.read(args.specs, args.src, args.tests, acceptance)
-    report = build_report(tree, args.only or CHECKS)
+    registry = DebtRegistry.read(args.debt)
+
+    if args.accept:
+        if not registry.default_ticket:
+            print(
+                f"refusing to accept: {args.debt} names no ticket to own the keys",
+                file=sys.stderr,
+            )
+            return 2
+        written, kept, dropped = accept(tree, registry)
+        written.write(args.debt)
+        print(
+            f"accepted {kept} key(s) in {args.debt}: "
+            f"{dropped} stale key(s) dropped, ticket(s) {', '.join(sorted(written.tickets))}"
+        )
+        return 0
+
+    report = build_report(tree, args.only or CHECKS, registry)
 
     if args.json:
         print(
@@ -1499,9 +1342,13 @@ def main(argv: list[str] | None = None) -> int:
                         {"check": e.check, "subject": e.subject, "ticket": e.ticket}
                         for e in report.exemptions
                     ],
-                    "debt": [
-                        {"document": d.document, "accepted": d.accepted, "ticket": d.ticket}
-                        for d in report.debts
+                    "debts": [
+                        {
+                            "ticket": cluster.ticket,
+                            "accepted": len(cluster.keys),
+                            "reason": cluster.reason,
+                        }
+                        for cluster in report.debts.clusters
                     ],
                     "checks": report.counts,
                 },
@@ -1516,8 +1363,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_debt and not args.quiet:
         for line in debt_report(report.readings, report.debts):
             print(line)
-        for name in unaccounted_names(report.readings):
-            print(f"  accepted: {name}")
     print(summary(report))
     return 0 if report.ok else 1
 
