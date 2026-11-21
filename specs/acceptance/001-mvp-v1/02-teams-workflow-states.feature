@@ -46,7 +46,7 @@ Feature: Teams and workflow states
     And there is 1 row in "team_previous_key" with key "ENG" for that team
     And there are 2 rows in "issue_history" with field "identifier"
 
-  @REQ-F006 @smoke
+  @REQ-F006 @smoke @test(tests/e2e/cli/test_issue_show.py::test_a_previous_identifier_resolves_and_the_rename_is_a_warning_on_stderr)
   Scenario: an old identifier still resolves
     Given a team that changed from "ENG" to "PLAT" with the issue "PLAT-3"
     When I run "hifa issue show ENG-3 --json"

@@ -40,6 +40,7 @@ from hifa.app.boards import (
     DETAIL_COLLECTIONS,
     RENDERED_INCLUDE,
     detail_collections,
+    is_number_ref,
     issue_detail,
     list_blocked,
     list_issues,
@@ -460,25 +461,35 @@ def blocked_command(
 @issue_app.command("show")
 def show_command(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., help="Issue identifier (ENG-123) or ULID."),
+    ref: str = typer.Argument(..., help="Issue ULID, identifier or number (ENG-123, 123)."),
     collections: list[str] | None = typer.Option(
         None,
         "--with",
         help="comments, relations, history or children (repeatable); attachments is refused.",
+    ),
+    team: str | None = typer.Option(
+        None, "--team", help="Team of a bare number: a key or a ULID (the number form only)."
     ),
     db: str | None = typer.Option(None, "--db", help="SQLite file (wins over the global one)."),
     json_output: bool = typer.Option(False, "--json", help="JSON output."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Identifier only."),
     no_color: bool = typer.Option(False, "--no-color", help="No color."),
 ) -> None:
-    """Show one issue: its summary block and, per `--with`, one collection after it."""
+    """Show one issue: its summary block and, per `--with`, one collection after it.
+
+    A bare number resolves inside the team of this invocation (`--team`, the environment, the
+    configuration or the only team of the workspace); the other forms name their own team.
+    """
     root = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
     _start_output(root, json_output=json_output, quiet=quiet, no_color=no_color)
 
     try:
         requested = _requested_collections(collections)
         payload, detail = _run_show(
-            db_flag=db if db is not None else root.db, ref=ref, requested=requested
+            db_flag=db if db is not None else root.db,
+            ref=ref,
+            requested=requested,
+            team_flag=team,
         )
     except (HifaError, ConfigError, CliError) as exc:
         raise fail(exc) from exc
@@ -487,6 +498,10 @@ def show_command(
     except Exception as exc:  # noqa: BLE001 - bug: exit 6, never 1
         raise fail(exc) from exc
 
+    if detail.previous_identifier is not None:
+        output.write_note(
+            f"identifier renamed: {detail.previous_identifier} is now {payload['identifier']}"
+        )
     _emit_show(payload, detail, requested)
 
 
@@ -896,6 +911,27 @@ def _existing_db(db_flag: str | None) -> Path:
     return db_path
 
 
+def _team_of_number(db_flag: str | None, db_path: Path, ref: str, flag: str | None) -> str | None:
+    """The team a bare-number reference names, decided before the issue is read.
+
+    Only the number form consults the team: an identifier names its own, so nothing is resolved
+    for it and a `--team` beside one has no effect on the answer. The sources and the refusal are
+    the invocation's one context resolution — the leaf flag, the environment, the configured
+    default, or the only non-archived team — so a workspace that leaves the number unplaced is a
+    `missing_context` and never a missing row.
+    """
+    text = (ref or "").strip()
+    if not is_number_ref(text):
+        return None
+    cfg = resolve_config(db_flag=db_flag)
+    uow = UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())
+    try:
+        with uow.read() as repos:
+            return resolve_team(repos, cfg, flag=flag)
+    finally:
+        uow.close()
+
+
 def _run_relations(*, db_flag: str | None, ref: str) -> tuple[list[dict[str, Any]], list[dict]]:
     """Every relation of one issue, in the order the detail read publishes.
 
@@ -955,18 +991,21 @@ def _include_names(requested: tuple[str, ...]) -> frozenset[str]:
 
 
 def _run_show(
-    *, db_flag: str | None, ref: str, requested: tuple[str, ...]
+    *, db_flag: str | None, ref: str, requested: tuple[str, ...], team_flag: str | None = None
 ) -> tuple[dict[str, Any], IssueDetail]:
     """Read one issue: the canonical object and, when asked for, the four collections.
 
     The reference is resolved by the detail read and by nothing else, so the trash layer answers
-    for it once: a trashed identifier is not found, whatever `--with` carries. `--with` costs no
-    second read — one call answers the block and every collection — and the row itself is read
-    through the repositories, because the object every write publishes carries fields the detail
-    model does not.
+    for it once: a trashed identifier is not found, whatever `--with` carries. Only a bare number
+    consults the invocation's team, and that context is decided here, before the issue is read: a
+    workspace that leaves the number unplaced is a `missing_context`, not a missing row. `--with`
+    costs no second read — one call answers the block and every collection — and the row itself is
+    read through the repositories, because the object every write publishes carries fields the
+    detail model does not.
     """
     db_path = _existing_db(db_flag)
-    detail = issue_detail(Database(db_path), ref, include=_include_names(requested))
+    team = _team_of_number(db_flag, db_path, ref, team_flag)
+    detail = issue_detail(Database(db_path), ref, include=_include_names(requested), team=team)
 
     uow = UnitOfWork(db_path, clock=SystemClock(), idgen=UlidGen())
     try:

@@ -31,7 +31,10 @@ scenario
     else is unaccounted, except a tag that claims an owner and names none — a bare `@deferred`, a
     ticket nobody issued — which is broken and fails as such. There is no third guess: a literal
     quoted in the steps, a shared word or a similar title does not pin a scenario, because a
-    phrase that appears in a hundred tests identifies none of them.
+    phrase that appears in a hundred tests identifies none of them. A deferral is a claim that no
+    test exists, so a `@deferred` the tree has caught up with — a test now accounts for the
+    scenario — is stale and fails until the tag is dropped: otherwise the tag can neither fail nor
+    pass with the work, and a deferral is permanent debt by construction.
 
 provenance
     A sentence that publishes a count as a fact about a database must name where the number came
@@ -83,6 +86,7 @@ import ast
 import json
 import re
 import sys
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1392,7 +1396,10 @@ def stale(
     or a writer that landed, leaves the row behind and the row fails until it is deleted. `needed`
     is what the checks collected; a caller that ran none of them gets the claim set here. The
     accepted scenario keys are staleness of the same kind: a key no unaccounted claim carries is a
-    scenario the corpus no longer has, and it fails until `--accept` rewrites the set.
+    scenario the corpus no longer has, and it fails until `--accept` rewrites the set. So is a
+    `@deferred(<ticket>)` a test has caught up with: the tag is a claim that no test exists, and a
+    test that now exists makes the claim false, which is why a deferral is a debt and not a
+    permanent answer.
     """
     violations: list[Violation] = []
     declared = needed if needed is not None else set()
@@ -1415,6 +1422,20 @@ def stale(
                 )
             )
     if "scenario" in checks:
+        for reading in readings:
+            if reading.kind != "test":
+                continue
+            deferral = _first_tag(reading.claim.tags, DEFERRED_RE)
+            if deferral is None:
+                continue
+            violations.append(
+                Violation(
+                    "scenario",
+                    reading.claim.location,
+                    f"stale {deferral.group(0)}: {reading.evidence}; a test accounts for this "
+                    "scenario, so the tag claims no test exists while one does — drop the tag",
+                )
+            )
         carried_keys = {claim_key(reading.claim) for reading in readings if unaccounted(reading)}
         for key in sorted(report.debts.keys - carried_keys):
             violations.append(
@@ -1453,16 +1474,31 @@ def build_report(
     return report
 
 
+def deferred_by_ticket(readings: Sequence[Accounting]) -> str:
+    """The deferrals, clustered by the ticket that owns them: `HIFA-83 8, HIFA-105 4`.
+
+    A bare total reads as "blocked on someone else" whether the deferral belongs to another
+    component or to the branch that just wrote the scenarios, so the count is published with the
+    tickets that carry it — mechanical, no interpretation, and the same on every run.
+    """
+    clusters = Counter(reading.evidence for reading in readings if reading.kind == "deferred")
+    ordered = sorted(clusters.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{ticket} {count}" for ticket, count in ordered)
+
+
 def summary(report: Report) -> str:
     """The one line every run prints: the verdict, the exemptions, and the scenarios by answer."""
     accepted = len(report.exemptions)
     counts = report.counts
     verdict = "ok" if report.ok else f"{len(report.violations)} violation(s)"
+    deferred = counts.get("deferred", 0)
+    clusters = deferred_by_ticket(report.readings)
+    by_ticket = f"{deferred} deferred by ticket" + (f" ({clusters})" if clusters else "")
     return (
         f"spec claims: {verdict}; {accepted} exemption(s) in force "
         f"(producer {len(report.of('producer'))}, provenance {len(report.of('provenance'))}); "
         f"scenario: {counts.get('accounted', 0)} accounted, "
-        f"{counts.get('deferred', 0)} deferred by ticket, "
+        f"{by_ticket}, "
         f"{counts.get('accepted', 0)} unaccounted but accepted, {counts.get('new', 0)} new, "
         f"{counts.get('broken', 0)} broken "
         f"of {counts.get('scenarios', 0)} in {counts.get('documents', 0)} document(s)"

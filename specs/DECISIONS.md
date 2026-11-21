@@ -4718,3 +4718,173 @@ cut is empty by construction and carries no control, and the panel keeps both th
 same second as a preceding state-only move still satisfies both conditions and is filtered. That is a window
 of one second instead of a class of events, and closing it needs a batch identifier in the write — a schema
 change this decision does not take.
+
+## D-076 — `show` reads four reference forms, and only the number asks for a team
+
+**Date:** 2026-11-21 · **Wins:** SPEC-001 REQ-F012 (the behaviour: which references resolve) and SPEC-050
+§2.5.3.2 (the grammar, the codes and the message that spell it) · **Touches:** SPEC-050 §2.3.1, §2.5,
+§2.5.3, §2.5.3.2, §4, §7, §11; `specs/INDEX.md`; `scripts/spec_claims_debt.json`; this file
+
+**What the two documents said, and where they parted.** SPEC-001 REQ-F012: "`hifa issue show` accepts
+three reference forms: `identifier` (`ENG-12`), full ULID (26 chars) and integer number with `--team ENG`.
+It also resolves historical identifiers (old key in `team_previous_key` + `number`) and prints an
+`identifier renamed` warning on `stderr`. A non-existent reference exits with exit code `3` and
+`error.code=\"not_found\"`." SPEC-050's row of §2.5.3 closed the verb to `--with`, and §2.5.3.2 opened
+with "`REF` — an identifier or a ULID — is resolved by `issue_detail(db, REF, include=…)`": one form
+short of the requirement, and silent about the fourth and about the warning.
+
+**Neither document loses a rule, and that is the resolution rather than a split.** SPEC-001 wins the
+**behaviour**: the three forms and the historical one are what the vertical requires, and R17 never said
+otherwise — R17 closes the **tree** (which leaves exist, with exactly the flags their row lists), not the
+vocabulary of a `REF` the row already declares. A reference form is an input's grammar; `--team` is not a
+new option either, it is the §2.2 duplicate the verbs that already consult the team list (`create`,
+`list`, `assign`, `blocked`), and `issue show` now lists it for the same reason they do. SPEC-050 wins
+the **spelling**: the order the forms are read in, which one needs a team, the code and `field` of every
+refusal, and the channel and wording of the warning. SPEC-001 is unchanged: 001 §10.1 item 8 assigns the
+CLI surface to SPEC-050, and §7's count of the acceptance corpus does not move because the new scenarios
+land in SPEC-050 §7 and not in `specs/acceptance/001-mvp-v1/`.
+
+**The three things SPEC-050 had to decide, and did.** (1) A bare number in a workspace with 0 or ≥2
+teams and no `--team` is `missing_context` — exit 2, `field: "team"`, the message §2.2.2 and §6 already
+carry — and **not** `not_found`: a number names no issue until a team is chosen, so what is missing is an
+input, not a row, and REQ-F012's exit 3 keeps its meaning for a team's issue that does not exist. With
+exactly one non-archived team the fifth source of §2.2.2 answers and the number resolves with no flag.
+(2) The order of the four forms makes the answer total: a current identifier shadows a previous key of
+the same spelling, which `team_previous_key`'s key `(team_id, key)` allows (SPEC-010 §3.6). Refusing
+there would refuse a case the corpus's ambiguity rule does not cover — that rule (D-070) is for two rows
+answering **one** form; these are two forms answering once each, and the more specific one wins. (3) The
+warning is a line and not a payload: `identifier renamed: ENG-3 is now PLAT-3` on `stderr`, printed once,
+in table, `--json` and `--quiet` alike, with the exit code at **0** and `stdout` keeping its one document
+(R11); no key of §2.4.2 carries it, and the object stays at 33 and 37 keys.
+
+**Residual, named rather than hidden.** The two new forms have no producer. SPEC-040 §2.2 declares
+`issue_detail` for "`ENG-123` or a ULID", and no read returns an issue by `(team_id, number)` nor a team
+by a current or a previous key, so the edge cannot resolve them without a use case of its own (D-012,
+REQ-S050-01). That is GAP-09 of SPEC-050 §2.3.1, the §7 scenarios that drive the new forms carry
+`@deferred(HIFA-83)`, and closing the row is HIFA-83's implementation half. `team_previous_key` has an
+adapter writer (`TeamRepo.add_previous_key`) and **no caller**: the rotation that would write a row is
+SPEC-001 REQ-F006, which SPEC-001 §10.1 item 8 lists among the verticals with no counterpart in SPEC-050 —
+so until `team set-key` is contracted, the historical form resolves rows a future command left behind.
+
+## D-077 — D-076's header is corrected: SPEC-040 was the losing spec, and the rotation settles form 3
+
+**Date:** 2026-11-21 · **Wins:** SPEC-050 §2.5.3.2 (the grammar of `REF`, its order, its codes and the
+wording of its warning) · **Touches:** SPEC-040 §2.2 and §Notes (`spec_revision` 39 → 40, `version` 11 →
+12); SPEC-050 §2.3.1, §2.5, §2.5.3, §2.5.3.2, §4, §7, §11; `README.md`; `specs/INDEX.md`; this file
+
+**Why a new entry rather than an edit.** D-076's header named no losing spec and listed neither SPEC-040
+nor `README.md`, and one of its sentences is false after the adjustment below. This file is append-only,
+so D-076 stands as written and this entry is the correction; the headers of D-076 are to be read through
+this one.
+
+**Where D-076's header was wrong.** (1) **The conflict was not with SPEC-001.** REQ-F012 is what SPEC-050
+obeys; 001 §10.1 item 8 assigns the CLI surface to 050 and nothing in 001 contradicts the delta. The two
+documents that disagreed were **SPEC-040 §2.2**, which closed `issue_detail` to "`ENG-123` or a ULID", and
+**SPEC-050 §2.5.3.2**, which contracts four forms. SPEC-050 wins; **SPEC-040 is the losing spec** and is
+adjusted at `spec_revision` 40, §2.2 delegating the grammar to §2.5.3.2 by reference and its §Notes
+pointing at D-076 and at this entry. That is `AGENTS.md` §3's mechanism, and it is the whole of the
+resolution: the GAP row below is a statement about the tree, not about the conflict. (2) **Touches.** §4
+is not touched by this change and was listed; SPEC-040 and `README.md` were omitted, and both move —
+`README.md` publishes `issue show` with `--with` only, while §2.5.3 now lists `--team`, and `AGENTS.md` §6
+item 8 requires README, `AGENTS.md` and `INDEX.md` in the same pull request. (3) **The count was wrong.**
+D-076 said the old text was "one form short"; `REF` — an identifier or a ULID — declared **two** of the
+four, so it was two short. The claims gate cannot see this class of error: its provenance rule reads counts
+of database rows, and a count of reference forms is prose.
+
+**What D-076 left open, decided here.**
+
+(1) **Case-insensitivity belongs to GAP-09, not to a second gap.** §2.5.3.2 compares both identifier forms
+case-insensitively, and the read the verb calls binds `i.identifier = :ref` exactly: probed on this tree,
+`hifa issue show hifa-1` exits 3 against a workspace that holds `HIFA-1`. The implementer who widens
+`issue_detail` for the previous identifier and the number normalises the identifier in the same widening —
+one resolver for `show` and `edit` rather than a CLI that resolves `hifa-1` for one verb and not for the
+other. GAP-09's row and paragraph name the normalisation as part of the widening, so the gap is one row
+for one resolver and not a form count.
+
+(2) **The rotation makes form 3 total.** `team_previous_key` is `PRIMARY KEY (team_id, key)` with a
+non-unique index on `key`: a team may leave `ENG` for PLAT, a team created later as `ENG` may leave it for
+OPS, and then two rows carry `key = 'ENG'` while each of those teams numbers an issue 3 — `ENG-3` would
+answer twice with no rule in force. The form is answered by the row with the greatest `changed_at`, an
+exact tie broken by the greater `team_id`, because `changed_at` exists on the row for exactly this and is
+otherwise a dead column. A refusal there would leave a legal pair of rotations unresolvable; the corpus's
+ambiguity rule is for one form answering twice, not for two rotations that the schema allows.
+
+(3) **The scenarios are absent, not deferred.** A `@deferred(HIFA-83)` tag in the commit that contracts
+the behaviour names the ticket that writes the tests, and no code path ever reports such a tag stale: the
+accounting prefers a test when one exists, so the tag can neither fail nor pass with the work. The eight
+§7 scenarios were withdrawn with it, `HIFA-83` was unregistered from `scripts/spec_claims_debt.json`, and
+they arrive in the implementation's commit each pinned by a test whose name is its title or by
+`@test(<path>::<name>)`. The gate now fails a `@deferred` that a test has caught up with, which is what
+makes a deferral a debt rather than a permanent claim.
+
+(4) **`--team` is a leaf option, and three verbs carry it.** D-076 called it "the §2.2 duplicate the verbs
+that already consult the team list (`create`, `list`, `assign`, `blocked`)": the root callback refuses
+`hifa --team ENG` with exit 2 and `No such option`, `assign` declares no `--team`, and the members of this
+family that do are `create`, `list` and `blocked`. What is true, and what §2.5.3.2 and its Notes now say,
+is that `--team` is read at the leaf by the verb that needs it, with no global value to win over.
+
+---
+
+## D-078 — The case is folded in the parameter, the form is resolved before the read, and the edge owns its context
+
+**Date:** 2026-11-21 · **Wins:** SPEC-030 §2.6 SQL-7 and §2 · **Touches:** SPEC-030 §2, §2.6 and §Notes;
+SPEC-040 §2.2 and §Notes; SPEC-050 §2.5.3.2, §7 and §Notes; `src/hifa/adapters/sqlite/reads.py`,
+`src/hifa/app/boards.py`, `src/hifa/cli/commands/issue.py`, `tests/integration/db/test_boards_detail.py`,
+`tests/e2e/cli/test_issue_show.py`, `README.md`
+
+D-076 and D-077 contracted the four reference forms and were implemented; this entry corrects the four
+sentences they left false and one performance defect they introduced. Nothing here reverses D-076: the
+forms, their order, the rotation tie, the warning and the single-read rule stand, and this is the record of
+what was wrong around them.
+
+(1) **`COLLATE NOCASE` was the wrong side of the comparison, and it cost every detail read its index.**
+SPEC-030 revision 23 put the collation on `i.identifier`. `EXPLAIN QUERY PLAN` answers `SCAN i` for that
+statement: a collation on the column makes `sqlite_autoindex_issue_2` unusable, both branches of the `OR`
+collapse, and the one statement `show`, the board card and the issue panel all run reads every row of
+`issue` — O(issues) on every detail read, against a spec whose §10 says a `SCAN` is answered by a new index
+in a migration and never by a change in the adapter. No index was missing: `upper(:ref)` is a constant to
+the planner, the plan is `MULTI-INDEX OR` with both `SEARCH` lines back, and the comparison is the whole of
+the same rule, because `issue.identifier` is written normalised (`normalize_key` uppercases the team's key)
+and folding the parameter is all the case-insensitivity there is. No migration, no new index, no Unicode
+claim. `team_by_previous_key` carried the same defect on `pk.key` — a scan of `team_previous_key` — and got
+the same one-line fix, the rotation storing its key normalised too.
+
+(2) **SPEC-050's shape was the better one, so the code moved and not the spec.** §2.5.3.2 said the two
+lookups run **before** the read and that the read is called **once**; the tree read first and resolved
+second (`boards.py` read the reference, then read again by id), which is two reads of one issue and three
+header statements for a form-3 `show`. `REF` is now resolved to an issue id first — ULID, current
+identifier, previous identifier, number, in the order the table declares, where the code had been trying
+the number first — and the detail read is asked for that id once. `reads` gains `issue_id_by_ref` for the
+first two forms (one statement, both branches on their own index) and the app layer keeps the order. The
+read's own statements and the two totals of SPEC-030 §2.5 do not move: the lookups were never its rows.
+
+(3) **The edge resolves the context, and the specs now say so.** §2.5.3.2 said the edge "writes no SQL,
+opens no second read and holds no vocabulary of its own" while `cli/commands/issue.py` opened a read to
+resolve the team the number form needs and re-implemented the digit test `app/boards.py` already held.
+§2.2.2 puts context resolution at the edge, so that sentence was wrong about the layer that owns it: the
+edge resolves `--team`/`HIFA_TEAM`/`[cli].default_team`/the one team **once**, before the read, and it asks
+`app.boards.is_number_ref` instead of keeping a second copy of the grammar. The *form* resolution stays in
+`app/`, and the edge still writes no SQL.
+
+(4) **SPEC-040 delegates and does not restate.** §2.2 said the grammar was SPEC-050 §2.5.3.2's "and is not
+restated here" five words before restating the case rule, the rotation rule and the number rule — and the
+restatement was incomplete, because the rotation tie picks the **team** and the team's `number` then picks
+the issue. The restatement is deleted: §2.2 keeps that `issue_detail` answers all four forms and reports the
+rename, and names that section for everything else. That is D-076's own lesson, applied to the layer that
+wrote it.
+
+(5) **Two counts became enumerations.** The revision 41 note said the one-team workspace is answered by
+§2.2.2's **fifth** source (it is the fourth; the fifth is the refusal) and that three verbs carry `--team`
+(it is ten: `issue create`, `issue list`, `issue blocked`, `issue show`, `label add`, `label list`,
+`search`, `state list`, `state create`, `state update`). Both sentences are corrected in place, and the
+count is replaced by the list, because a count of a set the same document enumerates is a claim that rots
+on the next verb.
+
+(6) **A test that pins a refusal does not pin a form.** Four of the eleven new e2e tests passed with forms
+3 and 4 deleted from the tree: a digit token can never be an identifier, so "not found" is what both paths
+say, and a number the team does not wear was indistinguishable from an unknown token. Each now runs the
+reference that separates the form from the fallthrough — a number another team wears is that team's
+missing issue, an identifier resolves where an unplaced number is `missing_context`, and the shadowed form
+is shown to answer before the one that shadows it; the §7 scenarios carry the same steps, so their `@test`
+pointers claim what the tests do. The case test cannot bite against forms 3–4 and is not asked to: its
+subject is form 2's comparison, and it fails when the fold is removed.
