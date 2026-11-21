@@ -4685,3 +4685,36 @@ SPEC-010 2 → 3 (`MAX_VERSION` and the file table),
 SPEC-030 7 → 8 (`IssueDetail.history_parents`, SQL-7 row 17), SPEC-040 10 → 11 (`history_rows`),
 SPEC-050 13 → 14 (a verb and three keys), SPEC-060 10 → 11 (a schema class), SPEC-070 9 → 10 (a fragment, a
 view-model key and §2.5.7) — and every one of them is a §2 signature, key or table, not a note.
+
+## D-075 — The rank rule is the batch, and the page keeps no control
+
+**Date:** 2026-11-20 · **Wins:** SPEC-030 §2.4 (the `board_order` bullet) and SQL-7 row 11 (its `WHERE`) ·
+**Touches:** SPEC-030 §2.4, §2.5, §7, Notes; SPEC-070 §2.5.7, §7; `specs/acceptance/001-mvp-v1/16-dashboard.feature`;
+`specs/INDEX.md`; this file
+
+**What D-074 got wrong, twice, and what the code proved.** D-074 stated that `update_issue` and `move_issue`
+write `state_id` and `board_order` in one `record` call, "so the two rows are consecutive `id`s", and made the
+read exclude a rank row "when the immediately preceding history row of the same issue, by `id`, is a `state_id`
+row". The first half is false: `_move_once` writes the rank row **only when the position differs from the
+stored one**, so a move into an empty column — or any move whose computed slot equals the store — writes the
+`state_id` row alone. The consequence was a dropped event: a genuine drag written after such a move is the
+very next row by `id`, so the rule ate it, on both edges and in the `last_activity` line, with no error and no
+line anywhere that would report the loss.
+
+The measured database agreed with the rule — 33 of its 34 rank rows are `id − 1` from a `state_id` row — and
+that agreement was the trap: every one of those rows was of the batched kind, so **a correlation measured over
+the common case is not the writer's invariant**. A rule that reads a position in an `id` sequence has to read
+the fact that put the two rows in those positions. The rule now asks for **both**: the predecessor is a
+`state_id` row **and carries the same `created_at`** — one `record` call stamps one instant, and the `id` order
+says the rows left together. Measured on the same file, the corrected rule filters the same 33 rows and no
+others; on a database driven through an empty column it keeps the drag.
+
+**The second correction: the control belongs to the panel.** D-074's §7 scenario asked the page to contain
+`Show all 100` while the same section gives the page the whole window, so the page printed a `button` that
+expanded what was already on screen. The scenario was the defect, not the code that honoured it: the page's
+cut is empty by construction and carries no control, and the panel keeps both the cut and the button.
+
+**Residual, named rather than hidden.** `created_at` is stored at second precision, so a drag written in the
+same second as a preceding state-only move still satisfies both conditions and is filtered. That is a window
+of one second instead of a class of events, and closing it needs a batch identifier in the write — a schema
+change this decision does not take.

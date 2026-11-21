@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 10
-spec_revision: 30
+spec_revision: 31
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -1341,9 +1341,12 @@ Four rules, and every one of them is a rule about the formatter and not about a 
 | both hosts | the panel's body and the page use the same partial; the page does not re-sort, re-slice or re-format |
 
 **The panel truncates at 8 and the page prints the window (D-C).** `history_panel` holds the first 8 rows
-and `history` all of them; `history_hidden > 0` renders `Show all N` under the list, where **N is
-`history_window`** — the rows the read returned, `HistoryPage.window_size`, which is **the window and not a
-total** (≤100, SQL-7 row 11). The control is a `button` with
+and `history` all of them. **The control belongs to the panel and to nothing else:** a panel whose
+`history_hidden > 0` renders `Show all N` under its list, where **N is `history_window`** — the rows the
+read returned, `HistoryPage.window_size`, which is **the window and not a total** (≤100, SQL-7 row 11) —
+while the page's `history_hidden` is **0 by construction**, because the page already prints the window and
+a control that expands what is on screen is a `button` that changes nothing. The control is a real `button`
+with
 `hx-get="/_/issues/{identifier}/history?limit=100"` and `hx-target="#history-list"`,
 `hx-swap="outerHTML"` (§2.1.3): it expands **in place** and it does not navigate, and the label says
 `Show all N` because N is what the swap will put on screen.
@@ -1354,9 +1357,11 @@ the issue are not on the page and never will be through this control, because th
 and this edge adds no `COUNT(*)` (§2.5.7.3, and §7's 120-row scenario asserts the two lines together). What the reader must not be left to
 infer is that 100 is everything: when `history_truncated` is true the section prints **one dim line**
 `the last 100 events` under the list, on the page and after the expansion, and the fragment carries no
-button of its own because the swap has already replaced the panel's cut with the whole window. Two
-sentences — `Show all 100` and `the last 100 events` — and neither claims to be a total: the first names
-what the swap shows, the second names what the read could reach.
+button of its own because the swap has already replaced the panel's cut with the whole window. The page
+carries no button at all for the same reason one step further: it is already showing the window the swap
+would produce. On the panel the two sentences travel together — `Show all 100` and `the last 100 events` —
+and neither claims to be a total: the first names what the swap shows, the second names what the read could
+reach.
 
 #### 2.5.7.3 The states of the section
 
@@ -3079,8 +3084,9 @@ Feature: hifa web dashboard
     Given issue ENG-13 with 120 history rows
     When GET /ENG/issue/ENG-13 is requested
     Then the status is 200
-    And the page contains "Show all 100"
     And the page shows 100 history rows
+    And the page contains no "Show all" control
+    And the panel of the same issue contains "Show all 100"
     And the page contains "the last 100 events"
     When GET /_/issues/ENG-13/history?limit=100 is requested
     Then the status is 200
