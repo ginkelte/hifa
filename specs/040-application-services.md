@@ -3,8 +3,8 @@ id: SPEC-040
 title: Application services
 component: application
 status: review
-version: 12
-spec_revision: 40
+version: 13
+spec_revision: 41
 depends_on: [SPEC-020, SPEC-030]
 implements:
   - src/hifa/app/**
@@ -866,6 +866,7 @@ def issue_detail(
     *,
     include: frozenset[str] = frozenset(),
     include_trashed: bool = False,
+    team: str | None = None,
 ) -> IssueDetail: ...
 
 
@@ -1304,7 +1305,11 @@ Return conventions, mandatory:
   team the call was given. The grammar, the order that settles two forms naming one issue, the codes, the
   fields and the wording of the warning are that section's and are not restated here (D-076, D-077); what
   this layer owns is that the read answers all four and reports a renamed reference to its caller, so the
-  edge can print the line. `team_detail`, `project_detail`, `cycle_detail`,
+  edge can print the line. `team` — a key, case-insensitive, or a ULID — is keyword-only and defaulted,
+  and the number form alone consults it: an identifier names its own team, so a `team` that disagrees
+  with one has no effect on the answer and an unknown one is `NotFound(team, key=team)`. The answer's
+  `previous_identifier` carries the identifier the previous key stood for and is `None` on every other
+  form; the issue's own `identifier` is the current one in all four. `team_detail`, `project_detail`, `cycle_detail`,
   `label_detail` and `member_detail` accept a ULID or name/key depending on the resource, and raise
   `NotFound(resource=..., key=...)` with the `key` as it arrived.
 - `list_issues` resolves `filters.team_id` by ULID **or** key: if it is not a 26-character ULID, it
@@ -3074,6 +3079,21 @@ contract it must meet.
   of SPEC-030 does not retry (D-018).
 
 ## Notes
+
+- spec_revision 41 (2026-11-21): **`issue_detail`'s signature gains the team the number form needs, and
+  the answer gains the one fact the warning prints (HIFA-83).** `version` 12 → 13: a keyword of a
+  published signature and a field of the value it returns are public contract, so the version moves.
+  Revision 40 declared that the read answers four reference forms and reports a rename, while the
+  signature it published carried neither a team nor a way to report one; this revision closes that gap.
+  (1) **`team` is keyword-only and defaulted**, so no caller moves: the CLI passes the leaf `--team` and
+  the context resolution behind it, the web passes nothing (it names issues by ULID or identifier), and a
+  number with no team answers `None` a number names no issue — which is the edge's refusal to make, not
+  this layer's. An unknown team is `NotFound(team, key=team)`, the same refusal `require_team` produces.
+  (2) **`previous_identifier` is the reported rename**, declared with `IssueDetail` in SPEC-030 §2.6
+  (revision 23): additive and defaulted, `None` unless the reference resolved through a key rotation, and
+  never part of a JSON object of SPEC-050 §2.4.2. (3) **The resolution stays here.** The two lookups run
+  in the adapter and the choice of form runs in this layer, so the edge still resolves nothing and writes
+  no SQL (D-012).
 
 - spec_revision 40 (2026-11-21): **the losing side of the `REF` conflict is adjusted here, by reference
   rather than by restating it (HIFA-83, D-076 as corrected by D-077).** `version` 11 → 12: §2.2's

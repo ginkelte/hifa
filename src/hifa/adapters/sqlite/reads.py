@@ -568,6 +568,11 @@ class IssueDetail:
     archived_at: datetime | None = None
     trashed: bool = False
     states: tuple[WorkflowState, ...] = ()
+    #: The identifier the caller's reference stood for when it was a key the team has left
+    #: behind, spelled as the rotation stored it (`ENG-3`); `None` when the reference named the
+    #: issue directly. A render uses it for the one line it says about the rename and never as
+    #: the issue's own name, which is `issue.identifier`.
+    previous_identifier: str | None = None
 
 
 #: Columns of an `IssueListItem`, shared by the listing, the board and the detail header.
@@ -651,6 +656,43 @@ def team_by_ref(conn: sqlite3.Connection, ref: str) -> Team | None:
         {"ref": text, "key": text, "key_upper": text.upper()},
     ).fetchone()
     return None if row is None else team_from_row(row)
+
+
+def team_by_previous_key(conn: sqlite3.Connection, key: str) -> tuple[Team, str] | None:
+    """The team that left `key` behind, with the key as the rotation stored it.
+
+    `team_previous_key` is keyed by team and key, so two teams may have left the same key; the
+    most recent rotation answers, and an exact tie of `changed_at` is settled by the greater
+    `team_id` so that the answer is the same on every run. The stored spelling travels beside
+    the team: a caller renders the rotation's own key, never the one it typed.
+    """
+    from hifa.adapters.sqlite.team_repo import team_from_row
+
+    text = (key or "").strip()
+    if not text:
+        return None
+    row = conn.execute(
+        "SELECT t.*, pk.key AS previous_key"
+        " FROM team_previous_key pk"
+        " JOIN team t ON t.id = pk.team_id"
+        " WHERE pk.key = :key COLLATE NOCASE"
+        " ORDER BY pk.changed_at DESC, pk.team_id DESC"
+        " LIMIT 1",
+        {"key": text},
+    ).fetchone()
+    return None if row is None else (team_from_row(row), str(row["previous_key"]))
+
+
+def issue_id_by_number(conn: sqlite3.Connection, *, team_id: str, number: int) -> str | None:
+    """`issue.id` of the issue numbered `number` inside one team; `None` when the team has none.
+
+    The lookup is the team's half of the identifier, and the caller decides visibility: the detail
+    read applies its own trash predicate to the id this answers.
+    """
+    row = conn.execute(
+        "SELECT id FROM issue WHERE team_id = ? AND number = ?", (team_id, number)
+    ).fetchone()
+    return None if row is None else str(row["id"])
 
 
 def local_member(conn: sqlite3.Connection) -> tuple[str | None, str | None]:
@@ -836,7 +878,8 @@ def issue_detail(
     include: frozenset[str] = frozenset(),
     include_trashed: bool = False,
 ) -> IssueDetail | None:
-    """Detail of one issue by identifier or ULID; `None` when it does not exist.
+    """Detail of one issue by identifier, compared case-insensitively, or ULID; `None` when
+    it does not exist.
 
     `include` gates the heavy collections (`comments`, `history`, `attachments`). A name outside
     `DETAIL_INCLUDE` is a `Validation(rule="INCLUDE_INVALID")`, not a silent no-op.
@@ -877,7 +920,8 @@ def issue_detail(
         return None
     header = _one_item(
         conn,
-        "(i.identifier = :ref OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)",
+        "(i.identifier = :ref COLLATE NOCASE OR i.id = :ref)"
+        " AND (:include_trashed = 1 OR i.trashed = 0)",
         {"ref": text, "include_trashed": int(include_trashed)},
     )
     if header is None:
@@ -1491,11 +1535,13 @@ __all__ = [
     "decode_cursor",
     "encode_cursor",
     "issue_detail",
+    "issue_id_by_number",
     "list_teams",
     "local_member",
     "list_view",
     "resolve_filters",
     "search",
+    "team_by_previous_key",
     "team_by_ref",
     "team_counts",
     "team_timezone",

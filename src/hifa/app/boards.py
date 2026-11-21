@@ -250,8 +250,21 @@ def issue_detail(
     *,
     include: frozenset[str] = frozenset(),
     include_trashed: bool = False,
+    team: str | None = None,
 ) -> IssueDetail:
-    """Detail by identifier or ULID; `NotFound(issue, key=ref)` when it does not exist.
+    """Detail of one issue named four ways; `NotFound(issue, key=ref)` when none answers.
+
+    `ref` is a ULID, a current identifier (compared case-insensitively), an identifier whose
+    team has since left that key behind, or a bare number inside `team`. The first two are
+    answered by the detail read directly; the last two are resolved to the issue they name
+    before that one call, because the read itself answers a ULID and a current identifier and
+    no third vocabulary. `team` (a key, case-insensitive, or a ULID) is consulted by the number
+    form alone: an identifier names its own team, so a `team` that disagrees with one is
+    accepted and has no effect on the answer.
+
+    A reference that only a previous key resolves sets `previous_identifier` on the answer, so
+    the caller can say what the name it typed became; the issue's own `identifier` is the
+    current one in every case. An unknown `team` is `NotFound(team, key=team)`.
 
     `relations` comes back ordered: the adapter hands over the rows of both ends unordered, and
     how one reads — `blocks` from the blocker, `blocked_by` from the blocked issue — is a function
@@ -267,12 +280,78 @@ def issue_detail(
     """
     conn = db.ro_connection()
     try:
-        detail = reads.issue_detail(conn, ref, include=include, include_trashed=include_trashed)
+        detail = _detail_of(conn, ref, include=include, include_trashed=include_trashed, team=team)
     finally:
         conn.close()
     if detail is None:
         raise NotFound(resource="issue", key=ref)
     return replace(detail, relations=_ordered_relations(detail.relations, detail.issue.id))
+
+
+def _detail_of(
+    conn: sqlite3.Connection,
+    ref: str,
+    *,
+    include: frozenset[str],
+    include_trashed: bool,
+    team: str | None,
+) -> IssueDetail | None:
+    """The detail of the issue `ref` names, over the caller's one connection.
+
+    The order the four forms are read in is the contract, so it is written once, here: a bare
+    number first (it cannot be an identifier), then the read itself — which answers a ULID and a
+    current identifier — and only when that answers nothing, the key the team left behind. A
+    current identifier therefore shadows a previous key of the same spelling, and the resolution
+    of the number form runs before the issue is read, so a team the workspace does not hold is
+    refused as such and never as a missing issue.
+    """
+    text = (ref or "").strip()
+    if not text:
+        return None
+
+    if _is_number(text):
+        if team is None:
+            return None
+        owner = reads.team_by_ref(conn, team)
+        if owner is None:
+            raise NotFound(resource="team", key=team)
+        issue_id = reads.issue_id_by_number(conn, team_id=owner.id, number=int(text))
+        if issue_id is None:
+            return None
+        return reads.issue_detail(conn, issue_id, include=include, include_trashed=include_trashed)
+
+    direct = reads.issue_detail(conn, text, include=include, include_trashed=include_trashed)
+    if direct is not None:
+        return direct
+
+    previous = _split_identifier(text)
+    if previous is None:
+        return None
+    key, number = previous
+    left_behind = reads.team_by_previous_key(conn, key)
+    if left_behind is None:
+        return None
+    owner, stored_key = left_behind
+    issue_id = reads.issue_id_by_number(conn, team_id=owner.id, number=number)
+    if issue_id is None:
+        return None
+    found = reads.issue_detail(conn, issue_id, include=include, include_trashed=include_trashed)
+    if found is None:
+        return None
+    return replace(found, previous_identifier=f"{stored_key}-{number}")
+
+
+def _is_number(text: str) -> bool:
+    """True when `text` is ASCII digits, the one form that is a number and not a name."""
+    return text.isascii() and text.isdigit()
+
+
+def _split_identifier(text: str) -> tuple[str, int] | None:
+    """`(key, number)` of a `KEY-123` token, or `None` when the token is not shaped like one."""
+    key, separator, number = text.rpartition("-")
+    if not separator or not key or not _is_number(number):
+        return None
+    return key, int(number)
 
 
 def viewer(db: Database) -> tuple[str | None, str | None]:

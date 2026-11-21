@@ -3,8 +3,8 @@ id: SPEC-030
 title: SQLite adapter
 component: persistence
 status: review
-version: 8
-spec_revision: 22
+version: 9
+spec_revision: 23
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -16,7 +16,7 @@ implements:
 acceptance: specs/acceptance/030-sqlite-adapter.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-20
+updated: 2026-11-21
 ---
 
 # SPEC-030 — SQLite adapter
@@ -61,7 +61,7 @@ that feed the CLI, the API and the dashboard (board, list, detail, agenda).
 | `UnitOfWork`, `Repos`, `RetryPolicy`, `UNSET`, `Unset` | `uow` | classes / sentinel | yes |
 | `migrate`, `current_version`, `pending_migrations`, `backup_database`, `MigrationResult` | `migrate` | functions / dataclass | yes |
 | `TeamRepo`, `IssueRepo`, `LabelRepo`, `ProjectRepo`, `CycleRepo`, `CommentRepo`, `HistoryRepo` | `*_repo` | classes | yes |
-| `ListFilters`, `IssuePage`, `SORT_KEYS`, `encode_cursor`, `decode_cursor`, `LabelRef`, `IssueListItem`, `Board`, `BoardGroup`, `IssueDetail`, `AgendaEntry`, `board_view`, `list_view`, `blocked_view`, `issue_detail`, `agenda` | `reads` | dataclasses / functions | yes |
+| `ListFilters`, `IssuePage`, `SORT_KEYS`, `encode_cursor`, `decode_cursor`, `LabelRef`, `IssueListItem`, `Board`, `BoardGroup`, `IssueDetail`, `AgendaEntry`, `board_view`, `list_view`, `blocked_view`, `issue_detail`, `issue_id_by_number`, `team_by_previous_key`, `agenda` | `reads` | dataclasses / functions | yes |
 
 ### 2.1 `connection.py`
 
@@ -842,7 +842,7 @@ of row 1 instead of adding a statement; no statement of this read is a `COUNT(*)
 
 | # | Statement | Result | Runs when |
 |---|---|---|---|
-| 1 | `SELECT <the SQL-4 projection> FROM v_issue i JOIN workflow_state s ON s.id = i.state_id JOIN team t ON t.id = i.team_id LEFT JOIN member m ON m.id = i.assignee_id LEFT JOIN project_milestone pm ON pm.id = i.milestone_id WHERE (i.identifier = :ref OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)` | header (`IssueListItem`), `milestone_id`/`milestone_name` included; the archive columns are not in this projection | always |
+| 1 | `SELECT <the SQL-4 projection> FROM v_issue i JOIN workflow_state s ON s.id = i.state_id JOIN team t ON t.id = i.team_id LEFT JOIN member m ON m.id = i.assignee_id LEFT JOIN project_milestone pm ON pm.id = i.milestone_id WHERE (i.identifier = :ref COLLATE NOCASE OR i.id = :ref) AND (:include_trashed = 1 OR i.trashed = 0)` | header (`IssueListItem`), `milestone_id`/`milestone_name` included; the archive columns are not in this projection | always |
 | 2 | `SELECT * FROM issue WHERE id = ?` | the entity row: `description`, `archived_at`, `trashed` | always |
 | 3 | `SELECT * FROM team WHERE id = ?` | `team` | always |
 | 4 | `SELECT * FROM workflow_state WHERE id = ?` | `state` | always |
@@ -859,6 +859,11 @@ of row 1 instead of adding a statement; no statement of this read is a `COUNT(*)
 | 15 | `SELECT * FROM member WHERE id = ?` | `creator` | the row has a `creator_id` |
 | 16 | `SELECT id, team_id, name, type, color, position, is_default, archived_at FROM workflow_state WHERE team_id = ? AND archived_at IS NULL ORDER BY position, name` | `states` | always |
 | 17 | `SELECT id, identifier FROM issue WHERE id IN (/* the distinct ULIDs of the page's `parent_id` history rows */)` | `history_parents`: the bulk map of the one history kind this read does not already carry, `{ulid: identifier}` | `history` ∈ `include` **and** at least one row of row 11 has `field = 'parent_id'` |
+
+**The two lookups the other reference forms need are not statements of this read.** `issue_id_by_number`
+and `team_by_previous_key` (§2.6) are called by the application layer's `issue_detail` before this read,
+for the number form and the previous-key form, so they add no row above and neither total moves; a caller
+that names an issue by ULID or by current identifier pays neither.
 
 **Row 11 is one statement, and the filter in it is §2.4's batch rule.** The two `field` names in its
 `WHERE` are literal constants of the statement — §7's no-interpolation scenario looks for an f-string, `%`
@@ -1392,6 +1397,13 @@ class IssueDetail:
         False  # issue.trashed: False on every default read, True only with include_trashed
     )
     states: tuple[WorkflowState, ...] = ()  # the team's non-archived states, by position then name
+    #: additive since spec_revision 23, defaulted (D-026): when the reference the caller typed was a
+    #: key the team has left behind, the identifier that key stood for, spelled as the rotation stored
+    #: it (`ENG-3`); `None` when the reference named the issue directly. It is what a render says about
+    #: the rename and never the issue's own name, which is `issue.identifier`. This module never sets
+    #: it — the application layer's `issue_detail` fills it when it resolves a previous key — and no
+    #: statement of SQL-7 carries it.
+    previous_identifier: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1442,7 +1454,8 @@ def issue_detail(
     include: frozenset[str] = frozenset(),
     include_trashed: bool = False,
 ) -> IssueDetail | None:
-    """ref = ULID or identifier. None if it does not exist — and, on a default read, if it is trashed.
+    """ref = ULID or identifier, the identifier compared **case-insensitively** (SQL-7 row 1 binds
+    `COLLATE NOCASE`). None if it does not exist — and, on a default read, if it is trashed.
     `include` gates the heavy collections (`comments`, `history`, `attachments`): empty means
     base only, which is what the row/card fragments ask for; the panel asks for the comments too
     (D-027, D-029). Any other name is `Validation(field="include", rule="INCLUDE_INVALID")`.
@@ -1464,6 +1477,19 @@ def issue_detail(
 
 def team_by_ref(conn: sqlite3.Connection, ref: str) -> Team | None:
     """Team by `key` (case-insensitive) or ULID; None if it does not exist."""
+
+
+def team_by_previous_key(conn: sqlite3.Connection, key: str) -> tuple[Team, str] | None:
+    """The team that left `key` behind, with the key as `team_previous_key` stored it; None when no
+    rotation carries it. `team_previous_key` is keyed `(team_id, key)`, so two teams may have left the
+    same key: the row with the greatest `changed_at` answers, an exact tie broken by the greater
+    `team_id`, which makes the order total. The stored spelling travels beside the team because a
+    caller renders the rotation's own key, never the one it typed."""
+
+
+def issue_id_by_number(conn: sqlite3.Connection, *, team_id: str, number: int) -> str | None:
+    """`issue.id` of the issue numbered `number` inside one team; None when the team has none.
+    Visibility is the caller's: `issue_detail` applies its own trash predicate to the id this answers."""
 
 
 def list_teams(conn: sqlite3.Connection) -> tuple[Team, ...]:
@@ -2233,6 +2259,25 @@ Feature: SQLite adapter
 
 ## Notes
 
+- spec_revision 23 (2026-11-21): **the reference vocabulary of the detail read, and the two lookups it
+  does not perform itself (HIFA-83, D-076 as corrected by D-077).** `version` 8 → 9: `reads` exports two
+  more functions and `IssueDetail` gains one field, both public names of §2, so the version moves even
+  though the data model does not.
+  (1) **SQL-7 row 1 compares the identifier with its case folded.** `i.identifier = :ref` became
+  `i.identifier = :ref COLLATE NOCASE`; the identifier is the team's key plus its number and the key is
+  normalised on write, so no two stored identifiers differ by case and the predicate cannot answer twice.
+  A ULID still reaches `i.id` and is compared as stored.
+  (2) **The other two forms are resolved a layer up, and this spec declares the statements that answer
+  them.** `issue_id_by_number` reads `issue` by `(team_id, number)` and `team_by_previous_key` reads
+  `team_previous_key`, case-insensitively, the greatest `changed_at` first with an exact tie broken by the
+  greater `team_id` — the order that makes a key two teams left behind answer once. Both return an id or a
+  row, never a detail: the application layer's `issue_detail` calls one of them **before** this read and
+  then asks this read for the issue the answer names, which is why no row of SQL-7 grew and the two totals
+  did not move.
+  (3) **`IssueDetail.previous_identifier` reports what the caller's reference was.** Additive and
+  defaulted (D-026), `None` on every read whose reference named the issue directly; the application layer
+  fills it on the one form that resolves through a rotation. It is a fact about the call and not a column:
+  no statement of this read produces it.
 - spec_revision 22 (2026-11-20): **the rank rule is the batch, not a position (D-075).** The bullet above
   now states what the writers do — a state move writes the rank row **only when the rank moves**, so a move
   into an empty column writes the `state_id` row alone — and SQL-7 row 11 asks for **both** the `id`
