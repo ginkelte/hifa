@@ -866,22 +866,39 @@ def test_a_previous_identifier_resolves_and_the_rename_is_a_warning_on_stderr(cl
 
 
 def test_a_current_identifier_shadows_a_previous_key_of_the_same_spelling(cli: Cli) -> None:
-    """The issue that wears `ENG-7` today answers, not the one of the team that left `ENG`."""
+    """The issue that wears `ENG-7` today answers, not the `7` of the team that left `ENG`."""
     for title in ("one", "two", "Fix SSO login"):
         cli.create(title)
+    # The team that is about to leave `ENG` keeps a 7 of its own, so `ENG-7` is a spelling two
+    # forms answer: the previous key names this row and the current identifier names another.
+    # Without it the previous-key lookup answers nothing here and the order could be swapped
+    # with this test still green.
+    renumber(cli, cli.create("Four"), 7)
     leave_key_behind(cli, old="ENG", new="PLAT")
+    shadowed_id = str(cli.issue("PLAT-7")["id"])
+
+    # Nothing wears `ENG` yet, so the previous key is the only form that answers `ENG-7`, and this
+    # is the row the shadowing form has to beat.
+    before = cli.run("issue", "show", "ENG-7", "--json")
+
+    assert before.exit_code == 0, out(before)
+    assert payload(before)["id"] == shadowed_id
+    assert "identifier renamed: ENG-7 is now PLAT-7" in before.stderr
+
     add_team(cli, "ENG")
     assert cli.run("issue", "create", "New ENG issue", "--team", "ENG", "--json").exit_code == 0
     renumber(cli, "ENG-1", 7)
 
+    # Both forms answer now. Only the declared order makes this the current identifier.
     result = cli.run("issue", "show", "ENG-7", "--json")
 
     assert result.exit_code == 0, out(result)
     assert payload(result)["identifier"] == "ENG-7"
+    assert payload(result)["id"] != shadowed_id
     assert "identifier renamed" not in result.stderr
 
-    # The shadow only means something if the form it shadows answers: `ENG-3` is the team that
-    # left `ENG` behind, and reaching it is what makes `ENG-7` above a decision and not a default.
+    # The shadow only means something if the form it shadows still answers: `ENG-3` was never
+    # renumbered, and reaching it is what makes `ENG-7` above a decision and not a default.
     renamed = cli.run("issue", "show", "ENG-3", "--json")
 
     assert renamed.exit_code == 0, out(renamed)

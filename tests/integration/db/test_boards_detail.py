@@ -326,20 +326,29 @@ def test_a_resolved_form_asks_the_detail_read_once_and_by_id(
 def test_a_current_identifier_shadows_a_previous_key_of_the_same_spelling(world: World) -> None:
     """Two teams, one wearing the key the other left: the issue that wears it today answers."""
     with world.uow.write() as tx:
-        left = make_issue(tx, world, number=3, identifier="ENG-3")
+        left_three = make_issue(tx, world, number=3, identifier="ENG-3")
+        # The team that is about to leave `ENG` numbers a 7 of its own, so `ENG-7` is a spelling
+        # both forms answer: the previous key names `left_seven` and the current identifier names
+        # `wears`. Without it the previous-key lookup answers nothing here and the order could be
+        # swapped with this test still green.
+        left_seven = make_issue(tx, world, number=7, identifier="ENG-7")
         rotate(
             tx,
             team=world.team,
             old="ENG",
             new="PLAT",
             at=datetime(2026, 11, 1, tzinfo=UTC),
-            issues=[left],
+            issues=[left_three, left_seven],
         )
         eng, eng_state = new_team(tx, world, "ENG")
-        make_issue(tx, world, team_id=eng.id, state_id=eng_state.id, number=7, identifier="ENG-7")
+        wears = make_issue(
+            tx, world, team_id=eng.id, state_id=eng_state.id, number=7, identifier="ENG-7"
+        )
 
     detail = boards.issue_detail(Database(world.path), "ENG-7")
 
+    assert detail.issue.id == wears.id
+    assert detail.issue.id != left_seven.id
     assert detail.issue.identifier == "ENG-7"
     assert detail.previous_identifier is None
 
