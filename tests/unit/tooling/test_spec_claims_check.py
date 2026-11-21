@@ -531,6 +531,55 @@ def test_a_deferral_citing_a_malformed_ticket_is_broken(tmp_path: Path) -> None:
     assert "names no ticket id" in violations[0].detail
 
 
+def test_a_deferral_a_test_has_caught_up_with_is_stale(tmp_path: Path, capsys: Any) -> None:
+    """A tag saying no test exists, on a scenario a test now pins, is a claim the run falsifies.
+
+    The accounting prefers a test when one exists, so before this rule the tag was invisible: it
+    could neither fail nor pass with the work, and the deferral was permanent debt by
+    construction. Dropping the tag is the whole fix, and the exit code says which state the tree
+    is in — 1 with the tag, 0 without it.
+    """
+    spec = SPEC_SCENARIO.replace("  Scenario: history", "  @deferred(HIFA-1)\n  Scenario: history")
+    matching = dedent(
+        '''
+        def test_history_is_written_in_a_single_batch() -> None:
+            """One statement, three rows, one instant."""
+            assert True
+        '''
+    )
+    build_tree(tmp_path, spec=spec, tests=matching)
+    specs, src, suite = tmp_path / "specs", tmp_path / "src", tmp_path / "tests"
+    debt = tmp_path / "debt.json"
+    debt.write_text(
+        json.dumps(
+            {"version": 1, "default_ticket": "HIFA-1", "tickets": ["HIFA-1"], "clusters": []}
+        ),
+        encoding="utf-8",
+    )
+    argv = [
+        "--specs",
+        str(specs),
+        "--src",
+        str(src),
+        "--tests",
+        str(suite),
+        "--debt",
+        str(debt),
+        "--only",
+        "scenario",
+    ]
+
+    assert claims.main(argv) == 1
+    failed = capsys.readouterr().out
+    assert "stale @deferred(HIFA-1)" in failed, failed
+    assert "drop the tag" in failed, failed
+
+    (specs / SPEC_NAME).write_text(SPEC_SCENARIO, encoding="utf-8")
+
+    assert claims.main(argv) == 0
+    assert "1 accounted" in capsys.readouterr().out
+
+
 def test_a_test_pointer_to_a_test_that_exists_accounts_for_the_scenario(tmp_path: Path) -> None:
     """A pointer names the test; the gate resolves it instead of trusting the words."""
     spec = SPEC_SCENARIO.replace(
