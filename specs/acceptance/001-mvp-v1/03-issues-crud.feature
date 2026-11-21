@@ -34,7 +34,7 @@ Feature: Issues — creation, reading and updating
     And the numbers are exactly 1 to 20 with no gaps
     And there are no duplicate identifiers
 
-  @REQ-F012 @smoke
+  @REQ-F012 @smoke @test(tests/e2e/cli/test_issue_show.py::test_show_accepts_the_identifier_or_the_number_with_team)
   Scenario Outline: show accepts the identifier or the number with team
     Given a database with the issue "ENG-7"
     When I run "hifa issue show <ref> --team ENG --json"

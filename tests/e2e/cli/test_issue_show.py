@@ -119,6 +119,53 @@ def _stamp(index: int) -> str:
     return f"2030-01-01T{index // 60:02d}:{index % 60:02d}:00Z"
 
 
+def add_team(cli: Cli, key: str) -> None:
+    """A second team of the workspace, with the workflow states `team create` gives it."""
+    result = cli.run("team", "create", key, key.title())
+    assert result.exit_code == 0, out(result)
+
+
+def renumber(cli: Cli, identifier: str, number: int) -> None:
+    """Give one issue a number of the fixture's choosing; no verb sets a number."""
+    key = identifier.rsplit("-", 1)[0]
+    cli.execute(
+        "UPDATE issue SET number = ?, identifier = ? WHERE identifier = ?",
+        (number, f"{key}-{number}", identifier),
+    )
+
+
+def leave_key_behind(
+    cli: Cli, *, old: str, new: str, changed_at: str = "2026-11-21T00:00:00Z"
+) -> None:
+    """Rotate a team's key the way the not-yet-contracted verb would: key, rows and identifiers.
+
+    The team keeps its issues and its numbers; only the key and the identifiers change, and the
+    row in `team_previous_key` is the record that the old key still names this team.
+    """
+    rows = cli.rows("SELECT id FROM team WHERE key = ?", (old,))
+    assert rows, f"team {old} is not in the database"
+    team_id = str(rows[0]["id"])
+    cli.execute("UPDATE team SET key = ? WHERE id = ?", (new, team_id))
+    cli.execute(
+        "UPDATE issue SET identifier = ? || '-' || number WHERE team_id = ?", (new, team_id)
+    )
+    cli.execute(
+        "INSERT INTO team_previous_key (team_id, key, changed_at) VALUES (?, ?, ?)",
+        (team_id, old, changed_at),
+    )
+
+
+def forget_default_team(cli: Cli) -> None:
+    """Drop `[cli].default_team`, leaving the workspace's own team as the only source."""
+    path = cli.cwd / ".hifa.toml"
+    kept = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("default_team")
+    ]
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+
 # --- the block ---------------------------------------------------------------------------
 
 
@@ -661,3 +708,180 @@ def test_the_comment_body_folds_its_lines_and_is_capped_at_60_cells(cli: Cli) ->
     assert cell.startswith("first line ")
     assert len(cell) <= 60
     assert cell.endswith("…")
+
+
+# --- the number and the team --------------------------------------------------------------
+
+
+def test_a_bare_number_resolves_inside_the_team_of_the_invocation(cli: Cli) -> None:
+    """The number belongs to a team: the same `7` is a different issue in ENG and in OPS."""
+    cli.create("Fix SSO login")
+    renumber(cli, "ENG-1", 7)
+    add_team(cli, "OPS")
+    assert cli.run("issue", "create", "Ops issue", "--team", "OPS", "--json").exit_code == 0
+    renumber(cli, "OPS-1", 7)
+
+    mine = cli.run("issue", "show", "7", "--team", "ENG", "--json")
+    theirs = cli.run("issue", "show", "7", "--team", "OPS", "--json")
+
+    assert mine.exit_code == theirs.exit_code == 0, out(mine) + out(theirs)
+    assert payload(mine)["identifier"] == "ENG-7"
+    assert payload(theirs)["identifier"] == "OPS-7"
+
+    table = cli.run("issue", "show", "7", "--team", "ENG")
+
+    assert table.stdout.splitlines()[0].startswith("ENG-7  Fix SSO login")
+    assert table.stderr == ""
+
+
+def test_show_accepts_the_identifier_or_the_number_with_team(cli: Cli) -> None:
+    """Both spellings of one issue answer the same object when the team is given."""
+    cli.create("Fix SSO login")
+    renumber(cli, "ENG-1", 7)
+
+    for reference in ("ENG-7", "7"):
+        result = cli.run("issue", "show", reference, "--team", "ENG", "--json")
+
+        assert result.exit_code == 0, out(result)
+        assert payload(result)["identifier"] == "ENG-7"
+
+
+def test_a_bare_number_resolves_with_one_team_and_no_flag(cli: Cli) -> None:
+    """A workspace with a single team answers the number with no flag and no configuration."""
+    cli.create("Fix SSO login")
+    renumber(cli, "ENG-1", 7)
+    forget_default_team(cli)
+
+    result = cli.run("issue", "show", "7", "--json")
+
+    assert result.exit_code == 0, out(result)
+    assert payload(result)["identifier"] == "ENG-7"
+
+
+def test_a_bare_number_with_no_team_to_resolve_is_a_missing_context(cli: Cli) -> None:
+    """Zero or two teams and no flag leaves the number unplaced: exit 2, and nothing is read."""
+    cli.create("Fix SSO login")
+    renumber(cli, "ENG-1", 7)
+    add_team(cli, "OPS")
+    forget_default_team(cli)
+
+    result = cli.run("issue", "show", "7", "--json")
+
+    error = error_of(result)
+
+    assert result.exit_code == 2, out(result)
+    assert result.stdout == ""
+    assert error["code"] == "missing_context"
+    assert error["field"] == "team"
+    assert "team required" in error["message"]
+
+
+def test_an_identifier_is_resolved_without_a_team(cli: Cli) -> None:
+    """Only the number form needs a team: an identifier names its own in a workspace of two."""
+    cli.create("Fix SSO login")
+    add_team(cli, "OPS")
+    forget_default_team(cli)
+
+    result = cli.run("issue", "show", "ENG-1", "--json")
+
+    assert result.exit_code == 0, out(result)
+    assert payload(result)["identifier"] == "ENG-1"
+
+
+def test_a_current_identifier_is_read_without_regard_to_case(cli: Cli) -> None:
+    """`eng-1` names `ENG-1`: the identifier is compared with its case folded."""
+    cli.create("Fix SSO login")
+
+    result = cli.run("issue", "show", "eng-1", "--json")
+
+    assert result.exit_code == 0, out(result)
+    assert payload(result)["identifier"] == "ENG-1"
+
+
+def test_a_number_the_team_does_not_wear_is_not_found_with_3(cli: Cli) -> None:
+    """A number no issue wears is the verb's missing issue, not a special case for zero."""
+    cli.create("Fix SSO login")
+
+    result = cli.run("issue", "show", "999", "--team", "ENG", "--json")
+
+    assert result.exit_code == 3, out(result)
+    assert result.stdout == ""
+    assert error_of(result)["code"] == "not_found"
+    assert error_of(result)["field"] == "issue"
+
+
+def test_a_team_the_workspace_does_not_hold_is_not_found_with_3(cli: Cli) -> None:
+    """The context was given and is wrong, so the refusal names the team and not the issue."""
+    cli.create("Fix SSO login")
+
+    result = cli.run("issue", "show", "7", "--team", "NOPE", "--json")
+
+    assert result.exit_code == 3, out(result)
+    assert error_of(result)["code"] == "not_found"
+    assert error_of(result)["field"] == "team"
+
+
+# --- the key a team left behind ----------------------------------------------------------
+
+
+def test_a_previous_identifier_resolves_and_the_rename_is_a_warning_on_stderr(cli: Cli) -> None:
+    """A key the team left answers with its issue, and the one warning goes to `stderr`."""
+    for title in ("one", "two", "Fix SSO login"):
+        cli.create(title)
+    leave_key_behind(cli, old="ENG", new="PLAT")
+    assert cli.run("issue", "comment", "PLAT-3", "Reproduced locally").exit_code == 0
+
+    result = cli.run("issue", "show", "ENG-3", "--json")
+
+    assert result.exit_code == 0, out(result)
+    assert json.loads(result.stdout)["identifier"] == "PLAT-3"
+    assert "identifier renamed: ENG-3 is now PLAT-3" in result.stderr
+
+    quiet = cli.run("issue", "show", "ENG-3", "--quiet")
+
+    assert quiet.exit_code == 0, out(quiet)
+    assert quiet.stdout == "PLAT-3\n"
+    assert "identifier renamed: ENG-3 is now PLAT-3" in quiet.stderr
+
+    with_sections = cli.run("issue", "show", "ENG-3", "--with", "comments", "--json")
+    renamed = [
+        line for line in with_sections.stderr.splitlines() if line.startswith("identifier renamed:")
+    ]
+
+    assert with_sections.exit_code == 0, out(with_sections)
+    assert renamed == ["identifier renamed: ENG-3 is now PLAT-3"]
+
+
+def test_a_current_identifier_shadows_a_previous_key_of_the_same_spelling(cli: Cli) -> None:
+    """The issue that wears `ENG-7` today answers, not the one of the team that left `ENG`."""
+    for title in ("one", "two", "Fix SSO login"):
+        cli.create(title)
+    leave_key_behind(cli, old="ENG", new="PLAT")
+    add_team(cli, "ENG")
+    assert cli.run("issue", "create", "New ENG issue", "--team", "ENG", "--json").exit_code == 0
+    renumber(cli, "ENG-1", 7)
+
+    result = cli.run("issue", "show", "ENG-7", "--json")
+
+    assert result.exit_code == 0, out(result)
+    assert payload(result)["identifier"] == "ENG-7"
+    assert "identifier renamed" not in result.stderr
+
+
+def test_two_teams_that_left_the_same_key_are_settled_by_the_most_recent_rotation(
+    cli: Cli,
+) -> None:
+    """Two teams wore `ENG` and both number an issue 3: the rotation that happened last answers."""
+    for title in ("one", "two", "Fix SSO login"):
+        cli.create(title)
+    leave_key_behind(cli, old="ENG", new="PLAT", changed_at="2026-11-01T00:00:00Z")
+    add_team(cli, "ENG")
+    for title in ("four", "five", "six"):
+        assert cli.run("issue", "create", title, "--team", "ENG", "--json").exit_code == 0
+    leave_key_behind(cli, old="ENG", new="OPS", changed_at="2026-11-20T00:00:00Z")
+
+    result = cli.run("issue", "show", "ENG-3", "--json")
+
+    assert result.exit_code == 0, out(result)
+    assert payload(result)["identifier"] == "OPS-3"
+    assert "identifier renamed: ENG-3 is now OPS-3" in result.stderr
