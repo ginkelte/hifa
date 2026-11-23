@@ -312,6 +312,15 @@ tr.row-empty td { color: var(--text-muted); }
 .description p { margin: 0 0 8px; }
 .description pre { background: var(--surface); padding: 8px; border-radius: 4px; overflow-x: auto; }
 .description code { font-family: var(--mono); font-size: 12px; }
+.description table { border-collapse: collapse; margin: 0 0 12px; }
+.description th,
+.description td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.description th { background: var(--surface-2); font-weight: 600; }
 .meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
 .meta dt { color: var(--text-muted); }
 .meta dd { margin: 0; color: var(--text); }
@@ -569,9 +578,11 @@ textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
   .detail { padding: 16px; }
   .detail-body { flex-direction: column; gap: 20px; align-items: stretch; }
   .detail-side { width: auto; flex: 1 1 auto; }
-  /* A wide table or a long code block scrolls inside its own box instead of pushing the page. */
-  .description table,
+  /* A wide table or a long code block scrolls inside its own box instead of pushing the page. The
+     table keeps `display: table` at every width: `display: block` on it breaks its header's
+     alignment with its cells, so the sanitizer's `.table-scroll` box scrolls instead. */
   .description pre { display: block; max-width: 100%; overflow-x: auto; }
+  .description .table-scroll { max-width: 100%; overflow-x: auto; }
   /* The panel covers the whole screen at this width: the heading stays put so the way out is
      always under the thumb, however far the issue has been scrolled. */
   .panel { width: 100vw; border-left: 0; padding: 0; }

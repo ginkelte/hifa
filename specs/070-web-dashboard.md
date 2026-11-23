@@ -2983,7 +2983,6 @@ Feature: hifa web dashboard
 
   # A `\n` inside the quoted description is a line break: a table needs three lines and the step
   # takes one string.
-  @deferred(HIFA-113)
   Scenario: a markdown table in a description is served as a table
     Given an issue with description "| Name | Qty |\n|:--|:-:|\n| Bolt | 4 |"
     When GET /ENG/issue/ENG-13 is requested
