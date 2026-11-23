@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 43
+spec_revision: 44
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -1786,7 +1786,7 @@ Enter or blur (text), change (select), Cmd/Ctrl+Enter or Save (description)
          a `<details>` nor a control (`writable: False`, §2.3.4): the only write left on it is Restore
          (§2.6.9). The swap is the listener's: until HIFA-114 that listener enabled `422` alone, so a `409`
          died as the generic `could not save` toast; the ticket added the status and the `HX-Retarget`, and
-         the tree has carried both since `3ddafc1` (§2.1.3)
+         the tree has carried both since `79a6f80` (§2.1.3)
   → 422 ISSUE_TRASHED: the issue is in the trash. The wrapper comes back `open`, the value marked and the
          message beside it, and **no** write control (`writable: False, open: True`): the only write left
          is Restore (§2.6.9, R29). The status is 422 and not 409 — §6 keeps the two apart
@@ -2916,7 +2916,7 @@ differ in exactly the step above, not in the route, the status or the header.
 | Validation on a page (form without JS) | 422 | same template + `form_errors` | errors next to the field |
 | Validation in a fragment / inline | 422 | the element the request named — the field wrapper for `view=field`, the `<tr>`, the card or the panel — with `.is-invalid` on the control and the message beside it; `HX-Retarget` only when there is no element to keep | field marked, control `open`, message next to it — the answer is swapped in place and reaches no toast (§2.1.3) |
 | A value of a control in `view=field` that resolves to no row (`state` or `member` naming none — the two references `EDIT_COMMAND_FIELDS` sends, §2.1.2) | 422 | the **field wrapper** of the control that was edited, re-rendered `open` with `.is-invalid` on that control and the `invalid value: ` sentence the catalogue's last row gives the domain's message — a `NotFound` about a value and not about the route, so the wrapper stays; the page route `POST /{team}/issue/{identifier}` keeps its `404` (`error.html`) for the same body, because a page has no wrapper to keep | nothing is written; the field stays open, marked, with the sentence beside it and the stored value in the control |
-| `Conflict` (label in use, etc.) | 409 | partial with message | the message is swapped in where the reader is, no destructive swap — a `409` is swapped, never toasted (§2.1.3) |
+| `Conflict` (label in use, etc.) | 409 | partial with message | the message is swapped in where the reader is, no destructive swap — a `409` to a fragment request is swapped in place, never toasted; the drop's own `409` keeps its recovery and its toast (§2.6.4) |
 | `Validation` (drop with open children) | 422 | the panel re-rendered + `form_error` (§2.1.3, §5.4); the drop ignores the body | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `InvalidTransition` (drop on an archived issue, R20) | 409 | the panel re-rendered + `form_error`, the same body as the row above (§2.1.3, §5.4) | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `archive` / `delete` without `confirm=1` | 422 | the page (or the panel) with the `<details>` block rendered `open` and `form_error` | nothing is written; the block stays open |
@@ -3829,6 +3829,17 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 44 (2026-11-23): **the round-three quality review's four minors are settled, and none of them
+  moves a contract.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
+  `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or scenario moves. (a) **The twelve
+  `§` citations this ticket had left in the code are gone** — `app.py` (five), `readmodels.py` (three) and
+  `app.js` (four), each rewritten as the rule it named; the five `app.py` already carried are untouched, and
+  revision 43's note (i) now says it removed six of the eighteen and that these twelve fall here. (b) **§2.6.3's
+  aside and revision 43's note (b) named the wrong commit**: the `409` and its `HX-Retarget` entered in
+  `79a6f80`, the ticket's implementation commit, and not in `3ddafc1`; both sentences now carry the right SHA.
+  (c) **§6's `Conflict` row generalised a `409` the drop does not swap**: the cell now scopes the swap to a
+  fragment request — where the message is read in place and never toasted — and leaves the drop's own `409`
+  with its recovery and its toast, which the `InvalidTransition` row of the same table and §2.6.4 already said.
 - spec_revision 43 (2026-11-23): **the second quality review's two findings and seven minors are settled, and
   the two that mattered were a shortcut whose scope the text had narrowed and an aside that claimed a fix the
   tree had already made.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**)
@@ -3840,7 +3851,7 @@ Feature: hifa web dashboard
   the description: it scoped the three already, and its comment now says so. (b) **§2.6.3's `409` aside was
   still written in the future tense** — "adding 409 to it is new work of this ticket" — against §2.1.3 and
   against the tree: it now says the listener enabled `422` alone until HIFA-114 added the status and the
-  `HX-Retarget`, carried since `3ddafc1`, and spec_revision 42's note, which claimed that aside as done, says
+  `HX-Retarget`, carried since `79a6f80`, and spec_revision 42's note, which claimed that aside as done, says
   what that revision did and did not touch. (c) **The citations of §2.6.2 had drifted six lines**: the branch
   of `requestSubmit()` is `app.js:328-335` and the `Escape` field branch is `app.js:337-347`, here and in
   spec_revision 41's note. (d) **§2.6.3's "the whole file, exactly" snippet of `field_title.html` was missing
@@ -3855,8 +3866,9 @@ Feature: hifa web dashboard
   bites the rule and not the prose**: it asserts `.field-inline`, `.comment-composer` and `#quick-add` in the
   scope, the absence of `confirm` from it and the exclusion the comment above it states, all read from `app.js`
   with its comments stripped; `_form_of` fails with a sentence when a `<form>` carries no `method`/`action`.
-  (i) **The `§` citations this ticket had added to the code are gone** — `app.py`, `readmodels.py` and
-  `app.js` — replaced by the rule each one named; no citation older than this ticket is touched. (j) **Two
+  (i) **Six of the `§` citations this ticket had added to the code are gone** — eighteen of them stood in
+  `app.py`, `readmodels.py` and `app.js`, and this revision replaced six with the rule each one named; no
+  citation older than this ticket is touched, and the twelve that remain are withdrawn in spec_revision 44. (j) **Two
   sentences of §2.6.3 and §5.3 told the same story in the future tense** — the `description` bullet
   ("this ticket implements", "the branch is new work") and the field flow's "gains `409` in this ticket" — and
   both now say what the tree does.

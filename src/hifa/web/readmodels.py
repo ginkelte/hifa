@@ -246,7 +246,7 @@ def _field_states(
 
     Every wrapper asks these four keys and decides nothing itself. `writable` is the
     caller's one decision — `can_write` and neither archive layer — and it is the same boolean
-    the action group branches on (§2.3.4). `open` is `True` only for the wrapper a refusal
+    the action group branches on. `open` is `True` only for the wrapper a refusal
     brings back in front of the reader: the control it hands back, or the trashed issue's
     `<details open>`. An archived issue's refusal has no disclosure, so its message arrives with
     `open` `False`. `invalid` and `message` are that field's entry of `form_errors`, resolved
@@ -537,7 +537,7 @@ def build_issue_vm(
         name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS + COMMENT_FORM_FIELDS
     }
     invalid_field = next((name for name, message in errors.items() if message), None)
-    # The seven wrappers of §2.6.3 render from this one decision, so the page, the panel and a
+    # The seven wrappers render from this one decision, so the page, the panel and a
     # refusal answer with the same dict for the same issue and no template branches on a layer.
     field_writable = bool(can_write) and not (is_archived or is_trashed)
     vm = build_row_vm(
@@ -614,7 +614,7 @@ def build_issue_vm(
             "is_trashed": is_trashed,
             "form_errors": errors,
             "form_error": form_error if form_error is not None else vm["form_error"],
-            # The inline fields of §2.6.3: one entry per control, always the seven, in the order
+            # The inline fields: one entry per control, always the seven, in the order
             # the surfaces render them. `writable` is the one decision that outlives the request.
             "fields": _field_states(errors, writable=field_writable, is_trashed=is_trashed),
             "edit_action": f"/{item.team_key}/issue/{item.identifier}",

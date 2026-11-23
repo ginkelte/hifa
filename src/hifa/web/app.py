@@ -797,7 +797,7 @@ def issue_edit_fragment(
     """Write one field and answer the element that changed.
 
     `view` picks the element that answers — the `<tr>` of the list (`outerHTML`), the card of
-    the board, the whole panel, or **one field wrapper** (`view=field`, §2.1.3/§2.6.3) — and
+    the board, the whole panel, or **one field wrapper** (`view=field`) — and
     defaults to `list` when the caller does not say. `view=field` names the control it answers
     in `field`, because the body carries the value and not the field's identity: a `422` for an
     empty value has a body of `title=` and nothing in it says which wrapper to answer. A field
@@ -811,7 +811,7 @@ def issue_edit_fragment(
     control marked and the message beside it, and `409` (a write to an archived issue) re-renders
     it with the message and no control. For `view=field` the message is keyed on the field the
     request named, because `ISSUE_ARCHIVED`/`ISSUE_TRASHED` name `ref`/`trashed` and neither is a
-    control (§2.3.4). `404` is the only answer that cannot keep it — the element the client asked
+    control. `404` is the only answer that cannot keep it — the element the client asked
     for does not exist, and the fragment says so in the toast area.
 
     Args:
@@ -1771,10 +1771,10 @@ def _issue_page_error(
 
 
 def _unknown_field(request: Request, identifier: str, field: str | None) -> HTMLResponse:
-    """Answer `404` to a `view=field` naming no control of §2.1.2.
+    """Answer `404` to a `view=field` naming no control of the seven inline fields.
 
     The issue is resolved first so the sentence names the row the route found and not the path
-    segment the reader typed, which may be a ULID (§6). An unknown issue keeps its own `404`;
+    segment the reader typed, which may be a ULID. An unknown issue keeps its own `404`;
     the difference between the two answers is the message, not the status.
 
     Args:
@@ -1814,7 +1814,7 @@ def _issue_edit_fragment(
 
     The element is re-read after the write, so what comes back is the stored row: the client
     swaps it in place and never has to merge the fields it did not send. `view=field` answers
-    the one partial of §2.2 that prints that wrapper, and its read passes `include_trashed=True`
+    the one partial that prints that wrapper, and its read passes `include_trashed=True`
     as the panel's does, because a trashed issue's field is refused `422` and not `404`.
 
     Args:

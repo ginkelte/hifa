@@ -209,7 +209,7 @@
   // htmx does not swap a 4xx by default: enable the swap for the two statuses whose body
   // re-renders the element the request named (`422`, `409`) and for a `/_/` 4xx that carries
   // `HX-Retarget`, which is the `fragment_error` of a failed resolution. A `4xx` that answers
-  // `text/plain` carries no retarget and stays unswapped (§2.1.3).
+  // `text/plain` carries no retarget and stays unswapped.
   document.body.addEventListener("htmx:beforeSwap", function (event) {
     var xhr = event.detail.xhr;
     if (!xhr) return;
@@ -261,7 +261,7 @@
     document.body.dataset.focusField = wrapper ? wrapper.getAttribute("data-field") || "" : "";
     document.body.dataset.focusScope = wrapper && wrapper.closest("#panel") ? "#panel" : "";
     // A swap that answers the panel request opened the panel, and the panel itself is where
-    // focus goes (§2.6.9): the row or the card that asked does not take it back.
+    // focus goes: the row or the card that asked does not take it back.
     document.body.dataset.focusPanel = target === PANEL ? "1" : "";
   });
   document.body.addEventListener("htmx:afterSwap", function () {
@@ -280,7 +280,7 @@
         : document;
       var wrapper = scope ? scope.querySelector('.field-inline[data-field="' + field + '"]') : null;
       // The marked control on a `422`, the summary of the value that replaced it on a `200`, and
-      // nothing at all on the archived issue's `409`: that wrapper has no focusable node (§2.6.9).
+      // nothing at all on the archived issue's `409`: that wrapper has no focusable node.
       var target = wrapper ? wrapper.querySelector(".is-invalid") || wrapper.querySelector("summary") : null;
       if (target) target.focus();
       return;
@@ -336,7 +336,7 @@
 
     if (event.key === "Escape") {
       // The nearest open field control closes first, so one key never means two things: a field
-      // inside the panel closes the field, and the next `Esc` closes the panel (§2.6.2).
+      // inside the panel closes the field, and the next `Esc` closes the panel.
       var field = event.target.closest ? event.target.closest(".field-inline details[open]") : null;
       if (field) {
         field.open = false;
