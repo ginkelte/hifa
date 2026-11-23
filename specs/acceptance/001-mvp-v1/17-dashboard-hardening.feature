@@ -41,3 +41,14 @@ Feature: Dashboard hardening
     When I execute a PATCH to "/_/issues/ENG-1?view=list" without the "HX-Request" header
     Then the status is 400
     And the body mentions "fragment requires htmx"
+
+  # A `\n` inside the quoted description is a line break: a table needs three lines and the step
+  # takes one string.
+  @REQ-S003 @smoke @deferred(HIFA-113)
+  Scenario: a markdown table in a description is served as a table
+    Given the issue "ENG-90" with description "| Name | Qty |\n|:--|:-:|\n| Bolt | 4 |"
+    When I execute a GET to "/ENG/issue/ENG-90"
+    Then the HTML contains "<table>"
+    And the HTML contains a "<th>" with the text "Name"
+    And the HTML contains a "<td>" with the text "Bolt"
+    And the HTML contains "text-align:center"

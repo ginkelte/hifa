@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 10
-spec_revision: 31
+version: 11
+spec_revision: 32
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -13,7 +13,7 @@ implements:
 acceptance: specs/acceptance/001-mvp-v1/16-dashboard.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-20
+updated: 2026-11-22
 ---
 
 # SPEC-070 — Web dashboard
@@ -950,7 +950,10 @@ them in every state (R3):
 from markdown_it import MarkdownIt
 
 MD = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
+MD.enable("table")
 # html=False: the user's raw HTML is escaped, not interpreted.
+# The commonmark preset ships the `table` rule and leaves it disabled; this enables that rule and
+# nothing else — `gfm-like` would also add strikethrough, linkify and task lists (D-079).
 
 ALLOWED_TAGS = {
     "p",
@@ -967,13 +970,22 @@ ALLOWED_TAGS = {
     "h1",
     "h2",
     "h3",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
 }
-ALLOWED_ATTRS = {("a", "href")}
+ALLOWED_ATTRS = {("a", "href"), ("th", "style"), ("td", "style")}
 ALLOWED_SCHEMES = {"http", "https", "mailto"}
+# The only `style` the walker keeps, and only on `th`/`td`: an aligned column is the one place
+# markdown-it writes one (`:--`, `:-:`, `--:`). Anything else drops the attribute, keeps the text.
+ALLOWED_STYLES = {"text-align:left", "text-align:center", "text-align:right"}
 
 
 def render_markdown(text: str | None) -> str:
-    """markdown-it-py -> HTML, then allowlist (tags/attrs/schemes). Never returns None."""
+    """markdown-it-py -> HTML, then allowlist (tags/attrs/styles/schemes). Never returns None."""
 ```
 
 - The allowlist is implemented **at the edge** (walking the tree with `html.parser`, or with an
@@ -981,13 +993,52 @@ def render_markdown(text: str | None) -> str:
 - `a[href]` only with the `http`, `https` or `mailto` scheme; any other one (including
   `javascript:`, `data:`, `vbscript:`) drops the `href` attribute and keeps the text. `img` is
   **not** in the allowlist: markdown with an image comes out as text.
+- **The table is the one rule enabled on top of the preset** (D-079). `MD.enable("table")` turns on
+  the rule the `commonmark` preset ships disabled; `gfm-like` is **not** used, because it would also
+  enable strikethrough, linkify and task lists — `s`, `del` and a checkbox `input` the allowlist
+  would have to carry, for no requirement. `table`, `thead`, `tbody`, `tr`, `th` and `td` join
+  `ALLOWED_TAGS`; with `html=False` the parser emits no other element of a table, so the set stays
+  closed.
+- **Alignment is the only `style` the allowlist keeps, and only on `th`/`td`.** For `:--`, `:-:` and
+  `--:` markdown-it writes `style="text-align:left|center|right"` on the `th` and the `td` of that
+  column. `(th, "style")` and `(td, "style")` are accepted when the value, stripped and lowercased,
+  is **exactly** one of `text-align:left`, `text-align:center`, `text-align:right`; any other value
+  drops the attribute and keeps the cell text. No other tag carries `style` and no other attribute
+  joins `ALLOWED_ATTRS`. The value is tested by the check its own attribute selects — `href`
+  against `ALLOWED_SCHEMES`, `style` against `ALLOWED_STYLES` — so a `style` value never passes
+  through the `href` scheme test (`urlparse("text-align:center")` reads `text-align` as the
+  scheme, which is not in `ALLOWED_SCHEMES`, and that is why the attribute would be dropped). The
+  rule is an exact-match list and not a CSS parser: the renderer emits three literal
+  strings, the allowlist accepts three literal strings, and anything a declaration parser would have
+  to interpret is refused, so the check cannot be grown by a value it misreads.
+- **The sanitizer wraps every `table` it emits in `<div class="table-scroll">…</div>`.** The wrapper
+  is written by the walker and never passed through from user input: with `html=False` markdown-it
+  cannot produce a `div` and a `<div>` the user writes is escaped to text, so `div` does **not**
+  enter `ALLOWED_TAGS`. The wrapper is what the narrow viewport scrolls (see the next bullet),
+  without turning the `table` itself into a block.
+- **CSS contract (`static/css/app.css`).** The base rules style `.description table`
+  (`border-collapse: collapse` and `margin: 0 0 12px`) and `.description th`/`.description td`
+  (`1px solid var(--border)` and `padding: 6px 10px`); `th` carries `var(--surface-2)` and weight
+  600, and `th`/`td` default to `text-align: left` — the inline `style` of an aligned column wins
+  over the stylesheet, which is why the alignment survives. The `@media (max-width: 900px)` block
+  keeps `.description pre { display: block; max-width: 100%; overflow-x: auto; }` unchanged and
+  gains `.description .table-scroll { max-width: 100%; overflow-x: auto; }`; `.description table`
+  leaves the media block entirely — no `display: block`, no `max-width` and no `overflow-x` on the
+  table at any width. A wide table scrolls inside `.table-scroll` and keeps `display: table` at
+  every width, because `display: block` on the table is what breaks the alignment of its own
+  header with its cells. The shipped selector paired `.description table` with `.description pre`;
+  the table half goes.
 - `markdown-it-py` is declared in `pyproject.toml` in the **base group** (not in the `[web]`
   extra): the dashboard uses the renderer, but the dependency is not optional (D-020). Version
   pinned in `pyproject.toml` and in `uv.lock` like the rest of the dependencies.
 - No `markdown-it` on the client: no JS renderer is vendored, nor a minified `marked`/`markdown-it`.
   The browser receives HTML that is already sanitized.
 - Mandatory test: `**bold**` ⇒ `<strong>bold</strong>`; `<script>alert(1)</script>` and
-  `[x](javascript:alert(1))` do not survive (REQ-S070-01).
+  `[x](javascript:alert(1))` do not survive (REQ-S070-01). A table renders as a `<table>` with its
+  `<th>` and `<td>` (`| A | B |` / `|---|:-:|` / `| 1 | 2 |` gives `<th>A</th>` and `<td>1</td>`); the
+  `th` and the `td` of a column declared `:-:` keep `text-align:center`; a `style` outside the three
+  values (`style="color:red"`) is dropped and the cell text survives; raw HTML inside a cell stays
+  escaped (`<b>x</b>` arrives as `&lt;b&gt;x&lt;/b&gt;`).
 
 #### 2.3.7 Template prohibitions
 
@@ -2140,7 +2191,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R12** | **Events by header.** Successful mutations emit `HX-Trigger` with `issue-created`, `issue-updated`, `issue-moved`, `issue-archived`, `issue-deleted`, `issue-restored`, `board-reordered`, `comment-created` — this is the complete catalogue, and the row of §2.1.3 that documents the header names the same set; the counters listen for those events (`hx-trigger="issue-moved from:body"`). Polling exists in exactly two places and nowhere else: `/_/counts` every 30 s (counters) and `/_/revision` every `REVISION_POLL` (the change signal of §2.6.8, R26). Neither re-renders the collection it watches. → **REQ-F070-10** |
 | **R13** | **One read model per entity.** The panel and the detail page use the same `issue_vm`; the row and the card share `row_vm`/`card_vm` with the same derived keys (`priority_glyph`, `due_label`, `is_overdue`). → **REQ-F070-03** |
 | **R14** | **Strict CSP without `unsafe-eval`.** `script-src 'self'` forces the Alpine CSP build (`Alpine.data()` registered in `app.js`); `x-data="{…}"` with expressions is forbidden and so is inline `<script>`. → **REQ-S070-02**, **REQ-S070-03** |
-| **R15** | **Own HTML already escaped before `\|safe`.** `description_html` and `body_html` leave the server already escaped and with a tag allowlist (`p, br, strong, em, code, pre, ul, ol, li, a[href], blockquote, h1-h3`); `a[href]` only `http(s):`/`mailto:`. `snippet_html` leaves the server **escaped and with `MARK_START`/`MARK_END`** (R17, SPEC-090 R15). `\|safe` is applied **only** to those three fields. → **REQ-S070-01**, **REQ-S070-04** |
+| **R15** | **Own HTML already escaped before `\|safe`.** `description_html` and `body_html` leave the server already escaped and with a tag allowlist (`p, br, strong, em, code, pre, ul, ol, li, a[href], blockquote, h1-h3, table, thead, tbody, tr, th, td`), where `th`/`td` also carry `style` when its value is `text-align:left`, `text-align:center` or `text-align:right`, and a `table` is wrapped in the sanitizer's own `div.table-scroll`, which is not an allowed tag (§2.3.6, D-079); `a[href]` only `http(s):`/`mailto:`. `snippet_html` leaves the server **escaped and with `MARK_START`/`MARK_END`** (R17, SPEC-090 R15). `\|safe` is applied **only** to those three fields. → **REQ-S070-01**, **REQ-S070-04** |
 | **R16** | **No attachment surface in v1.** `issue_vm` carries no `attachments` key, because nothing can write an `attachment` row (`add_attachment` is declared in SPEC-040 §2.2 and implemented nowhere, GAP-07) and a list that can only be `[]` is what D-071 §2 refuses. The URL-scheme rule for `attachments[].url` — `http`, `https`, `file`, any other scheme rendered as text without an `href` — returns with the key, in the revision that lands `AddAttachment`. → (no requirement until then) |
 | **R17** | **Search: escape every piece and keep the marker pair.** The snippet arrives from SPEC-090 already wrapped in `<mark>`/`</mark>` and unescaped (REQ-S090-03): the read model splits it on that pair, escapes **each piece between two markers** and rejoins them around the literal `<mark>`/`</mark>`, so the only markup `snippet_html` carries is the pair that was already there and the text around it is escaped exactly once, here. Escaping the whole string first and marking afterwards cannot be done at this edge — the markers already exist, and escaping before them would have to re-find the terms — and handing the raw snippet to `\|safe` would let an issue title put executable markup in the page. `build_search_vm` is the only producer of `snippet_html` and §2.1.8's page is its only consumer. → **REQ-S070-04** |
 | **R18** | **Read-only is visible.** With `can_write=False` no write `<form>` and no drag control are rendered; only reading remains. A `POST` in that mode ⇒ `403`, with `error.html` from a page route and `partials/fragment_error.html` from a `/_/` route. → **REQ-F070-04** |
@@ -2930,6 +2981,17 @@ Feature: hifa web dashboard
     Then the HTML does not contain "<script>alert(1)</script>"
     And the HTML does not contain "javascript:alert(1)"
 
+  # A `\n` inside the quoted description is a line break: a table needs three lines and the step
+  # takes one string.
+  @deferred(HIFA-113)
+  Scenario: a markdown table in a description is served as a table
+    Given an issue with description "| Name | Qty |\n|:--|:-:|\n| Bolt | 4 |"
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains "<table>"
+    And the HTML contains a "<th>" with the text "Name"
+    And the HTML contains a "<td>" with the text "Bolt"
+    And the HTML contains "text-align:center"
+
   Scenario: read-only renders no write forms
     Given the app created with read_only true
     When GET /ENG/list is requested
@@ -3148,7 +3210,7 @@ Feature: hifa web dashboard
 7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (80 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (81 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).
@@ -3192,6 +3254,32 @@ Feature: hifa web dashboard
   §2.6.9; the whole-page floor is T-19.
 
 ## 11. Notes
+
+- spec_revision 32 (2026-11-22): **a markdown table is served as a table (HIFA-113, D-079).** `GET
+  /HERMES/issue/HERMES-1` answered a GFM table as one `<p>` of pipe characters, and the two layers
+  that produced it are both additive to fix. (1) **§2.3.6 enables the one rule.** The `commonmark`
+  preset ships `table` and leaves it disabled, so the module gains `MD.enable("table")` and keeps the
+  preset: `gfm-like` would also turn on strikethrough, linkify and task lists, i.e. more tags and a
+  checkbox `input` in the allowlist, for no requirement. (2) **The allowlist gains the structure.**
+  `table`, `thead`, `tbody`, `tr`, `th` and `td` join `ALLOWED_TAGS`, which R15 enumerates and
+  REQ-S003 names as the sanitizer contract. (3) **The alignment is the one `style` kept.** markdown-it
+  writes `style="text-align:left|center|right"` on the `th`/`td` of a column declared `:--`, `:-:` or
+  `--:`; `(th, "style")` and `(td, "style")` are accepted on an exact match of those three values and
+  on nothing else, any other value drops the attribute and keeps the cell text, and no other tag
+  carries a `style`. (4) **The wrapper is the sanitizer's own.** Every `table` the walker emits is
+  wrapped in `<div class="table-scroll">…</div>`, written by the walker and never passed through from
+  user input — with `html=False` markdown-it cannot emit a `div` and a written one is escaped — so
+  `div` does not enter `ALLOWED_TAGS`. (5) **The CSS contract moves with it.** The base rules style
+  `.description table` and its cells, and the `@media (max-width: 900px)` overflow rule moves from
+  `.description table` to `.description .table-scroll`, because `display: block` on the table breaks
+  the alignment of its own header. §7 and
+  `specs/acceptance/001-mvp-v1/17-dashboard-hardening.feature` gain the one scenario
+  (`@deferred(HIFA-113)` until its test lands), so §7's count moves **80 → 81** scenarios and the
+  corpus is **241 (229 `Scenario` + 12 `Scenario Outline`)**, and every statement of the count in
+  `specs/001-mvp-v1.md` §7, `specs/001-mvp-v1.tasks.md` and `specs/INDEX.md` moves with it.
+  **`version` 10 → 11**: §2 changes — an allowlist that R15 enumerates and a `.feature`-pinned
+  rendering are the public contract of this layer — and the change adds elements to the HTML two
+  routes already served.
 
 - spec_revision 30 (2026-11-20): **the activity section is declared — its grammar, its layout, its
   states, its density and its accessibility — and the panel gets the one fragment D-C needed
