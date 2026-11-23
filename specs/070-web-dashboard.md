@@ -1004,22 +1004,28 @@ def render_markdown(text: str | None) -> str:
   column. `(th, "style")` and `(td, "style")` are accepted when the value, stripped and lowercased,
   is **exactly** one of `text-align:left`, `text-align:center`, `text-align:right`; any other value
   drops the attribute and keeps the cell text. No other tag carries `style` and no other attribute
-  joins `ALLOWED_ATTRS`. The rule is an exact-match list and not a CSS parser: the renderer emits
-  three literal strings, the allowlist accepts three literal strings, and anything a declaration
-  parser would have to interpret is refused, so the check cannot be grown by a value it misreads.
+  joins `ALLOWED_ATTRS`. The value is tested by the check its own attribute selects — `href`
+  against `ALLOWED_SCHEMES`, `style` against `ALLOWED_STYLES` — so a `style` value never passes
+  through the `href` scheme test (a `text-align:center` read as a URL has no scheme and would be
+  dropped). The rule is an exact-match list and not a CSS parser: the renderer emits three literal
+  strings, the allowlist accepts three literal strings, and anything a declaration parser would have
+  to interpret is refused, so the check cannot be grown by a value it misreads.
 - **The sanitizer wraps every `table` it emits in `<div class="table-scroll">…</div>`.** The wrapper
   is written by the walker and never passed through from user input: with `html=False` markdown-it
   cannot produce a `div` and a `<div>` the user writes is escaped to text, so `div` does **not**
   enter `ALLOWED_TAGS`. The wrapper is what the narrow viewport scrolls (see the next bullet),
   without turning the `table` itself into a block.
 - **CSS contract (`static/css/app.css`).** The base rules style `.description table`
-  (`border-collapse: collapse` and a bottom margin) and `.description th`/`.description td`
-  (`1px solid var(--border)` and padding); `th` carries `var(--surface-2)` and weight 600, and
-  `th`/`td` default to `text-align: left` — the inline `style` of an aligned column wins over the
-  stylesheet, which is why the alignment survives. The `@media (max-width: 900px)` overflow rule
-  moves from `.description table` to `.description .table-scroll` (`max-width: 100%`,
-  `overflow-x: auto`), so a wide table scrolls in its own box while keeping `display: table` at every
-  width; `display: block` on the `table` is what breaks the alignment of its own header.
+  (`border-collapse: collapse` and `margin: 0 0 12px`) and `.description th`/`.description td`
+  (`1px solid var(--border)` and `padding: 6px 10px`); `th` carries `var(--surface-2)` and weight
+  600, and `th`/`td` default to `text-align: left` — the inline `style` of an aligned column wins
+  over the stylesheet, which is why the alignment survives. The `@media (max-width: 900px)` rule is
+  `.description table, .description pre { display: block; max-width: 100%; overflow-x: auto; }`. Its
+  `.description pre` half is unchanged — `display: block`, `max-width: 100%`, `overflow-x: auto` —
+  and the overflow the `table` half carried moves to `.description .table-scroll`, which takes
+  `max-width: 100%` and `overflow-x: auto` **without** `display: block`. So a wide table scrolls in
+  its own box while keeping `display: table` at every width; `display: block` on the table is what
+  breaks the alignment of its own header.
 - `markdown-it-py` is declared in `pyproject.toml` in the **base group** (not in the `[web]`
   extra): the dashboard uses the renderer, but the dependency is not optional (D-020). Version
   pinned in `pyproject.toml` and in `uv.lock` like the rest of the dependencies.
@@ -2973,6 +2979,8 @@ Feature: hifa web dashboard
     Then the HTML does not contain "<script>alert(1)</script>"
     And the HTML does not contain "javascript:alert(1)"
 
+  # A `\n` inside the quoted description is a line break: a table needs three lines and the step
+  # takes one string.
   @deferred(HIFA-113)
   Scenario: a markdown table in a description is served as a table
     Given an issue with description "| Name | Qty |\n|:--|:-:|\n| Bolt | 4 |"
@@ -3200,7 +3208,7 @@ Feature: hifa web dashboard
 7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (80 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (81 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).
@@ -3264,11 +3272,12 @@ Feature: hifa web dashboard
   `.description table` to `.description .table-scroll`, because `display: block` on the table breaks
   the alignment of its own header. §7 and
   `specs/acceptance/001-mvp-v1/17-dashboard-hardening.feature` gain the one scenario
-  (`@deferred(HIFA-113)` until its test lands), so the corpus is **241 (229 `Scenario` + 12 `Scenario
-  Outline`)** and every statement of the count in `specs/001-mvp-v1.md` §7,
-  `specs/001-mvp-v1.tasks.md` and `specs/INDEX.md` moves with it. **`version` 10 → 11**: §2 changes —
-  an allowlist that R15 enumerates and a `.feature`-pinned rendering are the public contract of this
-  layer — and the change adds elements to the HTML two routes already served.
+  (`@deferred(HIFA-113)` until its test lands), so §7's count moves **80 → 81** scenarios and the
+  corpus is **241 (229 `Scenario` + 12 `Scenario Outline`)**, and every statement of the count in
+  `specs/001-mvp-v1.md` §7, `specs/001-mvp-v1.tasks.md` and `specs/INDEX.md` moves with it.
+  **`version` 10 → 11**: §2 changes — an allowlist that R15 enumerates and a `.feature`-pinned
+  rendering are the public contract of this layer — and the change adds elements to the HTML two
+  routes already served.
 
 - spec_revision 30 (2026-11-20): **the activity section is declared — its grammar, its layout, its
   states, its density and its accessibility — and the panel gets the one fragment D-C needed

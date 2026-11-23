@@ -4950,3 +4950,12 @@ until its test lands: the HTML carries `<table>`, a `<th>` with the header text,
 cell text, and `text-align:center` on the `th`/`td` of a column declared `:-:`. §2.3.6's mandatory
 tests carry the same four assertions plus the dropped `style` and the escaped cell, because a rule the
 allowlist enforces and the corpus does not read is a rule nobody reads twice.
+
+(7) **A value is tested by the check its own attribute selects** (amendment, spec review of the
+`spec_revision` 32 delta). The shipped walker gates every kept attribute on one condition —
+`(tag, name) in ALLOWED_ATTRS and value is not None and _safe_href(value)` — so adding
+`("th", "style")`/`("td", "style")` to the set without touching the condition leaves the scheme test
+in front of a value that is not a URL: `urlparse("text-align:center").scheme` is `text-align`, the
+attribute of every aligned column is dropped and the alignment of (4) is gone with no test failing.
+The predicate is therefore the attribute's own — `href` against `ALLOWED_SCHEMES`, `style` against
+`ALLOWED_STYLES` — and SPEC-070 §2.3.6 states it beside the three values.

@@ -42,7 +42,9 @@ Feature: Dashboard hardening
     Then the status is 400
     And the body mentions "fragment requires htmx"
 
-  @REQ-S003 @deferred(HIFA-113)
+  # A `\n` inside the quoted description is a line break: a table needs three lines and the step
+  # takes one string.
+  @REQ-S003 @smoke @deferred(HIFA-113)
   Scenario: a markdown table in a description is served as a table
     Given the issue "ENG-90" with description "| Name | Qty |\n|:--|:-:|\n| Bolt | 4 |"
     When I execute a GET to "/ENG/issue/ENG-90"
