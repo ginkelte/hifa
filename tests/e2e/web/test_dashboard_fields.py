@@ -284,3 +284,43 @@ def test_the_list_row_keeps_its_own_inline_title_control_and_is_not_a_field_wrap
     assert "closest tr" in response.text
     assert "field-inline" not in response.text
     assert "view=field" not in response.text
+
+
+def test_a_field_the_route_does_not_know_is_refused_with_404(seeded: SimpleNamespace) -> None:
+    """A `field` outside the seven controls is the toast's `404`, not a wrapper nobody prints."""
+    response = seeded.client.patch(
+        f"/_/issues/{seeded.identifier}",
+        params={"view": "field", "field": "duedate"},
+        headers=HTMX,
+        data={"title": "Fix SSO login"},
+    )
+
+    assert response.status_code == 404
+    assert response.headers["HX-Retarget"] == "#toasts"
+    assert response.headers["HX-Reswap"] == "beforeend"
+    assert "is not a field of" in response.text
+    assert "field-inline" not in response.text
+    assert _value_of("title", seeded.db, seeded.identifier) == STORED_TITLE
+
+
+def test_an_inline_edit_of_a_trashed_issue_is_refused_with_the_message_and_the_open_wrapper(
+    seeded: SimpleNamespace,
+) -> None:
+    """The trash's `422` is the open wrapper, marked, with the message and no write control."""
+    _run("issue", "delete", seeded.identifier, "--yes")
+
+    response = seeded.client.patch(
+        f"/_/issues/{seeded.identifier}",
+        params={"view": "field", "field": "title"},
+        headers=HTMX,
+        data={"title": "Fix SSO login"},
+    )
+
+    assert response.status_code == 422
+    html = response.text
+    assert f'id="field-title-{seeded.identifier}"' in html
+    assert "<details open" in html
+    assert "data-readonly" in html
+    assert f"{seeded.identifier} is in the trash; restore it first" in html
+    assert "hx-patch" not in html
+    assert _value_of("title", seeded.db, seeded.identifier) == STORED_TITLE

@@ -22,6 +22,15 @@
     return panel !== null && panel.children.length > 0;
   }
 
+  // The slot `base.html` prints carries the `#panel` id htmx targets, and the `<aside id="panel">`
+  // the panel route answers lands inside it: the node with the focus destination is the aside.
+  function panelNode() {
+    var slot = document.getElementById("panel");
+    if (!slot) return null;
+    if (slot.tagName === "ASIDE") return slot;
+    return slot.querySelector("aside");
+  }
+
   function closePanel() {
     var panel = document.querySelector(PANEL);
     if (panel) panel.innerHTML = "";
@@ -247,11 +256,23 @@
     var focused = document.activeElement;
     var elt = event.detail.elt;
     var wrapper = elt && elt.closest ? elt.closest(".field-inline") : null;
+    var target = elt && elt.getAttribute ? elt.getAttribute("hx-target") || "" : "";
     document.body.dataset.focusIdentifier = focused && focused.dataset ? focused.dataset.identifier || "" : "";
     document.body.dataset.focusField = wrapper ? wrapper.getAttribute("data-field") || "" : "";
     document.body.dataset.focusScope = wrapper && wrapper.closest("#panel") ? "#panel" : "";
+    // A swap that answers the panel request opened the panel, and the panel itself is where
+    // focus goes (§2.6.9): the row or the card that asked does not take it back.
+    document.body.dataset.focusPanel = target === PANEL ? "1" : "";
   });
   document.body.addEventListener("htmx:afterSwap", function () {
+    if (document.body.dataset.focusPanel === "1") {
+      document.body.dataset.focusPanel = "";
+      var panel = panelNode();
+      if (panel) {
+        panel.focus();
+        return;
+      }
+    }
     var field = document.body.dataset.focusField;
     if (field) {
       var scope = document.body.dataset.focusScope === "#panel"

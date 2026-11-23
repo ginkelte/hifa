@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 39
+spec_revision: 40
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -1625,7 +1625,7 @@ the one it already carries:
 |---|---|---|
 | `.field-inline` | `margin: 0 0 6px; min-width: 0;` | the wrapper `<div>` of every field, on both surfaces |
 | `.field-value` | `display: flex; gap: 8px; align-items: baseline; cursor: text;`, and `.field-value[data-readonly] { cursor: default; }` with `.field-value[data-invalid] { color: var(--urgent); }` | the `<summary>` when the field is `writable`, and the value of the two control-less states, which prints `data-readonly` and `data-invalid` on both — a `<div>` on the archived `409`, a `<summary>` inside the trash's open `<details>` on the `422` (§2.6.3) |
-| `.field-text` | `min-width: 0; overflow-wrap: anywhere;` | the value's `<span>`, so a long title wraps at 320 px |
+| `.field-text` | `min-width: 0; overflow-wrap: anywhere;` | the value's element: a `<span>` for the six single-line fields, so a long title wraps at 320 px, and a `<div>` for `description`, whose value is block markdown under a `<summary>` |
 | `.field-label` | the rule it already carries in `app.css` (block, 12 px, `--text-muted`) | the value state's field name |
 | `.field-edit` | `display: flex; gap: 6px; align-items: flex-start; margin-top: 4px;` | the field's own `<form>`, the control state |
 | `.field-save` | `flex: 0 0 auto; padding: 2px 8px;` | the in-field `Save` of every control |
@@ -1639,7 +1639,10 @@ src/` answers `issue_detail.html` and `partials/issue_panel.html` — the `Save`
 plus `static/css/app.css` twice, the rule and its `.confirm .form-actions` variant, and that variant's selector
 matches nothing, because the four `<details class="confirm">` blocks of §2.6.9 print no `form-actions` element:
 it is already dead and dies with the rule. `.field` goes too: `grep -rn 'class="field"' src/` answers seven
-lines, all in `partials/issue_form_fields.html`, the partial this ticket deletes.
+lines, all in `partials/issue_form_fields.html`, the partial this ticket deletes. `.detail-title` and
+`.panel-title` go with the two headings their wrappers replaced: `grep -rn "detail-title\|panel-title" src/`
+answers the two rules of `static/css/app.css` and nothing else — no template prints either class, because the
+`<h1>` of the detail and the `<h2>` of the panel left with the seven wrappers (§2.6.3).
 
 **`.field-input` stays, and the grep says so.** `grep -rn "field-input" src/` answers **eight** template lines:
 seven in that same `partials/issue_form_fields.html`, which leave with it, and **one that does not** —
@@ -2293,7 +2296,7 @@ block is open, closes the block first and leaves the panel open.
 
 | Moment | What has focus |
 |---|---|
-| the panel opens | the panel heading (`<h2 tabindex="-1">`, focused once on swap) |
+| the panel opens | the panel itself (`<aside id="panel" tabindex="-1">`), focused once on swap |
 | an inline edit is saved | the read-only value that replaced the control, on the re-rendered node with the same `data-field` |
 | an edit is refused (`422`/`409`) | the field that failed: its control when the wrapper has one (`.is-invalid`), otherwise the wrapper itself, matched by `data-field` (§2.3.4's two `writable: False` states) |
 | a confirmation is opened | the `confirm` checkbox, the first control of the block |
@@ -2892,6 +2895,7 @@ differ in exactly the step above, not in the route, the status or the header.
 | `/_/revision` without `HX-Request` | 400 | `text/plain` `fragment requires htmx` (R5, §2.1.3.1) | the tick is skipped and the page keeps what it has |
 | Validation on a page (form without JS) | 422 | same template + `form_errors` | errors next to the field |
 | Validation in a fragment / inline | 422 | the element the request named — the field wrapper for `view=field`, the `<tr>`, the card or the panel — with `.is-invalid` on the control and the message beside it; `HX-Retarget` only when there is no element to keep | field marked, control `open`, message next to it; toast |
+| A value of a control in `view=field` that resolves to no row (`state`, `member` or `parent` naming none) | 422 | the **field wrapper** of the control that was edited, re-rendered `open` with `.is-invalid` on that control and the `invalid value: ` sentence the catalogue's last row gives the domain's message — a `NotFound` about a value and not about the route, so the wrapper stays; the page route `POST /{team}/issue/{identifier}` keeps its `404` (`error.html`) for the same body, because a page has no wrapper to keep | nothing is written; the field stays open, marked, with the sentence beside it and the stored value in the control |
 | `Conflict` (label in use, etc.) | 409 | partial with message | toast, no destructive swap |
 | `Validation` (drop with open children) | 422 | the panel re-rendered + `form_error` (§2.1.3, §5.4); the drop ignores the body | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `InvalidTransition` (drop on an archived issue, R20) | 409 | the panel re-rendered + `form_error`, the same body as the row above (§2.1.3, §5.4) | the card returns to its place + toast, the client reloads `/_/board/{team}` |
@@ -3805,6 +3809,24 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 40 (2026-11-23): **the compliance review's five findings are settled, and the one that
+  mattered was a focus with no destination.** `version` stays **12**, the corpus stays **251** scenarios (§7
+  of this file: **91**) and `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or
+  scenario moves. (a) **§2.6.9's table sent the focus of an opened panel to a heading the ticket deleted**:
+  the row said `<h2 tabindex="-1">` while §2.6.3 retired that `<h2>` with the wrappers, so the row now names
+  the panel itself — `<aside id="panel" tabindex="-1">` in `partials/issue_panel.html`, focused once by the
+  `htmx:afterSwap` of `app.js` when the swap answered the panel request; the other rows of the table are
+  untouched. (b) **Two rules outlived their only consumer**: `.detail-title` and `.panel-title` go, and
+  §2.5.8 carries the grep, which now answers `static/css/app.css` and nothing else. (c) **§2.5.8 declared
+  `.field-text` as a `<span>` and the description prints a `<div>`**: the row now says the class is the
+  value's element — a `<span>` for the six single-line fields — so the template and the markdown-of-block
+  `description` agree. (d) **§6 had no row for a control value that does not resolve**: `state`, `member` and
+  `parent` are rows the domain resolves, so a value that names none is that field's `422` — open wrapper,
+  `.is-invalid`, `invalid value: ` — while the page route keeps its `404`; one row, in the `422` block.
+  (e) **Two refusals had no test**: an unknown `field` on `?view=field` (`404`, `#toasts`, `is not a field of`)
+  and a field write on an issue in the trash (`422`, open wrapper, `data-readonly`, no `hx-patch`) are pinned
+  in `tests/e2e/web/test_dashboard_fields.py`, which the corpus does not have to grow for: neither is a
+  scenario, both are rows §6 already carried.
 - spec_revision 39 (2026-11-23): **the field contract is implemented and its ten deferrals are paid.**
   `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and `DECISIONS.md`
   stays **80** decisions: no route, status, value of `view` or scenario moves — this revision records that
