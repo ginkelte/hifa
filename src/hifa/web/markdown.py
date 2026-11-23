@@ -16,7 +16,7 @@ from markdown_it import MarkdownIt
 
 MD = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
 # The `commonmark` preset ships the `table` rule disabled: this turns on that rule and nothing
-# else — `gfm-like` would also enable strikethrough, linkify and task lists (D-079).
+# else — `gfm-like` would also enable strikethrough, linkify and task lists.
 MD.enable("table")
 
 ALLOWED_TAGS: frozenset[str] = frozenset(
@@ -62,22 +62,39 @@ def _safe_href(value: str) -> bool:
 
 
 def _kept_value(tag: str, name: str, value: str | None) -> str | None:
-    """The value to emit for an allowlisted attribute, or `None` when the attribute is dropped.
+    """Return the value to emit for an allowlisted attribute, or `None` when it is dropped.
 
     Each attribute is tested by the check it selects: `href` against the scheme allowlist, `style`
     against the three literal alignments. Sharing the `href` test would drop every alignment,
     because `urlparse("text-align:center")` reads `text-align` as a scheme.
+
+    Args:
+        tag: The element the attribute sits on.
+        name: The attribute's name, already lowercased by `html.parser`.
+        value: The value as written, or `None` for a bare attribute (`<td style>`), which is
+            dropped like any value outside the allowlist.
+
+    Returns:
+        The `style` value stripped and lowercased — the normalized alignment, not the one the
+        source wrote — the `href` exactly as given, or `None` when the attribute is not kept.
     """
     if value is None or (tag, name) not in ALLOWED_ATTRS:
         return None
     if name == "style":
         alignment = value.strip().lower()
         return alignment if alignment in ALLOWED_STYLES else None
-    return value if _safe_href(value) else None
+    if name == "href":
+        return value if _safe_href(value) else None
+    return None
 
 
 class _Allowlist(HTMLParser):
-    """Rebuilds the document keeping only the allowlisted subset."""
+    """Rebuilds the document keeping only the allowlisted subset, and adds the table's scroll box.
+
+    A tag outside `ALLOWED_TAGS` is dropped whole; an attribute outside `ALLOWED_ATTRS` loses only
+    itself and the tag survives. On top of the subset it keeps, the class emits the one `div` that
+    lets a wide table scroll.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
@@ -88,12 +105,14 @@ class _Allowlist(HTMLParser):
             return
         kept = ""
         for name, value in attrs:
-            kept_value = _kept_value(tag, name, value)
-            if kept_value is not None:
-                kept += f' {name}="{escape(kept_value, quote=True)}"'
+            emitted = _kept_value(tag, name, value)
+            if emitted is not None:
+                kept += f' {name}="{escape(emitted, quote=True)}"'
         if tag == "table":
             # The wrapper is the walker's own: `div` stays out of the allowlist, and this is the
             # only way a wide table gets a box to scroll in without `display: block` on the table.
+            # Its balance rests on start/end pairing: markdown-it emits balanced tags and user
+            # markup arrives escaped, so the wrapper cannot outlive its table.
             self.parts.append('<div class="table-scroll">')
         self.parts.append(f"<{tag}{kept}>")
 
@@ -107,6 +126,7 @@ class _Allowlist(HTMLParser):
         if tag in ALLOWED_TAGS and tag not in VOID_TAGS:
             self.parts.append(f"</{tag}>")
             if tag == "table":
+                # Only a table that opened a wrapper closes one, so no `</div>` arrives unopened.
                 self.parts.append("</div>")
 
     def handle_data(self, data: str) -> None:

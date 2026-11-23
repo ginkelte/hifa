@@ -54,7 +54,8 @@ def test_a_markdown_table_in_a_description_is_served_as_a_table(
     assert '<div class="table-scroll"><table>' in body
     assert re.search(r"<th[^>]*>Name</th>", body)
     assert re.search(r"<td[^>]*>Bolt</td>", body)
-    assert "text-align:center" in body
+    assert '<th style="text-align:center">Qty</th>' in body
+    assert '<td style="text-align:center">4</td>' in body
     # The pipes are structure now, not a paragraph of them (the edit form still holds the source).
     assert "<p>| Name |" not in body
     # And the description still cannot carry markup of its own.

@@ -318,7 +318,6 @@ tr.row-empty td { color: var(--text-muted); }
   border: 1px solid var(--border);
   padding: 6px 10px;
   text-align: left;
-  vertical-align: top;
 }
 .description th { background: var(--surface-2); font-weight: 600; }
 .meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }

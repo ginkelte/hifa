@@ -95,6 +95,25 @@ def test_a_table_renders_with_its_header_and_its_cells() -> None:
     assert re.search(r"<td[^>]*>Bolt</td>", html)
 
 
+@pytest.mark.parametrize(
+    ("marker", "alignment"),
+    [(":--", "left"), (":-:", "center"), ("--:", "right")],
+)
+def test_each_of_the_three_alignments_survives_as_an_exact_style(
+    marker: str, alignment: str
+) -> None:
+    """One literal per marker, on the header and on the cell: a gap is a silent misalignment."""
+    html = render_markdown(f"| Name |\n|{marker}|\n| Bolt |")
+    assert f'<th style="text-align:{alignment}">Name</th>' in html
+    assert f'<td style="text-align:{alignment}">Bolt</td>' in html
+
+
+def test_a_style_is_normalized_before_it_is_matched() -> None:
+    """`html.parser` hands the value as written; the match is on the stripped, lowercased form."""
+    html = _sanitize('<table><tr><td style="  TEXT-ALIGN:CENTER ">Bolt</td></tr></table>')
+    assert '<td style="text-align:center">Bolt</td>' in html
+
+
 def test_the_th_and_the_td_of_a_centered_column_keep_their_alignment() -> None:
     """D-079 (4): `:-:` survives as an exact `style`, on the header and on the cell."""
     html = render_markdown(TABLE)
@@ -102,7 +121,24 @@ def test_the_th_and_the_td_of_a_centered_column_keep_their_alignment() -> None:
     assert '<td style="text-align:center">4</td>' in html
 
 
-@pytest.mark.parametrize("style", ["color:red", "text-align:left; background:url(x)"])
+def test_a_style_on_any_other_tag_is_dropped() -> None:
+    """`style` is allowlisted for `th`/`td` only: on any other tag it goes and the text stays."""
+    html = _sanitize('<p style="text-align:center">x</p><a style="text-align:center">y</a>')
+    assert "style=" not in html
+    assert "<p>x</p>" in html
+    assert "<a>y</a>" in html
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "color:red",
+        "text-align:left; background:url(x)",
+        "text-align:center;",
+        "position:fixed",
+        "background:url(javascript:alert(1))",
+    ],
+)
 def test_a_style_outside_the_three_alignments_is_dropped_and_the_cell_survives(
     style: str,
 ) -> None:
@@ -120,11 +156,11 @@ def test_raw_html_inside_a_cell_stays_escaped() -> None:
 
 
 def test_every_table_the_walker_emits_is_wrapped_once_in_the_scroll_box() -> None:
-    """D-079 (5): the wrapper is emitted right before the `<table>` and closed right after it."""
-    html = render_markdown(TABLE)
+    """D-079 (5): one wrapper per table, opened before it and closed right after it."""
+    html = render_markdown(TABLE + "\n\n" + TABLE)
     assert '<div class="table-scroll"><table>' in html
-    assert "</table></div>" in html
-    assert html.count('<div class="table-scroll">') == 1
+    assert html.count('<div class="table-scroll">') == 2
+    assert html.count("</table></div>") == 2
 
 
 def test_the_wrapper_is_the_walkers_own_so_div_is_not_an_allowed_tag() -> None:
