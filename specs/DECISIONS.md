@@ -5099,3 +5099,46 @@ same revision, so the plan and the contract cannot disagree.
   write of the UI uses it any more, so it now pins the body a layer refusal re-renders (and a caller that
   wants the aside whole). R29 states the action group by enumeration for the same reason a count is not
   repeated there: a count of a set the same document enumerates rots on the next control.
+
+**Amendment (2026-11-23, `spec_revision` 34) — the statements above that were not true, and the work they owe.**
+This entry is append-only, so (3), (4) and the consequences stand as written; this amendment is the text that
+governs, and it is what §2.1.3, §2.6.2, §2.6.3, §5.3 and §6 of SPEC-070 now say.
+
+1. **The `404` of an unknown `field` is the partial, not `text/plain`.** (3) says `404`, `text/plain`, `no such
+   field`. A `/_/` answer that has no element to keep has one body in this layer — `partials/fragment_error.html`
+   — and it goes to `#toasts` under `HX-Retarget: #toasts` and `HX-Reswap: innerHTML`; the sentence it carries
+   names the field (`field 'duedate' is not a field of ENG-13`), and that is how an unknown field is told from an
+   unknown issue. One response, one media type: the difference between those two `404`s is in the message and not
+   in the header. `text/plain` stays where it already was and where there is no element and no partial — the `400`
+   of a missing `HX-Request`, an unknown `state_id` on the two drops, the cross-site `403`, and the read-only
+   `403` of `/_/states/{id}/position`.
+2. **The `409` is new work in the client, and it is this ticket's.** (3) says a `409` answers the field wrapper.
+   htmx swaps no `4xx` unless a listener enables it; the listener in the tree enables `422` alone and the generic
+   `htmx:responseError` handler turns a `409` into the toast `could not save: the server rejected the change`, so
+   the wrapper of (3) would never reach the page. This ticket adds `409` — and the `HX-Retarget` case that carries
+   `fragment_error.html` — to `htmx:beforeSwap`, which is why §2.6.3 states the flow as a requirement of the
+   implementation and §2.1.3 shows the listener it needs; R11 moves with it.
+3. **`?view=field` reads through the trash, so a trashed issue's field is a `422` and not a `404`.**
+   `_issue_edit_fragment` passes `include_trashed` for `view == "panel"` alone (`app.py`), so the natural
+   `view="field"` path raises `NotFound` and answers a `404` for a state §6 refuses with `422`. The keyword is
+   passed for `view == "field"` too: the wrapper comes back in its control state, `open`, marked, carrying
+   `ENG-13 is in the trash; restore it first` and **no** write control, which is what R29's `Restore`-alone rule
+   leaves. R29 names this fourth read and keeps it a non-surface, exactly as it does the history fragment.
+4. **Two mechanisms were named as existing and are not.** `changed` compares the control's value with the
+   `lastValue` htmx records when it processes the node, not with `data-original`, which no script of the tree reads
+   (`grep -rn "data-original" src/` answers one printed attribute in `partials/issue_row.html`), so both shapes
+   drop it. And `Cmd/Ctrl+Enter` does not run today: the shell's `keydown` returns on `metaKey`/`ctrlKey` and
+   nothing under `src/hifa/web/` calls `requestSubmit()`, so §2.6.2 declares the branch as this ticket's work —
+   which is also why (4) above is a contract and not a description.
+5. **The scenario title stays, and its comment stops counting.** `a visible issue's page and panel carry the four
+   controls of the action group` keeps its name for the reason the consequences give; the group its steps assert
+   is the move control, the archive block and the delete block — three — and the fourth assertion pins
+   `action="/ENG/issue/ENG-13"`, the target of the seven field forms. The comment inside the scenario says that,
+   because a comment is not a test name and can tell the truth.
+6. **Two keys and three classes were retired by the rule this entry already applies.** `row_vm` loses
+   `description_invalid` — a row has one control, so `title_invalid` is its only flag, and the detail page and the
+   panel read `fields[<name>].invalid` — and `.form-actions`, `.field` and `.field-input` leave `app.css` with
+   their last consumers, while `.field-label` stays because the new value state prints it (§2.5.8 carries the
+   greps that decide each one). And `view=panel` names no HTTP client of the UI any more: `_layer_refusal` renders
+   the aside server-side through the same `_issue_edit_fragment(view="panel")`, so the value is contract and the
+   body is shared, not a request.

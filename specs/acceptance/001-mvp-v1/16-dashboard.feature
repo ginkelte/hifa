@@ -765,8 +765,12 @@ Feature: HTTP dashboard
   @REQ-F013 @REQ-F015 @REQ-F035
   Scenario: a visible issue's page and panel carry the four controls of the action group
     # the positive the two trashed scenarios above are the absence of (`vm.can_write` is the group's
-    # one gate, and the layer picks the branch inside it): a visible issue renders the four controls on
-    # the page and on the panel, and no `Restore`, which a trashed issue alone offers (§2.6.9, D-059).
+    # one gate, and the layer picks the branch inside it): a visible issue renders the action group —
+    # the move control and the two confirmation blocks — on the page and on the panel, and no
+    # `Restore`, which a trashed issue alone offers (§2.6.9, D-059). The last pair of assertions pins
+    # action="/ENG/issue/ENG-13", which is the post target of the seven inline field forms and not a
+    # fourth control of the group (§2.6.3). The title is this test's name and is not renamed; the
+    # count it used to imply is not in the steps (D-080, SPEC-070 §11).
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
     Then the first status is 200
