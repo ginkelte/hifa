@@ -8,12 +8,13 @@ regenerated from scratch**. Convention and flow: [`README.md`](./README.md). Tem
 the Status column of the Map below repeats (SPEC-110, the release pipeline, is the draft, at `version: 3`
 / `spec_revision: 9` after the engine change of D-039, the governed outcome classifier of D-040 and the
 three revisions that followed it).
-Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md) (**78 decisions: D-001 … D-078**, measured with
+Accepted debt P-01…P-09 in [`DECISIONS.md`](./DECISIONS.md) (**79 decisions: D-001 … D-079**, measured with
 `grep -c '^## D-0' specs/DECISIONS.md`; P-12 closed by D-041, and D-071's third amendment block and D-072's
 correct decisions already numbered — they resolve nothing new, so the count stands. This sentence said
 **72** and was one behind the file at D-073; D-074 (HIFA-46) moves it to 74, D-075 to 75, D-076 (HIFA-83) to
-76, D-077, which corrects D-076's header and names SPEC-040 the losing spec of that conflict, to 77, and
-D-078 (HIFA-83), which folds the case in the parameter and resolves a form before the read, to 78). Reports
+76, D-077, which corrects D-076's header and names SPEC-040 the losing spec of that conflict, to 77,
+D-078 (HIFA-83), which folds the case in the parameter and resolves a form before the read, to 78, and
+D-079 (HIFA-113), which renders a GFM table and keeps only an aligned cell's `style`, to 79). Reports
 in [`reviews/`](./reviews/).
 
 **State order and state commands (D-034, D-035, D-058):** the canonical seed is
@@ -183,8 +184,8 @@ enforced for every other actor (D-036).
 
 ## Acceptance criteria
 
-`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 240 scenarios**
-(228 `Scenario` + 12 `Scenario Outline`, each outline counted once),
+`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 241 scenarios**
+(229 `Scenario` + 12 `Scenario Outline`, each outline counted once),
 all with exactly one `When` (verified by parsing every file with `gherkin-official`).
 The per-component Gherkin lives **inline** in each spec (§7); the individual `.feature` files are
 debt P-01 in `DECISIONS.md`.

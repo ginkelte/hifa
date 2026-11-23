@@ -4888,3 +4888,65 @@ missing issue, an identifier resolves where an unplaced number is `missing_conte
 is shown to answer before the one that shadows it; the §7 scenarios carry the same steps, so their `@test`
 pointers claim what the tests do. The case test cannot bite against forms 3–4 and is not asked to: its
 subject is form 2's comparison, and it fails when the fold is removed.
+
+## D-079 — A GFM table is rendered, and reaches the page through the allowlist that already owns markup
+
+**Date:** 2026-11-22 · **Wins:** SPEC-070 §2.3.6 (the construction of the renderer) and R15 (the tag
+allowlist), which SPEC-000 REQ-S003 names as the sanitizer contract · **Touches:** SPEC-070 §2.3.6,
+R15, §7 and §11 (`spec_revision` 31 → 32, `version` 10 → 11); SPEC-001 §7 and its frontmatter
+(`spec_revision` 17 → 18); `specs/001-mvp-v1.tasks.md`; `specs/INDEX.md`;
+`specs/acceptance/001-mvp-v1/17-dashboard-hardening.feature`; `src/hifa/web/markdown.py` and
+`src/hifa/web/static/css/app.css`, the implementation this entry contracts
+
+The defect is one URL: `GET /HERMES/issue/HERMES-1` serves a GFM table as literal pipe text inside a
+single `<p>`. Two layers refuse it, each on purpose. The `commonmark` preset of `markdown-it-py` ships
+the `table` rule **disabled** — `MD.get_all_rules()["block"]` lists `table` and the render is one
+paragraph — and `ALLOWED_TAGS` has no table element, so the walker would drop the structure even with
+the rule on. The stylesheet then has no base rule for `.description table` and one `@media` rule that
+sets `display: block` on it, which destroys the layout the table has.
+
+(1) **What wins, and what it costs elsewhere.** SPEC-070 §2.3.6 and R15 win: they state the renderer
+and the allowlist, and the two places that quote them move in the same revision. The only other
+document with a figure to move is SPEC-001, whose §7 publishes the corpus count: the one new scenario
+makes it **241 (229 `Scenario` + 12 `Scenario Outline`)**, and the same figure is stated in
+`specs/001-mvp-v1.tasks.md` and `specs/INDEX.md`. SPEC-000 does not change: REQ-S003 names the
+allowlist as the contract and does not enumerate it, which is why this is a SPEC-070 revision and not
+a 000 one.
+
+(2) **The rule is enabled, the preset is not replaced.** `MD.enable("table")` on the instance that
+already exists. The rule ships inside the installed parser, so no plugin, no dependency and no
+`pyproject.toml` line comes with it. `gfm-like` was the alternative and is refused with its price: it
+also enables strikethrough, linkify and task lists, which would put `del`, `s`, an autolinked URL and
+a checkbox `input` in the allowlist — elements and an attribute path for a ticket about tables. A
+preset is a bundle; the ticket bought one rule.
+
+(3) **The allowlist grows by structure, not by permission.** `table`, `thead`, `tbody`, `tr`, `th` and
+`td` are containers and cells: they carry no attribute of their own and execute nothing. The escape
+layer is untouched — `html=False` still turns the user's markup into text before the walker sees it,
+the scheme rule on `a[href]` is unchanged, and the wrapper of (5) is written by this module — so
+REQ-S003's "no `javascript:`, no `on*`" is not weakened: a `<td onmouseover=…>` in a description
+arrives as escaped text inside a cell, exactly as it did with the rule off.
+
+(4) **`style`, as an exact match of three values.** markdown-it emits `style="text-align:left"`,
+`style="text-align:center"` or `style="text-align:right"` on the `th` and the `td` of an aligned
+column, and nowhere else. A CSS declaration parser was the other way and is refused because it would
+decide a larger language than the renderer can produce: it would have to accept or reject
+`background:url(…)`, `position:fixed`, `font-size:0` and every property written after this entry, and
+each acceptance is a surface the ticket did not ask for while each misparse fails in a direction
+nobody tested. Three literal strings have one behaviour — a value outside the set drops the attribute
+and keeps the cell's text — and the check cannot be grown by a value it misreads.
+
+(5) **The wrapper is the sanitizer's own, so `div` stays out.** A table wide enough for a phone pushes
+the page, and the existing answer — `display: block` on the table — is what breaks its header's
+alignment with its cells. The walker therefore wraps every `table` it emits in
+`<div class="table-scroll">` and the `@media` overflow rule moves to that element. `div` does **not**
+join `ALLOWED_TAGS`: with `html=False` markdown-it cannot emit one, a `<div>` in a description is
+escaped to text, and the only `div` in the rendered description is the one this module wrote. Adding
+`div` for a wrapper we author would widen the allowlist for a node no input can reach.
+
+(6) **What the corpus pins.** `17-dashboard-hardening.feature` and SPEC-070 §7 gain one scenario with
+the same title, `a markdown table in a description is served as a table`, deferred to **HIFA-113**
+until its test lands: the HTML carries `<table>`, a `<th>` with the header text, a `<td>` with the
+cell text, and `text-align:center` on the `th`/`td` of a column declared `:-:`. §2.3.6's mandatory
+tests carry the same four assertions plus the dropped `style` and the escaped cell, because a rule the
+allowlist enforces and the corpus does not read is a rule nobody reads twice.
