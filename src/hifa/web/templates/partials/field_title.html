@@ -11,7 +11,8 @@
     <form id="edit-title-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
           hx-patch="{{ vm.edit_fragment }}?view=field&field=title"
           hx-target="closest .field-inline" hx-swap="outerHTML"
-          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button">
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button"
+          hx-disinherit="hx-disabled-elt">
       <input type="text" name="title" value="{{ vm.title }}"
              class="inline-input{% if vm.fields['title'].invalid %} is-invalid{% endif %}"
              aria-label="Title of {{ vm.identifier }}" autocomplete="off"{% if vm.fields['title'].invalid %} aria-invalid="true"{% endif %}

@@ -10,7 +10,8 @@
     <form id="edit-priority-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
           hx-patch="{{ vm.edit_fragment }}?view=field&field=priority"
           hx-target="closest .field-inline" hx-swap="outerHTML"
-          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button">
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button"
+          hx-disinherit="hx-disabled-elt">
       <select name="priority"
               class="inline-input{% if vm.fields['priority'].invalid %} is-invalid{% endif %}"
               aria-label="Priority of {{ vm.identifier }}"{% if vm.fields['priority'].invalid %} aria-invalid="true"{% endif %}

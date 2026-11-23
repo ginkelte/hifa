@@ -10,7 +10,8 @@
     <form id="edit-due_date-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
           hx-patch="{{ vm.edit_fragment }}?view=field&field=due_date"
           hx-target="closest .field-inline" hx-swap="outerHTML"
-          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button">
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button"
+          hx-disinherit="hx-disabled-elt">
       <input type="date" name="due_date" value="{{ vm.due_value }}"
              class="inline-input{% if vm.fields['due_date'].invalid %} is-invalid{% endif %}"
              aria-label="Due date of {{ vm.identifier }}"{% if vm.fields['due_date'].invalid %} aria-invalid="true"{% endif %}

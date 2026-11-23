@@ -313,9 +313,9 @@
     return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable === true;
   }
 
-  // The forms `Cmd/Ctrl+Enter` may submit (§2.6.2): a field wrapper's, the comment composer's
-  // and the quick-add's. A `<details class="confirm">` of archive/delete is not one of them —
-  // its submit is a different answer, and a shortcut that fired it would be a destructive key.
+  // The three scopes `Cmd/Ctrl+Enter` may submit: a field wrapper's, the comment composer's and
+  // the quick-add's. A `<details class="confirm">` of archive/delete is not one of them: its
+  // submit is a different answer, and a shortcut that fired it would be a destructive key.
   var SUBMIT_SCOPE = ".field-inline, .comment-composer, #quick-add";
 
   document.addEventListener("keydown", function (event) {
@@ -323,8 +323,8 @@
 
     // Cmd/Ctrl+Enter submits the form the focused control belongs to, and it runs before the
     // editable-target rule returns: `Enter` in a `<textarea>` is a newline, so this is how the
-    // multi-line description field of §2.6.3 saves (§2.6.2). Only the three forms that rule
-    // names are in scope; every other form keeps its own submit button.
+    // multi-line description field saves. Only the three scopes that rule names are in scope;
+    // every other form keeps its own submit button.
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       var owner = event.target && event.target.form;
       if (owner && owner.closest && owner.closest(SUBMIT_SCOPE)) {

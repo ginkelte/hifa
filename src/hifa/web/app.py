@@ -511,8 +511,8 @@ def issue_page(request: Request, team: str, ref: str) -> Response:
     """One URL per issue: a ULID or a lowercase identifier redirects to the canonical one.
 
     Render the detail with the team's states and the archive flags, so each of the seven inline
-    wrappers of §2.6.3 is offered on an issue that can take a write and withheld on one that
-    cannot: the editors are per field, and no grouped edit form exists any more.
+    wrappers is offered on an issue that can take a write and withheld on one that cannot: the
+    editors are per field, and no grouped edit form exists any more.
     """
     db = _database(request)
     entity = boards.require_team(db, team)
@@ -1920,7 +1920,7 @@ def _field_refusal(
     one control carried, an `InvalidTransition` on an archived issue — are the same answer with
     a different status, so they share this call instead of three copies of the arguments: the
     key of `form_errors` is the **requested** field and never the control the error names, since
-    the wrapper prints only its own `fields[<name>].message` (§2.1.3, §2.6.3).
+    the wrapper prints only its own `fields[<name>].message`.
 
     Args:
         request: The incoming request; its app state carries the database path.
@@ -1932,6 +1932,10 @@ def _field_refusal(
 
     Returns:
         `partials/field_{field}.html` with the status the refusal asks for.
+
+    Raises:
+        NotFound: The issue is gone by the re-read that renders the refusal — deleted between the
+            refusal and this call.
     """
     return _issue_edit_fragment(
         request,

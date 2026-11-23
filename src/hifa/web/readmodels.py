@@ -244,7 +244,7 @@ def _field_states(
 ) -> dict[str, dict[str, object]]:
     """Resolve the four keys of each of the seven inline fields.
 
-    Every wrapper of §2.6.3 asks these four keys and decides nothing itself. `writable` is the
+    Every wrapper asks these four keys and decides nothing itself. `writable` is the
     caller's one decision — `can_write` and neither archive layer — and it is the same boolean
     the action group branches on (§2.3.4). `open` is `True` only for the wrapper a refusal
     brings back in front of the reader: the control it hands back, or the trashed issue's
@@ -443,7 +443,7 @@ def build_issue_vm(
     `confirm_open` says which of the two `<details>` blocks a refusal must re-render **open** —
     the form asked for no confirmation, so the block it refused is the one the reader has to see.
 
-    `fields` is the inline editor's one decision (§2.1.2, §2.6.3): one entry per name of
+    `fields` is the inline editor's one decision: one entry per name of
     `EDIT_FORM_FIELDS`, always the seven and in that order, each with the four keys `writable`,
     `open`, `invalid` and `message`. `writable` is `can_write` and neither archive layer, decided
     here and not in a template; `open` is the wrapper a refusal hands back in front of the reader;

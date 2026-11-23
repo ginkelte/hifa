@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 42
+spec_revision: 43
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -1709,7 +1709,7 @@ Normative behavior:
 | `Esc` | no overlay, no panel, with filter chips | removes the last filter chip |
 | `Esc` | the search box of `/search` has focus (§2.1.8) | clears the box and keeps focus; the page does not submit itself |
 | `Enter` | focused row | navigates to the detail (`location.assign`) |
-| `Cmd/Ctrl+Enter` | the comment composer of §2.6.10, the quick-add, or the `description` control of §2.6.3 | submits the form it is focused in |
+| `Cmd/Ctrl+Enter` | any control of a `.field-inline` wrapper (§2.6.3), the comment composer of §2.6.10, or the quick-add | submits the form it is focused in |
 
 Implementation rules:
 
@@ -1721,15 +1721,18 @@ Implementation rules:
   and the tree has carried it since:** until then the shell's `keydown` handler returned as soon as
   `event.metaKey || event.ctrlKey` was set, before it examined a key, and nothing under `src/hifa/web/`
   called `requestSubmit()`, so the rule was a contract with no client behind it. The branch now runs first
-  (`app.js:322-329`), and the table row above that names the `description` control is the one that depends
+  (`app.js:328-335`), and the table row above that names a `.field-inline` control is the one that depends
   on it.
+- The submitted form must sit inside `.field-inline`, `.comment-composer` or `#quick-add` (`closest`; the
+  client's `SUBMIT_SCOPE`). A `<details class="confirm">` form of §2.6.9 is **never** submitted by the
+  shortcut: the confirmation is one click away and a key that fired it would be destructive.
 - `Esc` closes the nearest open field control (`closest .field-inline details[open]`) **before** the panel
   branch runs, so one key never means two things: a reader who is typing in a field that sits in the panel
   closes the field first and the panel next. **HIFA-114 wrote that ordering, and the tree has carried it
   since:** until then the shell's `keydown` answered `Escape` with `closePanel()` and returned — there was
   no `details[open]` lookup and no field branch before it — so a field's `<details>` inside the panel
   closed only because the panel did, and a field outside the panel did not close at all. The field branch
-  of `app.js:331-340` is what makes the ordering above the shipped behaviour and not a promise for later.
+  of `app.js:337-347` is what makes the ordering above the shipped behaviour and not a promise for later.
 - `j`/`k` move real focus (`element.focus()`), not a class: the row has `tabindex="-1"` and
   `:focus-visible` with the outline of §2.5.3. Focusing does `scrollIntoView({block: "nearest"})`.
 - Focus state survives an htmx swap, and the swap decides where it goes: `htmx:afterSwap` returns it by
@@ -1781,8 +1784,9 @@ Enter or blur (text), change (select), Cmd/Ctrl+Enter or Save (description)
          the message sits beside it — with the server's value, not the reader's (R7)
   → 409: the issue is archived. The wrapper comes back with the server's value, the message and neither
          a `<details>` nor a control (`writable: False`, §2.3.4): the only write left on it is Restore
-         (§2.6.9). The swap is the listener's, and adding 409 to it is new work of this ticket (§2.1.3:
-         today the listener enables 422 alone and a 409 dies as the generic `could not save` toast)
+         (§2.6.9). The swap is the listener's: until HIFA-114 that listener enabled `422` alone, so a `409`
+         died as the generic `could not save` toast; the ticket added the status and the `HX-Retarget`, and
+         the tree has carried both since `3ddafc1` (§2.1.3)
   → 422 ISSUE_TRASHED: the issue is in the trash. The wrapper comes back `open`, the value marked and the
          message beside it, and **no** write control (`writable: False, open: True`): the only write left
          is Restore (§2.6.9, R29). The status is 422 and not 409 — §6 keeps the two apart
@@ -1812,7 +1816,8 @@ Rules:
     <form id="edit-title-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
           hx-patch="{{ vm.edit_fragment }}?view=field&field=title"
           hx-target="closest .field-inline" hx-swap="outerHTML"
-          hx-sync="closest .field-inline:replace">
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button"
+          hx-disinherit="hx-disabled-elt">
       <input type="text" name="title" value="{{ vm.title }}"
              class="inline-input{% if vm.fields['title'].invalid %} is-invalid{% endif %}"
              aria-label="Title of {{ vm.identifier }}" autocomplete="off"{% if vm.fields['title'].invalid %} aria-invalid="true"{% endif %}
@@ -1866,6 +1871,12 @@ Rules:
 - **One `PATCH` in flight per field**: `hx-sync="closest .field-inline:replace"` discards that field's
   previous request and never queues it, and it leaves a neighbouring field's request alone — the same rule as
   the row's `closest tr:replace`, scoped to the smaller node.
+- **The guard over a double submit stops at the form.** The form asks for it with
+  `hx-disabled-elt="find button"`, and htmx resolves `find` against the element that **emitted** the request:
+  inherited by the control of a `blur changed`/`change` save, the same attribute would match no `<button>`
+  there, cover nothing and log a miss on every one of those saves. `hx-disinherit="hx-disabled-elt"` on the
+  form stops the inheritance, so the guard covers the submits (`Save`, `Enter`, `Cmd/Ctrl+Enter`) — which is
+  the double send it exists for — and the control's own saves keep the `hx-sync` of the rule above.
 - **The seven controls, their value and their trigger.** The value state prints a key of §2.3.3/§2.3.4; the
   control state names the field of §2.1.2:
 
@@ -1883,9 +1894,9 @@ Rules:
   the panel edited, with a `<textarea>` and a `Save`, and §2.1.3 used to justify `?view=panel` by it. It is now
   a field like the others, with one difference that is the whole reason this paragraph exists: **`Enter` in a
   `<textarea>` is a newline and never a submit**, so the multi-line field saves on **`Cmd/Ctrl+Enter`** —
-  §2.6.2's rule, "submits the form it is focused in", which **this ticket implements**: the `keydown` listener
-  the shell already carries returns on `metaKey`/`ctrlKey` before it examines a key and calls no
-  `requestSubmit()`, so the branch is new work and §2.6.2 says so — **or** on the `Save` that sits inside the
+  §2.6.2's rule, "submits the form it is focused in", which **HIFA-114 shipped**: the `keydown` listener
+  returns on `metaKey`/`ctrlKey` only after that branch, so `requestSubmit()` runs before the
+  editable-target rule (the branch is `app.js:328-335`, §2.6.2) — **or** on the `Save` that sits inside the
   field. `blur` is not a trigger here and must not be added:
   a reader who clicks away from a half-written note has not asked for it to be committed, and every other
   field can afford that bet only because its value is one line. Nothing else about the field changes: the
@@ -2702,9 +2713,9 @@ Component-specific requirements:
    `refusal.field`: `ISSUE_ARCHIVED`/`ISSUE_TRASHED` name `ref`/`trashed`, which is none of the seven
    controls, and the wrapper prints only its own `fields[<name>].message` (§2.3.4), so a key off the error's
    field would leave the `409` and the trash's `422` mute. The two statuses are not interchangeable and the
-   trash is never a `409`. Both are put in place by the `htmx:beforeSwap` listener, which enables `422` in
-   the tree today
-   and gains `409` in this ticket (§2.1.3). A `404` has no element to keep and answers
+   trash is never a `409`. Both are put in place by the `htmx:beforeSwap` listener, which enables `422`
+   and `409` — the `409` is the one HIFA-114 added (§2.1.3). A `404` has no
+   element to keep and answers
    `partials/fragment_error.html` appended to `#toasts`, under `HX-Retarget: #toasts` and
    `HX-Reswap: beforeend` (§6).
 ```
@@ -2903,9 +2914,9 @@ differ in exactly the step above, not in the route, the status or the header.
 | Fragment without `HX-Request` | 400 | `text/plain` `fragment requires htmx` | not applicable (it is a malformed client) |
 | `/_/revision` without `HX-Request` | 400 | `text/plain` `fragment requires htmx` (R5, §2.1.3.1) | the tick is skipped and the page keeps what it has |
 | Validation on a page (form without JS) | 422 | same template + `form_errors` | errors next to the field |
-| Validation in a fragment / inline | 422 | the element the request named — the field wrapper for `view=field`, the `<tr>`, the card or the panel — with `.is-invalid` on the control and the message beside it; `HX-Retarget` only when there is no element to keep | field marked, control `open`, message next to it; toast |
+| Validation in a fragment / inline | 422 | the element the request named — the field wrapper for `view=field`, the `<tr>`, the card or the panel — with `.is-invalid` on the control and the message beside it; `HX-Retarget` only when there is no element to keep | field marked, control `open`, message next to it — the answer is swapped in place and reaches no toast (§2.1.3) |
 | A value of a control in `view=field` that resolves to no row (`state` or `member` naming none — the two references `EDIT_COMMAND_FIELDS` sends, §2.1.2) | 422 | the **field wrapper** of the control that was edited, re-rendered `open` with `.is-invalid` on that control and the `invalid value: ` sentence the catalogue's last row gives the domain's message — a `NotFound` about a value and not about the route, so the wrapper stays; the page route `POST /{team}/issue/{identifier}` keeps its `404` (`error.html`) for the same body, because a page has no wrapper to keep | nothing is written; the field stays open, marked, with the sentence beside it and the stored value in the control |
-| `Conflict` (label in use, etc.) | 409 | partial with message | toast, no destructive swap |
+| `Conflict` (label in use, etc.) | 409 | partial with message | the message is swapped in where the reader is, no destructive swap — a `409` is swapped, never toasted (§2.1.3) |
 | `Validation` (drop with open children) | 422 | the panel re-rendered + `form_error` (§2.1.3, §5.4); the drop ignores the body | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `InvalidTransition` (drop on an archived issue, R20) | 409 | the panel re-rendered + `form_error`, the same body as the row above (§2.1.3, §5.4) | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `archive` / `delete` without `confirm=1` | 422 | the page (or the panel) with the `<details>` block rendered `open` and `form_error` | nothing is written; the block stays open |
@@ -3818,6 +3829,37 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 43 (2026-11-23): **the second quality review's two findings and seven minors are settled, and
+  the two that mattered were a shortcut whose scope the text had narrowed and an aside that claimed a fix the
+  tree had already made.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**)
+  and `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or scenario moves. (a) **§2.6.2's
+  `Cmd/Ctrl+Enter` row named one control while the client accepts three scopes**: the row reads "any control of
+  a `.field-inline` wrapper, the comment composer of §2.6.10, or the quick-add", and a new implementation rule
+  states that the submitted form must sit inside one of the three (`closest`, the client's `SUBMIT_SCOPE`) and
+  that a `<details class="confirm">` form of §2.6.9 is never submitted by the key. The code is not narrowed to
+  the description: it scoped the three already, and its comment now says so. (b) **§2.6.3's `409` aside was
+  still written in the future tense** — "adding 409 to it is new work of this ticket" — against §2.1.3 and
+  against the tree: it now says the listener enabled `422` alone until HIFA-114 added the status and the
+  `HX-Retarget`, carried since `3ddafc1`, and spec_revision 42's note, which claimed that aside as done, says
+  what that revision did and did not touch. (c) **The citations of §2.6.2 had drifted six lines**: the branch
+  of `requestSubmit()` is `app.js:328-335` and the `Escape` field branch is `app.js:337-347`, here and in
+  spec_revision 41's note. (d) **§2.6.3's "the whole file, exactly" snippet of `field_title.html` was missing
+  an attribute**: it now carries `hx-disabled-elt` and the `hx-disinherit` of the rule below. (e) **The
+  double-send guard fired on requests it cannot cover**: inherited by a control, `hx-disabled-elt="find
+  button"` matched nothing on a `blur changed`/`change` save and htmx logged the miss, so the seven forms
+  declare `hx-disinherit="hx-disabled-elt"` and §2.6.3 states the rule — the guard covers the submits and
+  the control's own saves keep their `hx-sync`. (f) **§6's `422` row and its `409` `Conflict` row still
+  promised a toast** for answers §2.1.3 swaps in place: both now say the message is read where it is swapped
+  in, and the toast keeps the `500` and the retargeted `404`. (g) **`_field_refusal` gained the `NotFound` its
+  re-read can raise** — the issue gone between the refusal and the render. (h) **The static client test now
+  bites the rule and not the prose**: it asserts `.field-inline`, `.comment-composer` and `#quick-add` in the
+  scope, the absence of `confirm` from it and the exclusion the comment above it states, all read from `app.js`
+  with its comments stripped; `_form_of` fails with a sentence when a `<form>` carries no `method`/`action`.
+  (i) **The `§` citations this ticket had added to the code are gone** — `app.py`, `readmodels.py` and
+  `app.js` — replaced by the rule each one named; no citation older than this ticket is touched. (j) **Two
+  sentences of §2.6.3 and §5.3 told the same story in the future tense** — the `description` bullet
+  ("this ticket implements", "the branch is new work") and the field flow's "gains `409` in this ticket" — and
+  both now say what the tree does.
 - spec_revision 42 (2026-11-23): **the quality review's two spec findings are settled, and neither moves a
   contract.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
   `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or scenario moves. (a) **§6's
@@ -3828,8 +3870,9 @@ Feature: hifa web dashboard
   client does not make.** The aside said `htmx:responseError` returned for a `.field-inline` on a `409`; the
   handler has no such guard, and one that mattered could not exist: htmx re-reads `isError` after
   `htmx:beforeSwap`, so a `409` never reaches `responseError` at all. The paragraph now says what the listener
-  really does — `422`, `409` and every `HX-Retarget` answer swapped in place, only a `500` left to the toast —
-  and §2.6.3's aside stops calling the `409` "added by this ticket".
+  really does — `422`, `409` and every `HX-Retarget` answer swapped in place, only a `500` left to the toast.
+  §2.6.3's aside, which still called the `409` "new work of this ticket", was **not** touched here: this
+  revision settled the paragraph of §2.1.3 only, and spec_revision 43 rewrites that aside in the past tense.
 - spec_revision 41 (2026-11-23): **the round-2 review's three minors are settled, and the one that mattered
   was a focus rule promising a return the client does not make.** `version` stays **12**, the corpus stays
   **251** scenarios (§7 of this file: **91**) and `DECISIONS.md` stays **80** decisions: no route, status,
@@ -3840,7 +3883,7 @@ Feature: hifa web dashboard
   panel itself (§2.6.9) and that closing it leaves focus on `<body>`, with no restoration invented for the
   row that asked. (b) **Three asides still described HIFA-114's work as unwritten while `app.js` shipped
   it** — the `409` and the `HX-Retarget` (`app.js:213-220`), `requestSubmit()` for `Cmd/Ctrl+Enter`
-  (`app.js:322-329`) and the `Escape` field branch before the panel (`app.js:331-340`): they are past tense
+  (`app.js:328-335`) and the `Escape` field branch before the panel (`app.js:337-347`): they are past tense
   now, with the ticket and the reason each one gave kept, and spec_revision 39's sentence that quoted them
   by name is reworded with them. (c) **§6's `422` row enumerated `parent` among the control values that
   resolve to no row**, though the `PATCH …?view=field` builds its `UpdateIssue` from `EDIT_COMMAND_FIELDS`

@@ -294,7 +294,10 @@ def _form_of(html: str, identifier: str, name: str) -> dict[str, str]:
     """The `action` and `method` of the `<form>` inside one field wrapper, read from the page."""
     match = FORM_TAG.search(_field_markup(html, identifier, name))
     assert match is not None, f"the {name} wrapper renders no form to submit without JavaScript"
-    return dict(FORM_ATTRIBUTE.findall(match.group(0)))
+    attributes = dict(FORM_ATTRIBUTE.findall(match.group(0)))
+    missing = [attribute for attribute in ("method", "action") if attribute not in attributes]
+    assert not missing, f"the {name} form carries no {missing[0]}: {match.group(0)}"
+    return attributes
 
 
 def test_without_javascript_each_inline_control_still_saves_through_the_page_form(
@@ -442,6 +445,24 @@ def _handlers(source: str, event: str) -> list[str]:
         start = opening
 
 
+#: Block and line comments of `app.js`. The file carries no `//` inside a string or a regular
+#: expression, so both patterns can be removed without reading the script.
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+LINE_COMMENT = re.compile(r"//[^\n]*")
+
+
+def _code(source: str) -> str:
+    """`app.js` with its comments removed, so no rule can be matched in the prose that explains it.
+
+    The rules below are substring tests, and a substring is satisfied by the comment beside a
+    branch as readily as by the branch — the shell's `keydown` once described `requestSubmit()` in
+    a comment while returning before it ran. Stripping the comments first is what makes "the rule
+    is written in this block" a statement about the block; `_handlers()` and `_brace_block()` then
+    read the stripped source, so a brace in a comment cannot open or close a block either.
+    """
+    return LINE_COMMENT.sub("", BLOCK_COMMENT.sub("", source))
+
+
 def test_the_client_rules_of_the_inline_editor_are_what_app_js_says() -> None:
     """The four client rules of §2.1.3/§2.6.2/§2.6.3, pinned by reading `app.js` as text.
 
@@ -451,10 +472,12 @@ def test_the_client_rules_of_the_inline_editor_are_what_app_js_says() -> None:
     swap of a `409` and of an `HX-Retarget` body, `requestSubmit()` in the `Cmd/Ctrl+Enter`
     branch and the scope that keeps a confirmation `<form>` out of it, the field's
     `details[open]` read **before** the panel branch, and the two focus destinations
-    (`data-field` and the panel). A keystroke, a swap and a focus are the browser's half; the
-    server's half is the tests above.
+    (`data-field` and the panel). The comments of the script are stripped before anything is
+    matched: a rule quoted in prose is not a rule that runs. A keystroke, a swap and a focus are
+    the browser's half; the server's half is the tests above.
     """
-    source = JS.read_text(encoding="utf-8")
+    raw = JS.read_text(encoding="utf-8")
+    source = _code(raw)
 
     # 1. A refusal that replaces a node is swapped in — `422`, `409` and every `HX-Retarget`.
     swaps = [block for block in _handlers(source, "htmx:beforeSwap") if "shouldSwap" in block]
@@ -464,7 +487,8 @@ def test_the_client_rules_of_the_inline_editor_are_what_app_js_says() -> None:
     assert "shouldSwap = true" in swaps[0]
     assert "isError = false" in swaps[0]
 
-    # 2. `Cmd/Ctrl+Enter` submits the form of the focused control, and only the three of §2.6.2.
+    # 2. `Cmd/Ctrl+Enter` submits the form of the focused control, and only the three scopes of
+    #    §2.6.2: a field wrapper, the comment composer and the quick-add — never a confirmation.
     (keydown,) = _handlers(source, "keydown")
     start = keydown.index('event.key === "Enter" && (event.metaKey || event.ctrlKey)')
     enter = _brace_block(keydown, keydown.index("{", start))
@@ -473,7 +497,20 @@ def test_the_client_rules_of_the_inline_editor_are_what_app_js_says() -> None:
     declared = source.index("var SUBMIT_SCOPE")
     scope = source[declared : source.index(";", declared)]
     assert ".field-inline" in scope
+    assert ".comment-composer" in scope, "the comment composer left the shortcut's scope"
     assert "#quick-add" in scope
+    assert "confirm" not in scope, (
+        'a `<details class="confirm">` form is inside the shortcut\'s scope: one key would '
+        "submit a confirmation"
+    )
+    # The exclusion is stated where the scope is declared, in the comment above it, and it names
+    # the block it excludes — read from the file and not from the stripped source, because a
+    # comment is exactly what it is.
+    raw_declared = raw.index("var SUBMIT_SCOPE")
+    above = raw[max(0, raw_declared - 400) : raw_declared]
+    assert 'class="confirm"' in above and "not one of them" in above, (
+        "SUBMIT_SCOPE no longer documents why the confirmation form is out of scope"
+    )
 
     # 3. `Esc` closes the field's `<details>` before the panel branch runs: one key, one thing.
     start = keydown.index('event.key === "Escape"')
