@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 36
+spec_revision: 37
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -95,12 +95,12 @@ a malformed client, an origin from elsewhere is a refused one.
 One form per write — and for the field edit, one form **per field**, seven on each detail surface (§2.6.3) —
 and every one of them has a fragment counterpart in §2.1.3. With htmx the form on a
 fragment-bearing surface posts **to its fragment** (`hx-post`/`hx-patch`); the page route is the no-JS
-path (R4). The detail page's **layer** forms — `move`, `archive`, `delete`, `restore` — carry
-`method`/`action` and no `hx-*`: they are the no-JS path by design, and the panel is where those writes
-go out as fragments. The **field** forms are the exception and carry both, on both surfaces: an inline
-control is one `<form method="post" action="/{team}/issue/{identifier}">` inside its own field wrapper,
-with the `hx-patch` to §2.1.3's `?view=field` beside it (§2.6.3), so the same node is the no-JS submit and
-the htmx one. A page route
+path (R4). The detail page's four writes that are not the field edit — `move`, `archive`, `delete`,
+`restore` — carry `method`/`action` and no `hx-*`: they are the no-JS path by design, and the panel is
+where those writes go out as fragments. The **field** forms are the exception and carry both, on both
+surfaces: an inline control is one `<form method="post" action="/{team}/issue/{identifier}">` inside its
+own field wrapper, with the `hx-patch` to §2.1.3's `?view=field` beside it (§2.6.3), so the same node is
+the no-JS submit and the htmx one. A page route
 is never the `hx-*` target of a fragment: its answer is a `303`, and a redirect followed inside an
 htmx request swaps a whole document into the element the fragment was meant for.
 
@@ -1897,9 +1897,13 @@ Rules:
   of §2.1.3.1 (D-049), and a body relabelled `application/json` is refused `422 invalid request` — what the
   shim this section used to prescribe produced in a browser, and why it is gone (D-056).
 - **A refusal lands on the field that was refused, and the message is beside it.** `422` and `409` answer the
-  wrapper itself (§2.1.3) — never the top of the aside and never the top of the page: the control keeps
-  `.is-invalid`, `aria-invalid="true"` and the sentence of §6 in a `.form-error` next to it, and the wrapper
-  comes back `open`. On the panel that is what makes a refused `title` a sentence under the title instead of a
+  wrapper itself (§2.1.3) — never the top of the aside and never the top of the page: on a `422` whose
+  field is writable the wrapper comes back `open`, and the control keeps `.is-invalid`, `aria-invalid="true"`
+  and the sentence of §6 in a `.form-error` next to it; on the trash's `422` it comes back `open` too, as the
+  `<details open>` whose `<summary>` is the marked value and whose content is the message and no control;
+  on the archived issue's `409` it comes back **without** a `<details>` — a `<div class="field-value"
+  data-readonly data-invalid>` with the value and the message (§2.3.4's table, the `False | False` row). On
+  the panel that is what makes a refused `title` a sentence under the title instead of a
   line above the footer. The `<p class="form-error">` line stays for a refusal with no field of its own, which
   is the layer writes' shape (§2.6.9, `partials/issue_panel.html`). Both statuses reach the wrapper through
   the swap the `htmx:beforeSwap` listener enables (§2.1.3) — `422` is enabled in the tree today, `409` is
@@ -1933,8 +1937,10 @@ Rules:
 - **Keyboard.** `Enter` submits a text field (implicit submission of its form owner, the same `hx-patch`);
   `Esc` closes the open field with no request (§2.6.2); `Tab` leaves the control for the next field's
   `<summary>`, because a closed `<details>` contributes its summary and nothing else to the tab order — so the
-  seven fields are seven stops and not fourteen. On an issue whose fields are not writable there is no stop at
-  all: the value is a `<div>` and the wrapper contributes nothing to the tab order (§2.3.4).
+  seven fields are seven stops and not fourteen. On the archived issue, whose wrapper has no `<details>`,
+  there is no stop at all: the value is a `<div>` and the wrapper contributes nothing to the tab order; on the
+  trash's `422` the wrapper is a `<details open>` and its `<summary>` is a stop, the disclosure the reader
+  can close (§2.3.4).
 - **The row of the list does not change.** `partials/issue_row.html` keeps its hidden form owner, its
   `form=`/`hx-include=` pair, its `hx-trigger="blur changed"` and its `hx-target="closest tr"`, and a `PATCH`
   to `?view=list` keeps answering the `<tr>` — the row is one line in a table, the wrapper of this section is a
@@ -1943,17 +1949,29 @@ Rules:
   prints today included, which the wrapper does not have (§2.6.3's `changed` bullet):
 
 ```html
-<td class="cell-title">
-  <form id="edit-ENG-13" class="inline-edit" method="post" action="/ENG/issue/ENG-13"
-        hx-patch="/_/issues/ENG-13?view=list"
-        hx-target="closest tr" hx-swap="outerHTML"
-        hx-sync="closest tr:replace" hidden></form>
-  <input name="title" form="edit-ENG-13" value="Fix SSO login" data-original="Fix SSO login"
-         hx-patch="/_/issues/ENG-13?view=list"
-         hx-trigger="blur changed"
-         hx-include="#edit-ENG-13" hx-target="closest tr" hx-swap="outerHTML"
-         hx-sync="closest tr:replace">
-</td>
+  <td class="cell-title">
+    {% if row.can_write %}
+    {#- Each inline control has `name` and `form`, and the form it names is a
+        hidden `<form method="post" action="/{team}/issue/{id}">` of its own — the no-JS
+        fallback, and the form Enter submits through. It sits inside the cell (a `<form>` as a
+        child of `<tr>` is foster-parented out of the table) and it is hidden, so the control is
+        associated by id and `hx-include` names that id instead of `closest form`. -#}
+    <form id="edit-{{ row.identifier }}" class="inline-edit" method="post" hidden
+          action="/{{ row.team_key }}/issue/{{ row.identifier }}"
+          hx-patch="/_/issues/{{ row.identifier }}?view=list"
+          hx-target="closest tr" hx-swap="outerHTML" hx-sync="closest tr:replace"></form>
+    <input type="text" name="title" form="edit-{{ row.identifier }}" value="{{ row.title }}" data-original="{{ row.title }}"
+           class="inline-input{% if row.title_invalid %} is-invalid{% endif %}"
+           aria-label="Title of {{ row.identifier }}" autocomplete="off"{% if row.title_invalid %} aria-invalid="true"{% endif %}
+           hx-patch="/_/issues/{{ row.identifier }}?view=list" hx-include="#edit-{{ row.identifier }}"
+           hx-target="closest tr" hx-swap="outerHTML"
+           hx-trigger="blur changed" hx-sync="closest tr:replace">
+    {% else %}
+    <a class="title" href="{{ row.url }}">{{ row.title }}</a>
+    {% endif %}
+    {% if row.form_error %}<span class="form-error" role="alert">{{ row.form_error }}</span>{% endif %}
+    {% for label in row.labels %}<span class="chip chip-label" style="--label: {{ label.color }}">{{ label.name }}</span>{% endfor %}
+  </td>
 ```
 
   **Why the two shapes differ, in one place.** A `<form>` as a child of `<tr>` is foster-parented out of the
@@ -3783,6 +3801,20 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 37 (2026-11-23): **the closing notes on the field contract: two states under one word, one
+  taxonomy, and the row's markup.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this
+  file: **91**) and `DECISIONS.md` stays **80** decisions. (a) **§2.6.3's refusal bullet gave one answer for
+  two states**: the trash's `422` comes back `open` as the `<details open>` whose `<summary>` is the marked
+  value and whose content is the message and no control, and the archived issue's `409` comes back with **no**
+  `<details>` — a `<div class="field-value" data-readonly data-invalid>` — which is what §2.3.4's table and
+  §7's archived scenario already said. (b) **"No stop at all" was true of the `409` alone**: the trash's open
+  `<details>` contributes its `<summary>` to the tab order, and the keyboard bullet says so on both branches.
+  (c) **§2.1.2 called `move`, `archive`, `delete` and `restore` "the layer forms"**, a third name for a set
+  §2.6.9 already names; they are **the four writes that are not the field edit**, and the three layer writes
+  of §5.7 and R27 are `archive`, `delete` and `restore` — §2.6.9 and §5.7 are untouched. (d) **The row's
+  markup is now quoted verbatim** from `partials/issue_row.html` (its `<td class="cell-title">`): the block
+  omitted `type`, the `class` with `is-invalid`, `aria-label`, `autocomplete` and `aria-invalid`, so the copy
+  presented as "unchanged — attribute for attribute" would have changed the row.
 - spec_revision 36 (2026-11-23): **the third review round closed seven findings on the field contract, and the
   one that was not cosmetic was a refusal that printed nothing.** `version` stays **12** (no route, status,
   value of `view` or scenario moves), the corpus stays **251** scenarios (§7 of this file: **91**) and
