@@ -4959,3 +4959,143 @@ in front of a value that is not a URL: `urlparse("text-align:center").scheme` is
 attribute of every aligned column is dropped and the alignment of (4) is gone with no test failing.
 The predicate is therefore the attribute's own — `href` against `ALLOWED_SCHEMES`, `style` against
 `ALLOWED_STYLES` — and SPEC-070 §2.3.6 states it beside the three values.
+
+## D-080 — The field is the control: one field per request, `view=field`, and a description that saves on Cmd/Ctrl+Enter
+
+**Date:** 2026-11-22 · **Wins:** SPEC-070 §2.6.3 (inline editing), §2.1.3 (the values of `view`) and §2.3.4
+(`issue_vm`) · **Touches:** SPEC-070 §2.1.2, §2.2, §2.3.3, §2.6.2, §2.6.6, §2.6.9, §4 (R27, R29), §5.3, §6,
+§7, §8, §10, §11 and its frontmatter (`spec_revision` 32 → 33, `version` 11 → 12); SPEC-001 §7 and §Notes
+(`spec_revision` 18 → 19); `specs/001-mvp-v1.tasks.md` (header, T-16 and Notes, `spec_revision` 17 → 18);
+`specs/INDEX.md`; `specs/acceptance/001-mvp-v1/16-dashboard.feature`; `scripts/spec_claims_debt.json`;
+`src/hifa/web/templates/**`, `src/hifa/web/static/css/app.css`, `src/hifa/web/readmodels.py`,
+`src/hifa/web/app.py` and `tests/e2e/web/**`, the implementation this entry contracts and does not contain
+
+**The defect is the pooled form, and it is measured, not argued.** Every editable field of an issue was a
+control to go and find: `issue_detail.html` rendered `<form class="issue-edit">` with an
+`<h2 class="form-title">Edit</h2>` and all seven controls plus one `Save`, and
+`partials/issue_panel.html` rendered the same form with an `<h3>`. A reader who wanted to fix a word in the
+title edited all seven values and submitted them together. On the served dashboard (`127.0.0.1:8823`,
+commit `bb7ccf5`) `curl -s http://127.0.0.1:8823/HIFA/issue/HIFA-98 | grep -c hx-patch` answered **0** while
+`curl -s http://127.0.0.1:8823/HIFA/list | grep -c hx-patch` answered **100** for 50 rows: the machinery
+existed (a `PATCH` route, one row that used it) and the two surfaces where a field is actually read did not
+have it. The panel was worse than the page: it carried the `hx-patch` on the **form**, so one changed field
+posted all seven keys and the answer re-rendered the whole `<aside>` under the cursor.
+
+**What wins, and why it is a contract change rather than a template edit.** Four sentences of SPEC-070 said
+the opposite of what is now contracted: §2.6.3 listed the inline fields and then stated that `description`
+is **not** inline, §2.1.3 justified `?view=panel` by that description editor, §2.6.6's "Edit a field" row
+described the row's control posting a hidden page form with "`description` in the panel with a Save", and
+§2.3.4 declared no per-field flag at all while `src/hifa/web/readmodels.py` produced `title_invalid` and
+`description_invalid` for a row that has one control. The decision is
+therefore SPEC-070's, at `spec_revision` 33, with `version` 11 → 12: a new value of `view` and a new query
+parameter are the public contract of a route the layer already served.
+
+(1) **One field per request, seven fields, both surfaces.** `title`, `description`, `priority`, `state`,
+`assignee`, `due_date` and `estimate` each get a wrapper `<div class="field-inline"
+id="field-{name}-{identifier}" data-field="{name}">` holding a `<details>` whose `<summary
+class="field-value">` is the value and whose content is that field's own `<form method="post"
+action="/{team}/issue/{identifier}">` with the control and a `Save`. The control state is **always in the
+document**; nothing is built on click and nothing is fetched to render it. A body carries one field, which is
+what makes the write the one field the reader changed instead of the seven they did not.
+
+(2) **The reveal is the browser's, and no client holds a state.** `<details>`/`<summary>` is the mechanism
+§2.6.9 already uses for the confirmations and the only one in this layer that needs no script at all. The
+state a wrapper renders is the server's answer (`vm.fields[<name>].open|invalid|message`, §2.3.4), so a
+`422` comes back with the field it refused still open and marked, and a `GET` comes back with seven closed
+wrappers. The alternative — an Alpine component per field, or the `x-data`/`x-show` pair that the row's
+docstring mentions and no template carries — is refused below.
+
+(3) **`PATCH /_/issues/{identifier}?view=field&field={name}` answers one wrapper.** `view=list`,
+`view=board` and `view=panel` keep their bodies and their swaps, unchanged. `view=field` returns the
+`<div class="field-inline">` of the named field: the target is `closest .field-inline`, the swap is
+`outerHTML`, and `200`/`422`/`409` each answer that node — the value, the control kept open with
+`.is-invalid` and the message beside it, and the value with the message and **no** control when the issue is
+archived. A `field` that names none of the seven is a resolution that failed: `404`, `text/plain`, `no such
+field`, like the unknown `state_id` of D-059. The field is named in the URL and not derived from the body
+because a refusal's body is `title=` and nothing in it says which wrapper to answer.
+
+(4) **`description` is inline, with Cmd/Ctrl+Enter and an in-field `Save`, and never on blur.** This is the
+deliberate reversal of the old sentence and the reason it is a decision: `Enter` in a `<textarea>` is a
+newline, so the field saves on §2.6.2's existing rule — `Cmd/Ctrl+Enter` submits the form the focused control
+belongs to — **or** on its own `Save`, and a reader who clicks away from a half-written note has not asked
+for it to be committed. The value state stays the rendered markdown and the control state the stored source
+(`description_raw`).
+
+(5) **The pooled form and its heading leave the tree, and the read model gains the flags the render needs.**
+`<form class="issue-edit">`, both `form-title` headings, `partials/issue_form_fields.html`, `.form-title` and
+`.issue-edit` in `static/css/app.css` (their only two consumers were those two forms; `grep -rn
+"form-title\|issue-edit" src/` before deleting) and the undeclared `edit_fragment`'s only client all go. The
+`dl.meta` of both surfaces stops echoing a field the body controls: the detail page keeps `Project`, `Cycle`,
+`Parent`, `Labels`, `Created` and `Updated`, and the panel's list is removed because `State`, `Priority`,
+`Assignee` and `Due` were all it held. §2.3.4 gains `fields` — one entry per control, always all seven, with
+`open`, `invalid` and `message` — and `description_raw`, `edit_action` and `edit_fragment`; §2.3.3 gains the
+control values (`assignee_id`, `due_value`, `estimate_value`) and the two booleans a template gates a class
+on (`title_invalid`, `description_invalid`). Every one of them is a flag and not a comparison, because
+§2.3.7 forbids a template comparing a name to a string and the sidebar's `is_*` flags are the precedent.
+
+(6) **`assignee` stays a text input holding the member id, and the spec says which read makes that the only
+option.** `build_issue_vm` in `src/hifa/web/readmodels.py` builds `"assignees": []`, and
+`IssueDetail.members` is the `member.id → display_name` map of the **comment authors and history actors** of
+one issue (SPEC-030 §2.6, SQL-7 row 13) — not the team's members. The roster read exists in `app/`
+(`active_members(repos)`) and nothing under `src/hifa/web/` calls it. A `<select>` over the empty list the
+view model hands a template would be a control nobody can use; a member picker is another ticket.
+
+(7) **The fragment `GET /_/issues/{identifier}/field/{field}` is withdrawn from §2.1.3.** It declared "the
+edit control for one field" on a click and was never served: no route under `src/hifa/web/app.py`, no
+template, no test, since the first commit of the corpus. It is withdrawn rather than implemented because the
+reveal it implies — fetch the control, swap the node — is exactly the one a reader without JavaScript cannot
+use, and the control is already in the document. T-16 of `specs/001-mvp-v1.tasks.md` loses the name in the
+same revision, so the plan and the contract cannot disagree.
+
+**Alternatives, and what each cost.**
+
+- **An Alpine state machine per field** (`x-data="{open:false}"`, `x-show`, `x-init="$refs.input.select()"`).
+  It is the shape the old §2.6.3 flow block described, and it is refused for the reason the layer already
+  paid for once: Alpine is the CSP build precisely because `new Function` is banned (REQ-S003), every
+  component is a client-side copy of a decision the server has to make anyway (which field is invalid, which
+  one is open after a `422`), and with JS off a wrapper whose `x-show` never runs renders **no control at
+  all** — the editor would stop working exactly where §2.6.6's "Edit a field" row promises it works.
+- **A form per field that re-renders the whole page or the whole aside** (what the panel did). It answers the
+  element the client did not edit: a title save replaced the `<aside>` under the cursor, so the reader lost
+  their place to a write they had already made, and the focus had to be restored by a script for every field.
+  The `view=field` answer is the fix, and it is why the panel's fields no longer post `?view=panel`.
+- **Keeping `?view=panel` as the answer of every edit** and letting the client re-focus the node it needs.
+  Refused because it throws away what §2.6.9's focus table promises — "the read-only value that replaced the
+  control, on the re-rendered node with the same `data-field`" — and because the aside is a container with
+  seven wrappers in it: a swap of the container is a swap of the six fields that did not change.
+- **One pooled form and a `Save` per field inside it.** It reads like the small change and is not one: a
+  `<form>` cannot hold a `<form>`, so seven `Save`s inside one form are seven submits of the same seven
+  fields unless the server is told which button was pressed — a control name that exists only to disambiguate
+  a form, which R27's "identifiers on the wire" rule does not have.
+- **`view=detail`** (the ticket's first draft). Refused as a name: the value would answer the page, and what
+  the reader needs answered is the field; a page-sized answer is what `view=panel` was already doing wrong.
+
+**Consequences.**
+
+- **The contract is new in two places and narrower in one.** §2.1.3 gains a fourth `view` and a `field`
+  parameter, §2.3.4 gains `fields` and the two keys the wrappers print, and §2.1.3 loses the `field/{field}`
+  fragment. `version` 11 → 12 is §2 changing.
+- **The debt is the scenarios.** Ten scenarios land in `16-dashboard.feature` and the same ten in §7, each
+  `@deferred(HIFA-114)` until its test exists: the pair is the corpus's own convention for a contract that
+  arrives before its code (D-079's table scenario is the previous one), and the claims gate reads the
+  deferral, not a key. `HIFA-114` is registered in `scripts/spec_claims_debt.json` as the ticket of the
+  cluster with **no keys**: a key for a scenario a `@deferred` already accounts for is stale by construction —
+  `scripts/spec_claims_check.py` fails it with "accepted key names no unaccounted scenario" — so the cluster
+  records the owner and the reason, and the deferrals are the measurement.
+- **The count moves in five places.** The corpus is **251 scenarios (239 `Scenario` + 12 `Scenario
+  Outline`)** — the `grep -cE '^  (Scenario|Scenario Outline):'` of the seventeen files — and §7 of SPEC-070
+  is **91**. `specs/001-mvp-v1.md` §7, `specs/001-mvp-v1.tasks.md` (header and coverage line) and
+  `specs/INDEX.md` carry the same figure.
+- **The implementation owes the tests, not the shape.** `tests/e2e/web/test_dashboard_writes.py` asserts
+  `class="issue-edit"` twice — once to find the form and once to prove a read-only surface has none — and both
+  assertions move to the field wrapper; the deferred scenarios become tests whose names are their titles, and
+  the tags come off with them.
+- **Two scenarios keep a title the change narrows, and neither is renamed.**
+  `a visible issue's page and panel carry the four controls of the action group` (§7 and
+  `16-dashboard.feature`) keeps its name and its steps: its fourth assertion is `action="/ENG/issue/ENG-13"`,
+  which the seven field forms still carry, and a scenario's title is its test's name — renaming it would drop
+  the claim for a count the steps do not make. `the panel edit answers the panel` keeps its `?view=panel`
+  request and its `<aside>` assertion, because that value did not change: what changed is that no successful
+  write of the UI uses it any more, so it now pins the body a layer refusal re-renders (and a caller that
+  wants the aside whole). R29 states the action group by enumeration for the same reason a count is not
+  repeated there: a count of a set the same document enumerates rots on the next control.
