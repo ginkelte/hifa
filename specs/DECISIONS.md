@@ -5142,3 +5142,37 @@ governs, and it is what §2.1.3, §2.6.2, §2.6.3, §5.3 and §6 of SPEC-070 now
    greps that decide each one). And `view=panel` names no HTTP client of the UI any more: `_layer_refusal` renders
    the aside server-side through the same `_issue_edit_fragment(view="panel")`, so the value is contract and the
    body is shared, not a request.
+
+**Amendment — spec_revision 35, 2026-11-23 (the second review round).** The review of this entry found eleven
+statements in SPEC-070 that this decision's delta had made false or unbuildable. The seven that touch this
+decision's own text are below, and the body of the spec is the authority where they disagree with it.
+
+7. **Item (4)'s "both shapes drop `data-original`" is withdrawn.** The wrapper never prints the attribute —
+   there is nothing to drop — and `partials/issue_row.html` keeps the one it prints today
+   (`issue_row.html:20`): the row of the list does not change (§2.6.3, requirement 9). `changed` still
+   compares htmx's `lastValue`, which is the mechanism the item was about.
+8. **Item (6)'s `.field-input` retirement is withdrawn.** `partials/comment_composer.html:17` uses the class,
+   and `textarea.field-input` (`app.css:444`) is the comment box's 96 px height and mono face: removing the
+   rule would degrade a surface this ticket does not touch. `.form-title`, `.issue-edit`, `.form-actions` and
+   `.field` still go, each with the grep of §2.5.8.
+9. **`.inline-input` is not redeclared.** It keeps the rule it already carries (`app.css:431`:
+   `width: 100%; max-width: 360px`), which the list row's one control depends on; a full new rule would give
+   the row a border and a background and take its 360 px cap away (§2.5.8).
+10. **The wrapper is seven partials, not one partial told a name.** `field_title.html` through
+    `field_estimate.html`, each with its field's name, key, value expression and `?view=field&field=…` written
+    literally, included in order from `issue_detail.html` and `partials/issue_panel.html`. `field_control.html`
+    with `{% with %}` bindings would have needed `{% if name == … %}` to choose one of three controls and one
+    of seven value keys — the branch §2.3.7 forbids (§2.2, §2.3.7).
+11. **`fields[]` gains `writable` (bool), and the wrapper has three states.** `writable: True` is the editable
+     wrapper (closed, or open on a `422` that hands the control back); `writable: False` + `open` is the
+     trashed issue's `422 ISSUE_TRASHED` — `<details open>`, the value marked and the message, **no** control;
+     `writable: False` + closed is the archived issue's `409` — the value and the message, **no** `<details>`,
+     no control. The trash is `422` and the archive is `409`, never the other way round (§2.3.4, §5.3, §6).
+12. **The field `404` is `HX-Reswap: beforeend`.** `_fragment_error` appends `partials/fragment_error.html` to
+    `#toasts` (`app.py:280`); `innerHTML` would replace the container's content, which is not the answer this
+    layer gives (§2.1.3, §6).
+13. **The scenario's title stays and its steps are the authority.** `a visible issue's page and panel carry the
+    four controls of the action group` keeps its name because a scenario's title is its test's name; the
+    comment in `16-dashboard.feature` no longer counts the edit form among the group's controls — the group is
+    the move `<select>`, the archive block and the delete block, and the edit is the fields themselves
+    (§2.6.9). No prose of SPEC-070 states a count for that group.

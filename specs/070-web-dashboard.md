@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 34
+spec_revision: 35
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -201,15 +201,18 @@ body to put anywhere, and the confirmation forms of §2.6.9 render exactly these
 of §2.6.3 — and it is the answer of every editable field on the detail page and on the panel, because a
 `PATCH` there must not re-render the element the reader is not looking at: the target is
 `closest .field-inline`, the swap `outerHTML`, and the body the wrapper of §2.6.3 in its value state (or,
-on a refusal, in its control state, `open`, marked). `view=field` names the field it answers in a second
-query parameter, `field={name}` — `title`, `description`, `priority`, `state`, `assignee`, `due_date` or
+on a refusal, in the state §2.3.4's table gives it: the control `open` and marked for a `422`, the value
+and the message with no disclosure for an archived issue's `409`). `view=field` names the field it answers
+in a second query parameter, `field={name}` — `title`, `description`, `priority`, `state`, `assignee`, `due_date` or
 `estimate` (the controls of §2.1.2) — because the body carries the value and not the field's identity: a
 `422` for an empty value has a body of `title=` and nothing in it says which wrapper to answer. A `field`
 that names none of the seven is a resolution that failed, and it is answered with the one body this layer
-has for that: `404`, `partials/fragment_error.html`, `HX-Retarget: #toasts` and `HX-Reswap: innerHTML`
-(§6). There is no wrapper to keep and no second media type — the sentence inside the partial names the
-field, and the distinction between an unknown issue and an unknown field is the message's, not the
-response's. `view=panel` is the whole `<aside>` with `innerHTML` into `#panel`, and **it has no HTTP
+has for that: `404`, `partials/fragment_error.html`, `HX-Retarget: #toasts` and `HX-Reswap: beforeend`
+(§6) — the partial is appended to the toast container, which is the value `_fragment_error` already
+emits (`app.py:280`), not a replacement of its content. There is no wrapper to keep and no second media
+type — the sentence inside the partial names the field, and the distinction between an unknown issue and an
+unknown field is the message's, not the response's. `view=panel` is the whole `<aside>` with `innerHTML` into
+`#panel`, and **it has no HTTP
 client of its own any more**: the refusals of the layer writes (§2.6.9, §5.7) render that same aside
 server-side — a `move`, an `archive`, a `delete` or a `restore` the domain refuses answers through
 `_layer_refusal`, which builds the aside with `_issue_edit_fragment(..., view="panel")` in `app.py` — so
@@ -238,7 +241,7 @@ Headers the server must read or emit:
 |---|---|---|
 | `HX-Request: true` | input | if missing on a `/_/*`, respond `400` (`fragment requires htmx`) |
 | `HX-Trigger` | output | events of §2.6.4/§2.6.5, of the layer writes and of the comment write (`issue-created`, `issue-updated`, `issue-moved`, `issue-archived`, `issue-deleted`, `issue-restored`, `board-reordered`, `comment-created`) |
-| `HX-Retarget` | output | on a refusal that has **no element to keep**: `#toasts`, **with `HX-Reswap: innerHTML`**, for a `/_/` answer of `partials/fragment_error.html` — the `404` of a `?view=field` naming no control of §2.1.2, a write in read-only mode (§6) — because the fragment replaces the content of the toast container and must not inherit the target the requesting control declared; never `closest form`, and never the wrapper a `view=field` `422`/`409` already answers in place; and `#panel` with `HX-Reswap: innerHTML` for the confirmations of §2.6.9, whose form posted with `hx-swap="none"` |
+| `HX-Retarget` | output | on a refusal that has **no element to keep**: `#toasts`, **with `HX-Reswap: beforeend`** (the value `_fragment_error` emits today, `app.py:280`), for a `/_/` answer of `partials/fragment_error.html` — the `404` of a `?view=field` naming no control of §2.1.2, a write in read-only mode (§6) — because the fragment is appended to the toast container and must not inherit the target the requesting control declared; never `closest form`, and never the wrapper a `view=field` `422`/`409` already answers in place; and `#panel` with `HX-Reswap: innerHTML` for the confirmations of §2.6.9, whose form posted with `hx-swap="none"` |
 | `HX-Push-Url` | output | when opening the panel: pushes `/{team}/issue/{identifier}` |
 | `HX-Reswap` | output | `none` when the fragment only updates counters |
 | `HX-Revision` | output | the number the request observed (§2.6.8) — for a write, the number read **after** it committed, the same observation the page marker and `/_/revision` report and the one the board it just changed already reflects: on every `200`/`201`/`204` of this layer, pages and fragments alike, so the page adopts it and never reloads what it has just been given. The four bodyless writes of the table above carry it too (§5.7 step 5), and a `204` is the one answer that renders no element for the number to land on: nothing adopts it there, and the collection re-read the client performs afterwards is the answer that reports the number the page keeps (§5.7 steps 6-7, §2.6.8, D-050) |
@@ -444,7 +447,8 @@ is matched, before the per-route `HX-Request` dependency and before the handler 
 2. `HX-Request` — `400 fragment requires htmx` (§6, R5)
 3. read-only mode — `403 server in read-only mode` (§6, R18)
 4. the route and the use case — `404` resolution, `422` validation, `422 confirmation_required` (refused
-   by the route before any use case runs, §2.1.2), `409` archived (§6, R27)
+   by the route before any use case runs, §2.1.2), `422 ISSUE_TRASHED` and `409` archived (§6, R27) — the
+   trash and the archive are two different refusals, and neither is the other's status.
 
 A cross-site write to an identifier that does not exist is therefore `403`, not `404`: the refusal must not
 depend on the target resolving, or a `404` would prove the guard was not in the way and the answer would
@@ -573,7 +577,13 @@ src/hifa/web/templates/
     ├── board_column.html  # one state column
     ├── issue_card.html    # <article class="card"> of one issue
     ├── issue_panel.html   # <aside id="panel"> of the detail
-    ├── field_control.html # the two states of one inline field: value or control (§2.6.3)
+    ├── field_title.html   # one inline field: the wrapper, its value state and its control (§2.6.3)
+    ├── field_description.html # one file per control of §2.1.2, name and key written literally
+    ├── field_priority.html
+    ├── field_state.html
+    ├── field_assignee.html
+    ├── field_due_date.html
+    ├── field_estimate.html
     ├── comments.html      # <ol> of comments
     ├── comment_item.html  # one comment <li>
     ├── history.html       # <ol id="history-list"> of the activity timeline (§2.5.7)
@@ -587,32 +597,35 @@ src/hifa/web/templates/
 `base.html` defines exactly these blocks: `title`, `head`, `content`, `panel`, `scripts`.
 A child template **cannot** inject `<script>` (forbidden by CSP, R14).
 
-**`partials/field_control.html` renders one field wrapper and nothing else, and the seven wrappers are seven
-includes with seven literal names.** The partial takes two context variables: `name` — the control of §2.1.2
-it renders, written literally by the template that includes it — and `field`, one entry of `vm.fields`
-(§2.3.4: `open`, `invalid`, `message`). Everything else it prints is the `vm` the includer already holds: the
-value state (`vm.title`, `vm.description_html`, `vm.priority_glyph` and `vm.priority_label`,
-`vm.state_color`/`vm.state_name`, `vm.assignee_name`, `vm.due_label`, `vm.estimate_label`), the control state
-(the `<input>`/`<select>`/`<textarea>` of §2.6.3's table, carrying its own `name`), and
-`vm.edit_action`/`vm.edit_fragment`. It prints the whole `<div class="field-inline">` — value state and
-control state — so the wrapper a `PATCH ?view=field` answers (`200`, `422`, `409`) and the wrapper a `GET`
-renders are one file rendered twice, and the file never decides *which* field it is: `name` arrives, it is
-not computed.
+**The seven wrappers are seven partials, one per field, and each writes its own field's name and key as a
+literal.** `partials/field_title.html`, `field_description.html`, `field_priority.html`, `field_state.html`,
+`field_assignee.html`, `field_due_date.html` and `field_estimate.html` each print one whole
+`<div class="field-inline">` — its value state and, when the field is writable, its control state — and
+nothing else. None of them takes a context variable: each is included bare, from `issue_detail.html` and
+from `partials/issue_panel.html`, with the includer's `vm` already in scope. Inside, the two literals the
+wrapper is built from are written out: the entry it reads (`vm.fields["title"]`), the control's `name`, the
+wrapper's `id` and `data-field` (`field-title-{{ vm.identifier }}`, `data-field="title"`), the value key of
+§2.6.3's table (`vm.title`, `vm.description_html`, …) and the `?view=field&field=title` of the form and of
+the control. Each partial has three gates and none of them asks which field it is: `field.writable` (is
+there a control at all), `field.open` (is the disclosure open) and `field.invalid`/`field.message` (is the
+value marked, and what does it say). The file *is* the field: nothing arrives to be interpreted.
 
-`issue_detail.html` and `partials/issue_panel.html` each include it seven times, once per key of `fields`, each
-include narrowing the context to that field with a literal name and a literal key:
+`issue_detail.html` and `partials/issue_panel.html` each include them seven times, one line per field:
 
 ```jinja
-{% with name="title", field=vm.fields["title"] %}{% include "partials/field_control.html" %}{% endwith %}
+{% include "partials/field_title.html" %}
 ```
 
 Seven such lines — `title`, `description`, `priority`, `state`, `assignee`, `due_date`, `estimate`, in the
 order §2.3.4 declares them — are the whole of the nesting, and the parent decides only **where** a wrapper
-sits (§2.6.3, "Where the seven wrappers sit"), never what it renders. There is no `{% for %}` over `fields`:
-a loop would index the dict with its own variable and would have to compare `entry.name` to a string to pick
-the control, which is the logic §2.3.7 keeps out of templates. A literal `{% with %}` binding (a name and a
-`vm.fields["…"]` key, both literals, no expression) is a key access, not a computation: templates *access*
-read-model keys (§2.3, §2.3.7).
+sits (§2.6.3, "Where the seven wrappers sit"), never what it renders. There is no `{% for %}` over `fields`
+and no partial that is handed a field to render: a loop would index the dict with its own variable, and a
+single partial told `name="title"` would have to compare that variable to seven strings to pick one of
+three controls and one of seven value keys — the branch §2.3.7 forbids, and the reason the previous
+revision of this paragraph was wrong when it said one file "never decides which field it is". A
+`{% call %}` macro was the alternative and does not fit: Jinja passes one body, while a field's value state
+and its control are two different expressions in two different elements, so the macro would have to
+receive one of them and decide the other — which is the same `if name == …` under another name.
 
 **The sidebar's view links carry `side-link`, and the active one also carries `is-active`.** These are the
 two class names §2.1.8's page and its §7 scenario depend on, and neither was declared anywhere. The three
@@ -913,18 +926,20 @@ issue_vm = {
     "created_label": "Nov 8 14:03",
     "updated_label": "2 h ago",
     # The inline fields of §2.6.3, one entry per control of §2.1.2 always — the seven the surfaces render
-    # in this order: title, description, priority, state, assignee, due_date, estimate. `open` is the one
-    # field a refusal keeps in its control state (`<details open>`); `invalid` and `message` are that
-    # control's entry of `form_errors`, resolved here so no template compares or indexes by a loop
-    # variable (§2.3.7). A `GET` renders the seven closed and every value `None`/`False`.
+    # in this order: title, description, priority, state, assignee, due_date, estimate. `writable` is the
+    # one decision that outlives the request: whether the wrapper offers a control at all (§2.6.3's three
+    # states); `open` is the wrapper a refusal keeps open (`<details open>`); `invalid` and `message` are
+    # that control's entry of `form_errors`, resolved here so no template compares or indexes by a loop
+    # variable (§2.3.7). A `GET` of a visible issue renders the seven closed, `writable`, and every
+    # `invalid`/`message` `False`/`None`.
     "fields": {
-        "title": {"open": True, "invalid": True, "message": "title is required"},
-        "description": {"open": False, "invalid": False, "message": None},
-        "priority": {"open": False, "invalid": False, "message": None},
-        "state": {"open": False, "invalid": False, "message": None},
-        "assignee": {"open": False, "invalid": False, "message": None},
-        "due_date": {"open": False, "invalid": False, "message": None},
-        "estimate": {"open": False, "invalid": False, "message": None},
+        "title": {"writable": True, "open": True, "invalid": True, "message": "title is required"},
+        "description": {"writable": True, "open": False, "invalid": False, "message": None},
+        "priority": {"writable": True, "open": False, "invalid": False, "message": None},
+        "state": {"writable": True, "open": False, "invalid": False, "message": None},
+        "assignee": {"writable": True, "open": False, "invalid": False, "message": None},
+        "due_date": {"writable": True, "open": False, "invalid": False, "message": None},
+        "estimate": {"writable": True, "open": False, "invalid": False, "message": None},
     },
     "edit_action": "/ENG/issue/ENG-13",  # the form owner of every field control (§2.1.2)
     "edit_fragment": "/_/issues/ENG-13",  # the PATCH base; each control appends `?view=field&field=…`
@@ -935,16 +950,30 @@ issue_vm = {
 (the issue is the target; shown as `blocked_by` when `type == "blocks"`). The read model resolves
 the inverse; the view does not compute it.
 
-**`fields` is the render decision, and it is seven keys on every build.** A field wrapper either shows
-its value or its control, and which one is the server's answer, never a client's: `open` is `True` for
-exactly one field when a `422`/`409` must keep the control in front of the reader (the `PATCH …?view=field`
-of §2.1.3 answers that one wrapper, §2.6.3) and `False` for the other six and for all seven on a `GET`. `invalid`
-and `message` are the control's own entry of `form_errors` — the dict the refusal already fills, normalised
-over `EDIT_FORM_FIELDS` — copied in beside the boolean the template gates `.is-invalid` on, because a
-template may not compare a name to a string and may not index a dict with a **computed** key (§2.3.7). The
-seven keys are always present, `None`/`False` when nothing was refused, so the page and the panel render the
-same dict for the same issue (R3); a template reaches one of them with a literal key — `vm.fields["title"]`,
-the key of the wrapper it is writing — and never with a loop variable (§2.2, §2.3.7).
+**`fields` is the render decision, and it is seven keys on every build.** A field wrapper shows its value,
+and either its control or the reason there is none; which of the three is the server's answer, never a
+client's. `writable` is `can_write and not (is_archived or is_trashed)` — the same two booleans the action
+group of §2.6.9 branches on, resolved once here — and it is what makes the third state reachable:
+`writable: False` means the issue takes no field write, which is exactly the archived issue of §6's `409` and
+the trashed one of its `422`. `open` is `True` for the one field a refusal must keep in front of the reader:
+on a `422` that has a control to hand back (the `PATCH …?view=field` of §2.1.3 answers that one wrapper,
+§2.6.3), and on the trash, whose wrapper stays open to show the mark and the message. On the `409` of an
+archived issue it is `False`, because that wrapper has no disclosure at all. The three combinations, and
+nothing else, are the three states §2.6.3 renders:
+
+| `writable` | `open` | What the wrapper prints |
+|---|---|---|
+| `True` | `False` or `True` | the `<details>` the browser opens and closes, with the value as its `<summary>` and the field's `<form>` inside it |
+| `False` | `True` | a `<details open>` carrying the marked value and the message, and **no** control — the trash's `422` |
+| `False` | `False` | the value and the message, with **no** `<details>` and no control — the archived issue's `409` |
+
+`invalid` and `message` are the control's own entry of `form_errors` — the dict the refusal already fills,
+normalised over `EDIT_FORM_FIELDS` — copied in beside the boolean the template gates `.is-invalid` on,
+because a template may not compare a name to a string and may not index a dict with a **computed** key
+(§2.3.7). The seven keys are always present, `None`/`False` when nothing was refused, so the page and the
+panel render the same dict for the same issue (R3); the partial of one field reaches its own entry with a
+literal key — `vm.fields["title"]`, written in `field_title.html` — and never with a variable (§2.2,
+§2.3.7).
 
 **Every key of a `history` element is produced above this layer, and none of them is computed by the
 template.** The element **is** SPEC-040 §2.2's `HistoryRow` (`history_rows`), the one formatter the CLI
@@ -1162,8 +1191,8 @@ def render_markdown(text: str | None) -> str:
 |---|---|
 | `{{ x\|length }}`, `{{ a + b }}`, `{{ x > 3 }}` | arithmetic and comparisons live in the read model |
 | `{% set %}` with expressions | same |
-| `vm.fields[entry.name]` — a key computed by the template, in a `{% for %}` or otherwise | an **access** is a key written in the template (`vm.fields["title"]`, the seven literal includes of §2.2); a lookup with a computed key, and a branch on `entry.name` to choose a control, are the read model's decision |
-| `{% with %}` binding anything computed — `name=entry.name`, `field=vm.fields[name]`, an expression | the include's two variables are the only bindings allowed, and both are literals: `{% with name="title", field=vm.fields["title"] %}` (§2.2). A computed binding is the row above |
+| `vm.fields[entry.name]` — a key computed by the template, in a `{% for %}` or otherwise | an **access** is a key written in the template (`vm.fields["title"]`, in `field_title.html`); a lookup with a computed key, and a branch on a field's name to choose a control, are the read model's decision — which is why §2.2 declares seven partials and not one partial told a name |
+| `{% with %}`, `{% set %}`, or an `{% include %}` that passes a variable, to tell one field from another | the seven field partials of §2.2 take **no** variables: each names its own field with literals on both sides (`vm.fields["title"]`, `name="title"`, `?view=field&field=title`). The include is the whole declaration of which field a wrapper is, and a binding handed to a shared partial is the row above |
 | `{{ issue.state.name }}` (domain object) | only plain dicts with the keys declared above |
 | `{{ x\|safe }}` on user text | only exceptions: `description_html`/`body_html` (R15) and `snippet_html` (R17), already escaped by the server |
 | `<script>` in child templates | CSP `script-src 'self'` (R14) |
@@ -1574,31 +1603,41 @@ SPEC-040 §2.2), and a state's display name is not a concept the domain layer is
 
 #### 2.5.8 The inline field's classes (HIFA-114)
 
-The seven wrappers of §2.6.3 are one partial rendered seven times (§2.2), so the classes they print are a
-contract the stylesheet owes once, and each of them is declared here with one rule:
+The seven wrappers of §2.6.3 are seven partials that print one skeleton (§2.2), so the classes they print are a
+contract the stylesheet owes once, and each of them is declared here — with the rule this surface adds, or with
+the one it already carries:
 
 | Class | Rule | Where it prints |
 |---|---|---|
 | `.field-inline` | `margin: 0 0 6px; min-width: 0;` | the wrapper `<div>` of every field, on both surfaces |
-| `.field-value` | `display: flex; gap: 8px; align-items: baseline; cursor: text;` | the `<summary>`, the value state |
+| `.field-value` | `display: flex; gap: 8px; align-items: baseline; cursor: text;`, and `.field-value[data-readonly] { cursor: default; }` with `.field-value[data-invalid] { color: var(--urgent); }` | the `<summary>` when the field is `writable`, and the `<div class="field-value" data-readonly>` of the two refusal states — `data-invalid` is the mark of the control-less ones (§2.6.3) |
 | `.field-text` | `min-width: 0; overflow-wrap: anywhere;` | the value's `<span>`, so a long title wraps at 320 px |
 | `.field-label` | the rule it already carries in `app.css` (block, 12 px, `--text-muted`) | the value state's field name |
 | `.field-edit` | `display: flex; gap: 6px; align-items: flex-start; margin-top: 4px;` | the field's own `<form>`, the control state |
 | `.field-save` | `flex: 0 0 auto; padding: 2px 8px;` | the in-field `Save` of every control |
-| `.inline-input` | `width: 100%; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px;` — `.is-invalid` takes `border-color: var(--urgent)` | the `<input>`/`<select>`/`<textarea>` inside `.field-edit` |
+| `.inline-input` | **the rule it already carries in `app.css:431`** — `.inline-input { width: 100%; max-width: 360px }`, unchanged; `.is-invalid` takes `border-color: var(--urgent)`, which is also already there. This surface adds no rule for it, so the control keeps the 360 px cap and the row that uses the class does not gain a border, a background or a padding it does not have | the `<input>`/`<select>`/`<textarea>` inside `.field-edit`, and the title control of the list row (`partials/issue_row.html:21`), which is why the class is shared and not redeclared |
 | `.detail-fields` | `display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px;` | the `assignee`/`due_date`/`estimate` row of the detail body (§2.6.3) |
 
 **Retirement is the same rule as addition: a class whose last consumer leaves goes with it, and the grep is the
-evidence.** `.form-title` and `.issue-edit` go because their only two consumers were the two pooled forms
-(§2.6.3, D-080). `.form-actions` goes for the same reason: `grep -rn "form-actions" src/` answers
-`issue_detail.html` and `partials/issue_panel.html` — the `Save` row inside those same two forms — plus
-`static/css/app.css` twice, the rule and its `.confirm .form-actions` variant, and that variant's selector
-matches nothing, because the four `<details class="confirm">` blocks of §2.6.9 print no `form-actions`
-element: it is already dead and dies with the rule. `.field` goes too: `grep -rn 'class="field"' src/` answers
-seven lines, all in `partials/issue_form_fields.html`, the partial this ticket deletes; `.field-input` goes
-with it (eight lines in that same partial, and the new control's class is `.inline-input`). `.field-label`
-**stays** — the value state prints `<span class="field-label">` in the new wrapper (§2.6.3) — which is why the
-three look alike in the grep and only two of them retire.
+evidence — for the class that stays, too.** `.form-title` and `.issue-edit` go because their only two consumers
+were the two pooled forms (§2.6.3, D-080). `.form-actions` goes for the same reason: `grep -rn "form-actions"
+src/` answers `issue_detail.html` and `partials/issue_panel.html` — the `Save` row inside those same two forms —
+plus `static/css/app.css` twice, the rule and its `.confirm .form-actions` variant, and that variant's selector
+matches nothing, because the four `<details class="confirm">` blocks of §2.6.9 print no `form-actions` element:
+it is already dead and dies with the rule. `.field` goes too: `grep -rn 'class="field"' src/` answers seven
+lines, all in `partials/issue_form_fields.html`, the partial this ticket deletes.
+
+**`.field-input` stays, and the grep says so.** `grep -rn "field-input" src/` answers **eight** template lines:
+seven in that same `partials/issue_form_fields.html`, which leave with it, and **one that does not** —
+`partials/comment_composer.html:17`, the comment box, whose `class="field-input"` carries the rule
+`textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono) }` of `app.css:444`: the 96 px box and the
+mono face a comment is written in are that selector's, so deleting it would degrade a surface this ticket does
+not touch and leave a live class with no rule. The class therefore stays, the rule stays, and only the seven
+lines of the deleted partial go. The field wrapper's own controls take `.inline-input` — the row's class, with
+the row's existing rule — and never `.field-input`, so the two never merge: `.field-input` is the composer's,
+`.inline-input` is the one-line editor's. `.field-label` **stays** as well — the value state prints
+`<span class="field-label">` in the new wrapper (§2.6.3) — which is why the three look alike in the grep and
+only two of them retire.
 
 ### 2.6 Interaction
 
@@ -1664,7 +1703,11 @@ Implementation rules:
   ships with. The table row above that names the `description` control is the one that depends on it.
 - `Esc` closes the nearest open field control (`closest .field-inline details[open]`) **before** the panel
   branch runs, so one key never means two things: a reader who is typing in a field that sits in the panel
-  closes the field first and the panel next.
+  closes the field first and the panel next. **This branch does not exist in the tree today, and this ticket
+  writes it:** the shell's `keydown` (`app.js:270-275`) answers `Escape` with `closePanel()` and returns —
+  there is no `details[open]` lookup and no field branch before it — so a field's `<details>` inside the panel
+  closes only because the panel does, and a field outside the panel does not close at all. The ordering above
+  is the contract of this revision, the same way the `Cmd/Ctrl+Enter` bullet declares its own missing branch.
 - `j`/`k` move real focus (`element.focus()`), not a class: the row has `tabindex="-1"` and
   `:focus-visible` with the outline of §2.5.3. Focusing does `scrollIntoView({block: "nearest"})`.
 - Focus state survives an htmx swap (`htmx:afterSwap` re-focuses by `data-identifier`, and by `data-field`
@@ -1710,35 +1753,41 @@ Enter or blur (text), change (select), Cmd/Ctrl+Enter or Save (description)
          (HX-Trigger: issue-updated, the event the client turns into its `issue updated` toast)
   → 422: beforeSwap enables the swap, the wrapper comes back `open`, the control carries .is-invalid and
          the message sits beside it — with the server's value, not the reader's (R7)
-  → 409: the wrapper comes back with the server's value, the message and no control: the issue is
-         archived and the only write left on it is Restore (§2.6.9). The swap is the listener's, and
-         adding 409 to it is new work of this ticket (§2.1.3: today the listener enables 422 alone and
-         a 409 dies as the generic `could not save` toast)
-  → 404: nothing is kept — partials/fragment_error.html replaces the content of #toasts, under
-         HX-Retarget: #toasts and HX-Reswap: innerHTML, and the field is untouched (§2.1.3, §6)
+  → 409: the issue is archived. The wrapper comes back with the server's value, the message and neither
+         a `<details>` nor a control (`writable: False`, §2.3.4): the only write left on it is Restore
+         (§2.6.9). The swap is the listener's, and adding 409 to it is new work of this ticket (§2.1.3:
+         today the listener enables 422 alone and a 409 dies as the generic `could not save` toast)
+  → 422 ISSUE_TRASHED: the issue is in the trash. The wrapper comes back `open`, the value marked and the
+         message beside it, and **no** write control (`writable: False, open: True`): the only write left
+         is Restore (§2.6.9, R29). The status is 422 and not 409 — §6 keeps the two apart
+  → 404: nothing is kept — partials/fragment_error.html is appended to #toasts, under
+         HX-Retarget: #toasts and HX-Reswap: beforeend, and the field is untouched (§2.1.3, §6)
 ```
 
 Rules:
 
-- **The wrapper carries both states and is the element a `PATCH` answers.**
+- **The wrapper carries the three states of the field and is the element a `PATCH` answers.**
   `<div class="field-inline" id="field-{name}-{identifier}" data-field="{name}">` holds a `<details>` whose
   `<summary class="field-value">` is the value and whose content is the `<form class="field-edit">` with the
-  control. `id` is what the answer of §2.1.3's `view=field` renders and what the fragment is named by;
-  `data-field` is what `htmx:afterSwap` focuses after a save (§2.6.9's focus table). The markup of one field,
-  both states, exactly — `title`, the simplest of the seven:
+  control; when `vm.fields[name].writable` is `False` the control is not printed at all (§2.3.4's table).
+  `id` is what the answer of §2.1.3's `view=field` renders and what the fragment is named by; `data-field` is
+  what `htmx:afterSwap` focuses after a save (§2.6.9's focus table). The whole file of one field, its three
+  states, exactly — `field_title.html`, the simplest of the seven; the other six differ only in the literal
+  name, the value key of the table below and the control element:
 
 ```html
-<div class="field-inline" id="field-title-ENG-13" data-field="title">
-  <details{% if vm.fields['title'].open %} open{% endif %}>
+<div class="field-inline" id="field-title-{{ vm.identifier }}" data-field="title">
+  {% if vm.fields["title"].writable %}
+  <details{% if vm.fields["title"].open %} open{% endif %}>
     <summary class="field-value">
       <span class="field-label">Title</span>
-      <span class="field-text">Fix SSO login</span>
+      <span class="field-text">{{ vm.title }}</span>
     </summary>
-    <form id="edit-title-ENG-13" class="field-edit" method="post" action="{{ vm.edit_action }}"
+    <form id="edit-title-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
           hx-patch="{{ vm.edit_fragment }}?view=field&field=title"
           hx-target="closest .field-inline" hx-swap="outerHTML"
           hx-sync="closest .field-inline:replace">
-      <input type="text" name="title" value="Fix SSO login"
+      <input type="text" name="title" value="{{ vm.title }}"
              class="inline-input{% if vm.fields['title'].invalid %} is-invalid{% endif %}"
              aria-label="Title of {{ vm.identifier }}" autocomplete="off"{% if vm.fields['title'].invalid %} aria-invalid="true"{% endif %}
              hx-patch="{{ vm.edit_fragment }}?view=field&field=title"
@@ -1746,12 +1795,35 @@ Rules:
              hx-target="closest .field-inline" hx-swap="outerHTML"
              hx-sync="closest .field-inline:replace">
       <button type="submit" class="btn field-save">Save</button>
-      {% if vm.fields['title'].message %}<p class="form-error" role="alert">{{ vm.fields['title'].message }}</p>{% endif %}
+      {% if vm.fields["title"].message %}<p class="form-error" role="alert">{{ vm.fields["title"].message }}</p>{% endif %}
     </form>
   </details>
+  {% elif vm.fields["title"].open %}
+  <details open>
+    <summary class="field-value">
+      <span class="field-label">Title</span>
+      <span class="field-text">{{ vm.title }}</span>
+    </summary>
+    {% if vm.fields["title"].message %}<p class="form-error" role="alert">{{ vm.fields["title"].message }}</p>{% endif %}
+  </details>
+  {% else %}
+  <div class="field-value" data-readonly{% if vm.fields["title"].invalid %} data-invalid{% endif %}>
+    <span class="field-label">Title</span>
+    <span class="field-text">{{ vm.title }}</span>
+  </div>
+  {% if vm.fields["title"].message %}<p class="form-error" role="alert">{{ vm.fields["title"].message }}</p>{% endif %}
+  {% endif %}
 </div>
 ```
 
+- **A wrapper with no control is still a wrapper.** The two `writable: False` states exist so that a refusal
+  with nothing to offer — an archived issue's `409`, a trashed one's `422` — answers the element that was asked
+  for instead of a toast, and so that a `GET` of such an issue renders its fields as values rather than as
+  form-shaped furniture: the value is the same `<span class="field-label">`/`<span class="field-text">` pair,
+  the mark is `data-invalid` (the `.field-value[data-invalid]` colour of §2.5.8) and the message is the
+  `.form-error` line, which is where a reader learns why there is nothing to click. No `<details>` in the
+  `409` — there is nothing to disclose — and an empty `<details open>` is never printed: the trash's copy
+  puts its message inside the one it opens.
 - **The form sits inside the field, and the control is inside the form.** So unlike the row's markup below,
   the field forms are **not** `hidden` and carry **no** `hx-include`: the control is a child of its own form,
   which is what htmx serializes by default (`hx-include` cannot reach a node by id here because the id would
@@ -1818,7 +1890,8 @@ Rules:
   does not swap leaves the node where it was and turns the refusal into a toast with no field marked.
 - **An issue in the trash is refused `422` on that same wrapper, and the read behind the answer has to see the
   trash.** `ISSUE_TRASHED` reaches `?view=field` like any other field refusal (§6, R29): the wrapper comes back
-  in its control state — `open`, marked, with `ENG-13 is in the trash; restore it first` — and **without** a
+  `open` and `writable: False` (§2.3.4's middle row) — the value marked with `data-invalid`, the message
+  `ENG-13 is in the trash; restore it first` in its `.form-error`, the disclosure open — and **without** a
   write control, because R29 offers `Restore` alone. That answer only exists if the read behind
   `_issue_edit_fragment` passes `include_trashed=True` for `view == "field"` as it already does for
   `view == "panel"` (`app.py`): with the keyword missing, the read raises `NotFound` and the natural
@@ -1828,24 +1901,28 @@ Rules:
 - **`blur changed` (not a bare `blur`)** avoids the `PATCH` when the reader opened the field and left without
   touching anything. `changed` is htmx's own modifier and it compares the control's value with the `lastValue`
   **htmx itself** recorded for that element when it processed the node (and again after each request) — not
-  with any attribute of the markup. `data-original` is not a mechanism of this layer: `grep -rn "data-original"
-  src/` answered exactly one line, the printed attribute in `partials/issue_row.html`, which no script reads,
-  so both shapes drop it here — the wrapper simply does not print it and the row's copy loses it in the same
-  commit — instead of carrying a value nothing consults.
+  with any attribute of the markup. `data-original` is not a mechanism of this layer: `grep -rn
+  "data-original" src/` answers exactly one line — the printed attribute in `partials/issue_row.html:20` — and
+  no script of the tree reads it. The wrapper therefore does not print it, because it would carry a value
+  nothing consults; and the row keeps the one it prints today, because the row is not this ticket's (§2.6.3's
+  ninth rule, requirement 9): a `data-original` removed from `issue_row.html` would be a change to a surface
+  this contract leaves exactly as it is, and an unnecessary one.
 - **The server is the truth, and the only optimism is that the control keeps what the reader typed until the
   answer lands.** The response replaces the node, so there is nothing to reconcile; a refused value is
   discarded and the server's value is what comes back (R7). Focus returns to the `<summary>` of the wrapper
-  that replaced the control, matched by `data-field` (§2.6.9).
+  that replaced the control, matched by `data-field` (§2.6.9) — and to the wrapper itself when the answer has
+  no control to focus, which is the two `writable: False` states.
 - **Keyboard.** `Enter` submits a text field (implicit submission of its form owner, the same `hx-patch`);
   `Esc` closes the open field with no request (§2.6.2); `Tab` leaves the control for the next field's
   `<summary>`, because a closed `<details>` contributes its summary and nothing else to the tab order — so the
-  seven fields are seven stops and not fourteen.
+  seven fields are seven stops and not fourteen. On an issue whose fields are not writable there is no stop at
+  all: the value is a `<div>` and the wrapper contributes nothing to the tab order (§2.3.4).
 - **The row of the list does not change.** `partials/issue_row.html` keeps its hidden form owner, its
   `form=`/`hx-include=` pair, its `hx-trigger="blur changed"` and its `hx-target="closest tr"`, and a `PATCH`
   to `?view=list` keeps answering the `<tr>` — the row is one line in a table, the wrapper of this section is a
   block on a page, and the shape that solves the foster-parenting hazard of a `<tr>` is the one thing the two
-  must not share (§2.6.6, D-080). That markup, unchanged but for the `data-original` it drops with the
-  wrapper's (§2.6.3's `changed` bullet):
+  must not share (§2.6.6, D-080). That markup, unchanged — attribute for attribute, the `data-original` it
+  prints today included, which the wrapper does not have (§2.6.3's `changed` bullet):
 
 ```html
 <td class="cell-title">
@@ -1853,7 +1930,7 @@ Rules:
         hx-patch="/_/issues/ENG-13?view=list"
         hx-target="closest tr" hx-swap="outerHTML"
         hx-sync="closest tr:replace" hidden></form>
-  <input name="title" form="edit-ENG-13" value="Fix SSO login"
+  <input name="title" form="edit-ENG-13" value="Fix SSO login" data-original="Fix SSO login"
          hx-patch="/_/issues/ENG-13?view=list"
          hx-trigger="blur changed"
          hx-include="#edit-ENG-13" hx-target="closest tr" hx-swap="outerHTML"
@@ -2178,7 +2255,7 @@ block is open, closes the block first and leaves the panel open.
 |---|---|
 | the panel opens | the panel heading (`<h2 tabindex="-1">`, focused once on swap) |
 | an inline edit is saved | the read-only value that replaced the control, on the re-rendered node with the same `data-field` |
-| an edit is refused (`422`/`409`) | the field that failed, which carries `.is-invalid` |
+| an edit is refused (`422`/`409`) | the field that failed: its control when the wrapper has one (`.is-invalid`), otherwise the wrapper itself, matched by `data-field` (§2.3.4's two `writable: False` states) |
 | a confirmation is opened | the `confirm` checkbox, the first control of the block |
 | a confirmation is refused (`422` `confirmation_required`) | the `confirm` checkbox, which carries `.is-invalid` and its message; the block is re-rendered with `open` |
 | a confirmation is closed without submitting | the `<summary>` that opened it, which is still there and still focused |
@@ -2205,8 +2282,8 @@ is decided once, inside it:
 
 - `vm.is_archived or vm.is_trashed` ⇒ the group holds `Restore` **alone**: the move
   `<select name="state_id">`, the archive `<details>` and the delete `<details>` are not rendered, and the
-  seven field wrappers of §2.6.3 render their value and no control (an archived issue's fields are refused
-  `409`, a trashed one's `422`, §6).
+  seven field wrappers of §2.6.3 are built with `writable: False` (§2.3.4) so they render their value and no
+  control (an archived issue's fields are refused `409`, a trashed one's `422`, §6).
 - otherwise — a visible issue — ⇒ the group holds the move `<select name="state_id">`, the archive block and
   the delete block, and no `Restore`.
 
@@ -2555,19 +2632,22 @@ Component-specific requirements:
    ⇒ htmx serializes the field's own form (urlencoded, `title=...`) and does
    PATCH /_/issues/ENG-13?view=field&field=title (§2.6.3, §2.1.3, D-056). The list row sends the same
    request to ?view=list.
-2. Router: resolve ref (404 `error.html`), resolve `field` (404 `partials/fragment_error.html` into
-   `#toasts`, under `HX-Retarget: #toasts` and `HX-Reswap: innerHTML`, §2.1.3), validate body (422).
+2. Router: resolve ref (404 `error.html`), resolve `field` (404 `partials/fragment_error.html` appended to
+   `#toasts`, under `HX-Retarget: #toasts` and `HX-Reswap: beforeend`, §2.1.3), validate body (422).
 3. `app.issues.update_issue(uow, UpdateIssue(issue=ref, title=...), actor)` → UPDATE issue +
    INSERT issue_history (one transaction).
 4. Serialize the element `view` names — the field wrapper (§2.6.3), the `<tr>` or the panel — and answer
    200 with HX-Trigger: issue-updated.
-5. Domain error ⇒ 422 with the same element, the control `open` and `.is-invalid`, the message beside it;
-   409 (an archived or a trashed issue) with the same element, the message and no control — a trashed
-   issue's answer exists only because the read behind it passed `include_trashed=True` (§2.6.3, §6).
-   Both statuses are put in place by the `htmx:beforeSwap` listener, which enables `422` in the tree today
+5. Domain error ⇒ 422 with the same element, the control `open` and `.is-invalid`, the message beside it.
+   `409` ⇒ the issue is **archived**: the same element with the server's value, the message and neither a
+   control nor a `<details>` (`writable: False`, §2.3.4). `422 ISSUE_TRASHED` ⇒ the issue is **in the
+   trash**: the same element `open` and marked, with the message and no write control
+   (`writable: False, open: True`), and that answer exists only because the read behind it passed
+   `include_trashed=True` (§2.6.3, §6). The two statuses are not interchangeable and the trash is never a
+   `409`. Both are put in place by the `htmx:beforeSwap` listener, which enables `422` in the tree today
    and gains `409` in this ticket (§2.1.3). A `404` has no element to keep and answers
-   `partials/fragment_error.html` into `#toasts`, under `HX-Retarget: #toasts` and `HX-Reswap: innerHTML`
-   (§6).
+   `partials/fragment_error.html` appended to `#toasts`, under `HX-Retarget: #toasts` and
+   `HX-Reswap: beforeend` (§6).
 ```
 
 ### 5.4 Drag & drop (move)
@@ -2773,7 +2853,7 @@ differ in exactly the step above, not in the route, the status or the header.
 | `edit` (the page, the panel and the `?view=field` wrapper), `move`, a label or `assignee` write, a comment, or `archive` of an issue in the trash (`ISSUE_TRASHED`) | 422 | the page, the panel or the **field wrapper** with the message: the wrapper comes back `open`, marked and **without** a write control, because R29 leaves `Restore` alone (§2.6.3) — and that answer exists only because the read behind `?view=field` passes `include_trashed=True`, as the panel's does; a comment sent by a client that still holds a stale form gets the message and **no** composer, because the gate of §2.6.10 renders none for a trashed issue | nothing is written |
 | `delete` of an issue already in the trash | 204 (`/`), 303 (page) | no body; `/{team}/list` | a no-op: no history row, `trashed` and `updated_at` unchanged (SPEC-040 §5.5, §5.7 step 7) |
 | `move`, an edit or a comment on an archived issue (`InvalidTransition`, R20) | 409 | the page (or the panel) with the message and the way out; an edit through `?view=field` answers that **field wrapper**, with the server's value, the message and no control (§2.6.3) | nothing is written; the panel offers `Restore` |
-| `PATCH …?view=field` naming a `field` that is not one of the seven controls of §2.1.2 | 404 | `partials/fragment_error.html` with `HX-Retarget: #toasts` and `HX-Reswap: innerHTML` (§2.1.3) — a resolution that failed, like the unknown `state_id` below, but one that has a sentence to render and no element to keep: the partial's message names the field, and that is how this `404` is told from an unknown issue | the field is untouched; the partial replaces the content of the toast area and the sentence is read there |
+| `PATCH …?view=field` naming a `field` that is not one of the seven controls of §2.1.2 | 404 | `partials/fragment_error.html` with `HX-Retarget: #toasts` and `HX-Reswap: beforeend` (§2.1.3) — a resolution that failed, like the unknown `state_id` below, but one that has a sentence to render and no element to keep: the partial's message names the field, and that is how this `404` is told from an unknown issue | the field is untouched; the partial is appended to the toast area and the sentence is read there |
 | `restore` of a visible issue | 204 (`/`), 303 (page) | no body; the detail | a no-op: no row, no history (SPEC-050 §2.5.3) |
 | `archive` of an already-archived issue | 204 (`/`), 303 (page) | no body; `/{team}/list` | a no-op: no history row, `archived_at` unchanged (SPEC-040 §5.5, REQ-F040-33) |
 | A comment with no body, or only spaces (`BODY_EMPTY`) | 422 | the composer with `a comment needs a body` as its `form_error`, the textarea marked `.is-invalid` | nothing is written |
@@ -2873,7 +2953,8 @@ The `text/plain` rows of this table are not `form_error`s and are not built here
 `workflow state does not exist`, `invalid neighbour`, `cross-site write refused` and `server in read-only
 mode` are single constants or the fragment partial, and none of them is a sentence about an issue.
 
-In fragments, the error travels in the HTML (`.field-error`), **not** in JSON: the client of this
+In fragments, the error travels in the HTML (`.form-error`, the line beside the control, §2.6.3), **not**
+in JSON: the client of this
 layer is htmx, not an agent. The one exception is `/_/revision`: its success body is JSON, so its
 failures are JSON too (§2.1.3.1) — a probe that answered HTML on failure would make the media type
 of an answer depend on the outcome, and the client would have to parse both. The probe is the only
@@ -3091,6 +3172,7 @@ Feature: hifa web dashboard
     Then the status is 409
     And the HTML contains "id=\"field-title-ENG-13\""
     And the HTML contains "archived"
+    And the HTML contains "data-readonly"
     And the HTML does not contain "<details"
     And the HTML does not contain "hx-patch"
     And the title of "ENG-13" is "Fix login"
@@ -3676,6 +3758,55 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 35 (2026-11-23): **the second review round on the field contract closed eleven findings: the
+  contract gains one key and loses three claims that were not true.** `version` stays **12**: no route, no
+  status, no value of `view` and no scenario is added or removed — §2.1.2, §2.1.3 and §2.6.3 keep the surface
+  version 12 declared — and the one read-model key this revision adds (`writable`, §2.3.4) is a flag on the
+  same `fields` dict version 12 introduced, needed so the third wrapper §2.6.3 already owed on an archived
+  issue can be selected without a client branch. The corpus stays **251** scenarios (§7 of this file: **91**)
+  and `DECISIONS.md` stays **80** decisions. What changed, and why:
+  (a) **`field_control.html` could not do what §2.2 said.** A partial handed `name="title"` has to choose
+  between three controls and seven value keys, i.e. `{% if name == "title" %}…`, while the paragraph claimed
+  "the file never decides *which* field it is". §2.2 now declares **seven partials** (`field_title.html`
+  through `field_estimate.html`), each with its field's name, key, value expression and
+  `?view=field&field=…` written literally, included in order from `issue_detail.html` and
+  `partials/issue_panel.html`; the `{% with %}` include is gone, and §2.3.7's second row forbids a binding
+  that tells one field from another. A `{% call %}` macro was the alternative and does not fit: a field's
+  value state and its control are two different expressions in two different elements, and one `caller()`
+  carries one of them. (b) **The third state of the wrapper was not selectable.** §7's `409` scenario
+  requires a wrapper with the value and **no** `<details>`, while `fields[]` only said open/closed and §2.2
+  called the partial "the two states". §2.3.4 gains `writable` and states the three combinations —
+  `True` (closed or open), `False` + `open` (the trash's `422`: `<details open>`, marked, no control) and
+  `False` + closed (the archive's `409`: value and message, no `<details>`, no control) — and §2.2, §2.6.3's
+  markup, §2.6.9 and §7 say the same. (c) **`409` is the archived issue; the trash is `422 ISSUE_TRASHED`.**
+  §5.3 step 5 said "409 (an archived **or a trashed** issue)" and then built the trash's answer under it,
+  while §6 and §2.6.9 keep the two apart; the step now names `409` = archived and `422` = trashed and leaves
+  no sentence that mixes them. (d) **`HX-Reswap` is `beforeend`, not `innerHTML`.** `_fragment_error`
+  (`app.py:280`) appends the partial to `#toasts`; the five mentions of the field `404` (§2.1.3, its header
+  table, §5.3 twice, §6) say so now, and the panel's `innerHTML` retarget (§2.6.9) is untouched: it is
+  another header on another target. (e) **`.field-input` does not retire.** It has a consumer this ticket
+  does not touch — `partials/comment_composer.html:17`, whose `textarea.field-input` (`app.css:444`) is the
+  composer's 96 px box and mono — so §2.5.8 keeps the class and its rule, retires only `.form-title`,
+  `.issue-edit`, `.form-actions` and `.field`, and carries the grep that decides each one. (f)
+  **`.inline-input` keeps the rule it already has.** §2.5.8 declared a new full rule for it, which would have
+  given the list row a border and a background and taken away its 360 px cap, on the one control
+  `partials/issue_row.html:21` owns; the table now names `app.css:431`'s rule, unchanged, and adds nothing,
+  so requirement 9 ("the row does not change") is literal. (g) **`issue_row.html` does not lose
+  `data-original`.** The wrapper never prints it, so nothing is added there; the row keeps the one it prints
+  today (`issue_row.html:20`), because deleting it would be the change §2.6.3's ninth rule forbids. (h)
+  **`Esc` on an open field is new work of this ticket.** §2.6.2 stated the ordering as if it ran; the shell's
+  `keydown` (`app.js:270-275`) answers `Escape` with `closePanel()` and returns, and nothing looks for a
+  `details[open]` — the bullet declares the branch, as its `Cmd/Ctrl+Enter` neighbour already did. (i)
+  **`.field-error` does not exist.** §6 said the fragment's error travels in it; the wrapper's markup, §2.6.3
+  and `app.css:427` all use `.form-error`, and §6 says that now. (j) **The scenario's name is its test's, and
+  the steps are the authority.** `a visible issue's page and panel carry the four controls of the action
+  group` is not renamed — the revision below says why — and the comment in `16-dashboard.feature` no longer
+  counts the edit form among the group's controls: the group is the move `<select>`, the archive block and
+  the delete block, and the edit is the fields themselves (§2.6.9). No prose of this spec states a count for
+  that group. (k) **The revision-33 entry's `?view=panel` sentence is corrected where it stands**, not
+  deleted: the value has no HTTP client of its own any more, and the layer refusals call
+  `_issue_edit_fragment(view="panel")` internally (§2.1.3).
+
 - spec_revision 34 (2026-11-23): **the review of the field-per-request delta closed eleven findings, and the
   contract does not change shape — it stops saying things that are not true or not implementable.** `version`
   stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and `DECISIONS.md` stays **80**
@@ -3709,12 +3840,21 @@ Feature: hifa web dashboard
   stays because the value state prints it. (j) **The scenario `a visible issue's page and panel carry the four
   controls of the action group` keeps its name**, for the reason D-080 already gives for the two titles this
   change narrows: a scenario's title is its test's name, and that test exists. The group the steps assert is the
-  move control, the archive block and the delete block — three — and the fourth assertion pins
-  `action="/ENG/issue/ENG-13"`, which the seven field forms carry and no grouped control does; the comment inside
-  the scenario says exactly that, and the count the title used to imply is not in the steps. (k) **`view=panel`
+  move control, the archive block and the delete block — and **the steps are the authority**, not the title: the
+  last assertion pins `action="/ENG/issue/ENG-13"`, which the seven field forms carry and no grouped control
+  does. The comment inside the scenario says exactly that, and no count of that group is stated in this spec. (k) **`view=panel`
   names no HTTP client of the UI any more**: the layer refusals render the aside server-side through
   `_issue_edit_fragment(..., view="panel")`, and the only request that still carries the value is §7's
   `the panel edit answers the panel`.
+  **Correction, carried by spec_revision 35:** four statements of the entry above are superseded, and the
+  body of this spec is the authority. (1) (b)'s `HX-Reswap: innerHTML` for the field `404` is
+  **`beforeend`** — `_fragment_error` appends the partial to `#toasts` (`app.py:280`), §2.1.3, §5.3 and §6
+  say it. (2) (d)'s "both shapes stop printing `data-original`" is wrong: the wrapper never has it and
+  `issue_row.html` keeps the one it prints (`issue_row.html:20`); the row does not change (§2.6.3,
+  requirement 9). (3) (h)'s `field_control.html` and its seven `{% with %}` includes are replaced by seven
+  per-field partials (§2.2). (4) (i)'s `.field-input` does **not** retire — `partials/comment_composer.html:17`
+  consumes it — and (j)'s "three" is not a count this spec states: the scenario's title is its test's name
+  and its steps are the authority (§2.5.8, §2.6.9).
 
 - spec_revision 33 (2026-11-22): **the field is the control: every editable field of an issue edits in place,
   on both detail surfaces (HIFA-114, D-080).** The detail page and the panel rendered the same pooled
@@ -3736,7 +3876,10 @@ Feature: hifa web dashboard
   **one field wrapper** — not the page, not the aside, not the row — so a save on either surface replaces the
   node the reader is standing on. `view=list`, `view=board` and `view=panel` keep their bodies and their
   swaps; `view=panel` keeps its clients, which are now the **refusals** of the layer writes and not a
-  successful edit. (4) **`assignee` stays a text input holding the member id**, and the new paragraph says
+  successful edit. *(Superseded — correction carried by spec_revision 35: those are not clients of the wire.
+  The layer refusals are internal calls to `_issue_edit_fragment(view="panel")` (`app.py:1590`), not
+  requests that name `?view=panel`, and §2.1.3 is the authority: the value has no HTTP client of its own any
+  more.)* (4) **`assignee` stays a text input holding the member id**, and the new paragraph says
   why in one place: `build_issue_vm` in `src/hifa/web/readmodels.py` builds `"assignees": []`, and
   `IssueDetail.members` is the comment-authors and history-actors map of SPEC-030 §2.6 SQL-7 row 13, not a
   roster. A member picker is another ticket. (5) **The pooled form and its heading leave the tree**, with

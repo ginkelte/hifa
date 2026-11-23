@@ -231,7 +231,10 @@ Feature: HTTP dashboard
   # field per request, and the answer is the field wrapper (`?view=field&field={name}`) and not the page, the
   # aside or the row. The scenarios below assume the fixture of the block above plus:
   #   * the wrapper of a field is `<div class="field-inline" id="field-{name}-{identifier}">` and the control
-  #     state lives in its `<details>`, which renders `open` when the server kept it open for a refusal;
+  #     state lives in its `<details>`, which renders `open` when the server kept it open for a refusal; a
+  #     wrapper whose read model says `writable: False` prints its value and its message with **no** control
+  #     — no `<details>` at all on an archived issue's `409`, an open one on a trashed issue's `422`
+  #     (§2.3.4, §2.6.3);
   #   * "the description field's markup" is the substring from `id="field-description-{identifier}"` to the
   #     next `id="field-`, so an assertion on it is about that field and not about the page.
 
@@ -313,6 +316,7 @@ Feature: HTTP dashboard
     Then the status is 409
     And the HTML contains "id=\"field-title-ENG-13\""
     And the HTML contains "archived"
+    And the HTML contains "data-readonly"
     And the HTML does not contain "<details"
     And the HTML does not contain "hx-patch"
     And the title of "ENG-13" is "Fix login"
@@ -620,9 +624,11 @@ Feature: HTTP dashboard
 
   @REQ-F015 @REQ-F035
   Scenario: the detail page of a trashed issue is served with Restore as its only control
-    # the four absences are the four controls of the action group (§2.6.9): the edit form, the move
-    # `<select name="state_id">`, the archive block and the delete block. `Fix login` is the positive
-    # half: the page renders the issue and not an empty shell with one button.
+    # the three absences are the three controls of the action group (§2.6.9): the move
+    # `<select name="state_id">`, the archive block and the delete block. The edit is not one of them and
+    # never was a control of the footer — the field forms are the fields themselves, and a trashed issue's
+    # wrappers carry no control at all (`writable: False`, §2.6.3), which is the fourth absence here.
+    # `Fix login` is the positive half: the page renders the issue and not an empty shell with one button.
     Given the issue "ENG-13" in the state "Todo" with title "Fix login" in trash and not archived
     When I execute a GET to "/ENG/issue/ENG-13"
     Then the status is 200
@@ -635,8 +641,9 @@ Feature: HTTP dashboard
 
   @REQ-F015 @REQ-F035
   Scenario: the panel of a trashed issue is served with Restore as its only control
-    # the same four absences as the page, through the fragment route and the `/_/` handles the
-    # panel footer renders (`hx-post` to the layer route, no `hx-target`: the success is a 204).
+    # the same three group controls absent as on the page — and the field wrappers' own controls with
+    # them (§2.6.3) — through the fragment route and the `/_/` handles the panel footer renders
+    # (`hx-post` to the layer route, no `hx-target`: the success is a 204).
     Given the issue "ENG-13" in the state "Todo" with title "Fix login" in trash and not archived
     When I execute a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
     Then the status is 200
