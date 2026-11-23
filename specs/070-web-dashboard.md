@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 35
+spec_revision: 36
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -95,12 +95,12 @@ a malformed client, an origin from elsewhere is a refused one.
 One form per write — and for the field edit, one form **per field**, seven on each detail surface (§2.6.3) —
 and every one of them has a fragment counterpart in §2.1.3. With htmx the form on a
 fragment-bearing surface posts **to its fragment** (`hx-post`/`hx-patch`); the page route is the no-JS
-path (R4). The detail page's **layer** forms — `move`, `archive`, `delete` — carry `method`/`action` and no
-`hx-*`: they are the no-JS path by design, and the panel is where those writes go out as fragments. The
-**field** forms are the exception and carry both, on both surfaces: an inline control is one
-`<form method="post" action="/{team}/issue/{identifier}">` inside its own field wrapper, with the
-`hx-patch` to §2.1.3's `?view=field` beside it (§2.6.3), so the same node is the no-JS submit and the htmx
-one. A page route
+path (R4). The detail page's **layer** forms — `move`, `archive`, `delete`, `restore` — carry
+`method`/`action` and no `hx-*`: they are the no-JS path by design, and the panel is where those writes
+go out as fragments. The **field** forms are the exception and carry both, on both surfaces: an inline
+control is one `<form method="post" action="/{team}/issue/{identifier}">` inside its own field wrapper,
+with the `hx-patch` to §2.1.3's `?view=field` beside it (§2.6.3), so the same node is the no-JS submit and
+the htmx one. A page route
 is never the `hx-*` target of a fragment: its answer is a `303`, and a redirect followed inside an
 htmx request swaps a whole document into the element the fragment was meant for.
 
@@ -975,6 +975,19 @@ panel render the same dict for the same issue (R3); the partial of one field rea
 literal key — `vm.fields["title"]`, written in `field_title.html` — and never with a variable (§2.2,
 §2.3.7).
 
+**A `view=field` refusal keys its message on the field the request named, not on the one the error names.**
+`ISSUE_ARCHIVED` and `ISSUE_TRASHED` carry `field="ref"` and `field="trashed"` (`src/hifa/app/issues.py`), and
+neither is one of the seven controls, so `_refusal` (`app.py`) resolves them to no control at all: left to
+itself the route would fill `form_error`, and every `fields[<name>].message` would stay `None` — a wrapper
+that prints only its own entry, `fields[<name>].message` and never `form_error` (§2.6.3), would come back mute
+on the `409` and on the trash's `422`. For `view=field` the route therefore writes the message under the key of
+the field the request named: `form_errors={requested_field: refusal_sentence(refusal, verb="edit",
+identifier=…)}` — the key is the requested field's (`title` for `?view=field&field=title`), and the text is the
+builder's, the sentence that names "archived" or the trash (`ENG-13 is archived; restore it first`), which is
+what §7's archived-issue scenario reads in the wrapper. That entry is what sets `invalid`; the archived answer
+is then `fields["title"] = {writable: False, open: False, invalid: True, message: …}` and the trash's
+`{writable: False, open: True, invalid: True, message: …}`.
+
 **Every key of a `history` element is produced above this layer, and none of them is computed by the
 template.** The element **is** SPEC-040 §2.2's `HistoryRow` (`history_rows`), the one formatter the CLI
 reads too (P2) — the same eleven keys under the same names, `dot_color` being the one colour key this
@@ -1011,10 +1024,11 @@ controls a template will render and a model that dropped keys when `is_trashed` 
 ("every declared key, always") conditional on the row — the one thing a template may not have to check.
 What the trash changes is the **branch the template takes**, not the model's content: `vm.can_write`
 gates the action group once and the layer picks which branch of it renders — an issue in either layer
-fills the group with `Restore` and no other control, a visible one fills it with the four, and the group
-itself renders either way, on the page and on the panel (§2.6.9, D-059). Two consequences for the model, both
-load-bearing: `is_archived` and `is_trashed` are `bool` on `row_vm` (§2.3.3) — never `None`, never a
-`bool` derived from the other — because a trashed issue can be archived as well (`archived_at` set and
+fills the group with `Restore` and no other control, a visible one fills it with the move control, the
+archive block and the delete block, and the group itself renders either way, on the page and on the
+panel (§2.6.9, D-059). Two consequences for the model, both load-bearing: `is_archived` and `is_trashed` are
+`bool` on `row_vm` (§2.3.3) — never `None`, never a `bool` derived from the other — because a trashed issue
+can be archived as well (`archived_at` set and
 `trashed = 1`), and the group renders `Restore` in that case too; and `states` is still `[]`-or-full on
 that read, since a trashed issue's panel has no `state_id` control to feed and a model that emptied it
 would be answering a question about the template it cannot see.
@@ -1610,7 +1624,7 @@ the one it already carries:
 | Class | Rule | Where it prints |
 |---|---|---|
 | `.field-inline` | `margin: 0 0 6px; min-width: 0;` | the wrapper `<div>` of every field, on both surfaces |
-| `.field-value` | `display: flex; gap: 8px; align-items: baseline; cursor: text;`, and `.field-value[data-readonly] { cursor: default; }` with `.field-value[data-invalid] { color: var(--urgent); }` | the `<summary>` when the field is `writable`, and the `<div class="field-value" data-readonly>` of the two refusal states — `data-invalid` is the mark of the control-less ones (§2.6.3) |
+| `.field-value` | `display: flex; gap: 8px; align-items: baseline; cursor: text;`, and `.field-value[data-readonly] { cursor: default; }` with `.field-value[data-invalid] { color: var(--urgent); }` | the `<summary>` when the field is `writable`, and the value of the two control-less states, which prints `data-readonly` and `data-invalid` on both — a `<div>` on the archived `409`, a `<summary>` inside the trash's open `<details>` on the `422` (§2.6.3) |
 | `.field-text` | `min-width: 0; overflow-wrap: anywhere;` | the value's `<span>`, so a long title wraps at 320 px |
 | `.field-label` | the rule it already carries in `app.css` (block, 12 px, `--text-muted`) | the value state's field name |
 | `.field-edit` | `display: flex; gap: 6px; align-items: flex-start; margin-top: 4px;` | the field's own `<form>`, the control state |
@@ -1800,14 +1814,14 @@ Rules:
   </details>
   {% elif vm.fields["title"].open %}
   <details open>
-    <summary class="field-value">
+    <summary class="field-value" data-readonly data-invalid>
       <span class="field-label">Title</span>
       <span class="field-text">{{ vm.title }}</span>
     </summary>
     {% if vm.fields["title"].message %}<p class="form-error" role="alert">{{ vm.fields["title"].message }}</p>{% endif %}
   </details>
   {% else %}
-  <div class="field-value" data-readonly{% if vm.fields["title"].invalid %} data-invalid{% endif %}>
+  <div class="field-value" data-readonly data-invalid>
     <span class="field-label">Title</span>
     <span class="field-text">{{ vm.title }}</span>
   </div>
@@ -1820,10 +1834,12 @@ Rules:
   with nothing to offer — an archived issue's `409`, a trashed one's `422` — answers the element that was asked
   for instead of a toast, and so that a `GET` of such an issue renders its fields as values rather than as
   form-shaped furniture: the value is the same `<span class="field-label">`/`<span class="field-text">` pair,
-  the mark is `data-invalid` (the `.field-value[data-invalid]` colour of §2.5.8) and the message is the
-  `.form-error` line, which is where a reader learns why there is nothing to click. No `<details>` in the
-  `409` — there is nothing to disclose — and an empty `<details open>` is never printed: the trash's copy
-  puts its message inside the one it opens.
+  printed with `data-readonly` and `data-invalid` and no control on both states — `data-readonly` for the
+  default cursor, `data-invalid` for the `.field-value[data-invalid]` colour of §2.5.8 — and the message is the
+  `.form-error` line, which is where a reader learns why there is nothing to click. The `409` prints that value
+  in a `<div>` with no `<details>` at all — there is nothing to disclose — and the trash's `422` prints it as
+  the `<summary>` of the one `<details open>` that carries its message, so an empty `<details open>` is never
+  printed either.
 - **The form sits inside the field, and the control is inside the form.** So unlike the row's markup below,
   the field forms are **not** `hidden` and carry **no** `hx-include`: the control is a child of its own form,
   which is what htmx serializes by default (`hx-include` cannot reach a node by id here because the id would
@@ -1884,14 +1900,16 @@ Rules:
   wrapper itself (§2.1.3) — never the top of the aside and never the top of the page: the control keeps
   `.is-invalid`, `aria-invalid="true"` and the sentence of §6 in a `.form-error` next to it, and the wrapper
   comes back `open`. On the panel that is what makes a refused `title` a sentence under the title instead of a
-  line above the footer. `.panel-error` stays the line for a refusal with no field of its own, which is the
-  layer writes' shape (§2.6.9). Both statuses reach the wrapper through the swap the `htmx:beforeSwap` listener
-  enables (§2.1.3) — `422` is enabled in the tree today, `409` is added by this ticket — because a `4xx` htmx
+  line above the footer. The `<p class="form-error">` line stays for a refusal with no field of its own, which
+  is the layer writes' shape (§2.6.9, `partials/issue_panel.html`). Both statuses reach the wrapper through
+  the swap the `htmx:beforeSwap` listener enables (§2.1.3) — `422` is enabled in the tree today, `409` is
+  added by this ticket — because a `4xx` htmx
   does not swap leaves the node where it was and turns the refusal into a toast with no field marked.
 - **An issue in the trash is refused `422` on that same wrapper, and the read behind the answer has to see the
   trash.** `ISSUE_TRASHED` reaches `?view=field` like any other field refusal (§6, R29): the wrapper comes back
-  `open` and `writable: False` (§2.3.4's middle row) — the value marked with `data-invalid`, the message
-  `ENG-13 is in the trash; restore it first` in its `.form-error`, the disclosure open — and **without** a
+  `open` and `writable: False` (§2.3.4's middle row) — the value marked with `data-readonly data-invalid`,
+  the message `ENG-13 is in the trash; restore it first` in its `.form-error`, the disclosure open — and
+  **without** a
   write control, because R29 offers `Restore` alone. That answer only exists if the read behind
   `_issue_edit_fragment` passes `include_trashed=True` for `view == "field"` as it already does for
   `view == "panel"` (`app.py`): with the keyword missing, the read raises `NotFound` and the natural
@@ -2239,7 +2257,7 @@ to `/{team}/issue/{identifier}/…` and answer a page — `303` to `/{team}/list
 carries them as **fragment forms**: `hx-post="/_/issues/{identifier}/{layer}"` with `hx-swap="none"`,
 because the fragment answers `204` with no body (§2.1.3). What the client does with that answer is
 declared once, in the flow of the write it belongs to — §5.7 for the three layer writes and **§5.7.1**
-for `move`, the one of the five that does not take the issue out of the collection and still ends the
+for `move`, the one of the four that does not take the issue out of the collection and still ends the
 panel — and not repeated here. Neither copy carries `hx-target`: a `204` has no body to put anywhere, and
 the element that asked is the panel that is about to close. There is no third surface and no form that
 points at a page route with `hx-*`.
@@ -2267,8 +2285,8 @@ block is open, closes the block first and leaves the panel open.
 (a domain rule said no) or `409` (the issue is archived, §6) with the **same element re-rendered** from
 the read model plus `form_error` — the string the templates of this layer already read, next to
 `form_errors` for a per-field dict (§6; `partials/quick_add.html` is the existing consumer): the field
-carries `.is-invalid` and its message, the panel carries a `.panel-error` line above the footer, and a
-toast repeats it. The `error` key is not reused here: it belongs to `error.html` and
+carries `.is-invalid` and its message, the panel carries its `<p class="form-error">` line above the footer,
+and a toast repeats it. The `error` key is not reused here: it belongs to `error.html` and
 `partials/fragment_error.html`, which are pages and toasts, not the element the reader is standing on.
 The value the reader typed is **not** kept — the element shows the server's value, because the write
 was refused and the client is not allowed to hold a version of the row the database does not have (R7).
@@ -2632,7 +2650,9 @@ Component-specific requirements:
    ⇒ htmx serializes the field's own form (urlencoded, `title=...`) and does
    PATCH /_/issues/ENG-13?view=field&field=title (§2.6.3, §2.1.3, D-056). The list row sends the same
    request to ?view=list.
-2. Router: resolve ref (404 `error.html`), resolve `field` (404 `partials/fragment_error.html` appended to
+2. Router: resolve ref (404 `partials/fragment_error.html`, appended to `#toasts` under
+   `HX-Retarget: #toasts`/`HX-Reswap: beforeend` — a `/_/` answer never renders `error.html`, §2.1.3, R18),
+   resolve `field` (404 `partials/fragment_error.html` appended to
    `#toasts`, under `HX-Retarget: #toasts` and `HX-Reswap: beforeend`, §2.1.3), validate body (422).
 3. `app.issues.update_issue(uow, UpdateIssue(issue=ref, title=...), actor)` → UPDATE issue +
    INSERT issue_history (one transaction).
@@ -2643,8 +2663,13 @@ Component-specific requirements:
    control nor a `<details>` (`writable: False`, §2.3.4). `422 ISSUE_TRASHED` ⇒ the issue is **in the
    trash**: the same element `open` and marked, with the message and no write control
    (`writable: False, open: True`), and that answer exists only because the read behind it passed
-   `include_trashed=True` (§2.6.3, §6). The two statuses are not interchangeable and the trash is never a
-   `409`. Both are put in place by the `htmx:beforeSwap` listener, which enables `422` in the tree today
+   `include_trashed=True` (§2.6.3, §6). All three answers fill `form_errors` under the key of the field the
+   request named — `{requested_field: refusal_sentence(refusal, verb="edit", identifier=…)}` — and never under
+   `refusal.field`: `ISSUE_ARCHIVED`/`ISSUE_TRASHED` name `ref`/`trashed`, which is none of the seven
+   controls, and the wrapper prints only its own `fields[<name>].message` (§2.3.4), so a key off the error's
+   field would leave the `409` and the trash's `422` mute. The two statuses are not interchangeable and the
+   trash is never a `409`. Both are put in place by the `htmx:beforeSwap` listener, which enables `422` in
+   the tree today
    and gains `409` in this ticket (§2.1.3). A `404` has no element to keep and answers
    `partials/fragment_error.html` appended to `#toasts`, under `HX-Retarget: #toasts` and
    `HX-Reswap: beforeend` (§6).
@@ -3757,6 +3782,27 @@ Feature: hifa web dashboard
 - **Editing a comment**: the composer of §2.6.10 writes one and no route of this layer rewrites one.
 
 ## 11. Notes
+
+- spec_revision 36 (2026-11-23): **the third review round closed seven findings on the field contract, and the
+  one that was not cosmetic was a refusal that printed nothing.** `version` stays **12** (no route, status,
+  value of `view` or scenario moves), the corpus stays **251** scenarios (§7 of this file: **91**) and
+  `DECISIONS.md` stays **80** decisions. (a) **The `409` and the trash's `422` came back mute.**
+  `ISSUE_ARCHIVED`/`ISSUE_TRASHED` carry `field="ref"`/`"trashed"`, which is none of the seven controls, so
+  `_refusal` resolves no control and the sentence landed in `form_error` — the key the field wrapper never
+  prints. §2.3.4 and §5.3 step 5 now say a `view=field` refusal keys its message on the field the request
+  named, `form_errors={requested_field: refusal_sentence(refusal, verb="edit", identifier=…)}`, which is what
+  makes §7's archived-issue scenario (`contains "archived"`) producible. (b) **§2.3.4 no longer states a count
+  for the action group**: it said "the four", the group is the move control, the archive block and the delete
+  block, and rev 34 (j) already declared that no prose of this spec counts it. (c) **Both control-less
+  wrappers print `data-readonly` and `data-invalid`.** §2.5.8 and §2.6.3 agreed with each other and not with
+  the trash's `<summary>`, which printed neither; the value element of both states carries both attributes
+  now — a `<div>` with no `<details>` on the `409`, the `<summary>` of the open one on the `422`. (d)
+  **`.panel-error` does not exist**: the panel's line for a refusal with no field of its own is a
+  `<p class="form-error">` (`partials/issue_panel.html`), and §2.6.3 and §2.6.9 say so. (e) **§2.6.9's "one of
+  the five" is one of the four** — the section's own opening counts move, archive, delete and restore.
+  (f) **A `/_/` `404` is never `error.html`**: §5.3 step 2 answers `partials/fragment_error.html` for the
+  unresolved ref, as §2.1.3 and R18 already said; the page routes keep `error.html`. (g) **`restore` is a
+  layer form too**: §2.1.2 listed three of the four forms that carry `method`/`action` and no `hx-*`.
 
 - spec_revision 35 (2026-11-23): **the second review round on the field contract closed eleven findings: the
   contract gains one key and loses three claims that were not true.** `version` stays **12**: no route, no
