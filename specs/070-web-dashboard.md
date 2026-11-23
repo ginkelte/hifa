@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 37
+spec_revision: 38
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -1931,9 +1931,13 @@ Rules:
   this contract leaves exactly as it is, and an unnecessary one.
 - **The server is the truth, and the only optimism is that the control keeps what the reader typed until the
   answer lands.** The response replaces the node, so there is nothing to reconcile; a refused value is
-  discarded and the server's value is what comes back (R7). Focus returns to the `<summary>` of the wrapper
-  that replaced the control, matched by `data-field` (§2.6.9) — and to the wrapper itself when the answer has
-  no control to focus, which is the two `writable: False` states.
+  discarded and the server's value is what comes back (R7). Focus returns to the `<summary>` of the
+  `[data-field="{name}"]` wrapper that the response brought back in value state, to the marked control itself
+  (`.is-invalid`, a focusable node) on a `422` or a `409` that still carries one, and on the archived issue's
+  `409` it does not move at all, because that wrapper is a `<div class="field-value" data-readonly
+  data-invalid>` with no `tabindex` and there is nowhere to put it: the message arrives through the
+  `partials/fragment_error.html` toast and the wrapper's `.form-error`, and the reader hears it from the
+  content change, not from a focus jump.
 - **Keyboard.** `Enter` submits a text field (implicit submission of its form owner, the same `hx-patch`);
   `Esc` closes the open field with no request (§2.6.2); `Tab` leaves the control for the next field's
   `<summary>`, because a closed `<details>` contributes its summary and nothing else to the tab order — so the
@@ -3801,6 +3805,16 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 38 (2026-11-23): **the focus return is one sentence with three branches, and the third branch
+  moves nothing.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
+  `DECISIONS.md` stays **80** decisions. The bullet of "the server is the truth" said focus went "to the
+  wrapper itself when the answer has no control to focus", which is unimplementable on the archived issue's
+  `409`: that wrapper is a `<div class="field-value" data-readonly data-invalid>` with no `tabindex`, so it is
+  not focusable and there is no jump to make. The sentence now names the three answers one by one — the
+  `<summary>` of that field's `[data-field="{name}"]` wrapper on a save, the marked `.is-invalid` control on a
+  `422` or a `409` that carries one, and no movement at all on the archived refusal, where the message arrives
+  by the toast of `partials/fragment_error.html` and the wrapper's `.form-error` and the reader hears it as a
+  content change. Nothing else of §2.6.3 changes.
 - spec_revision 37 (2026-11-23): **the closing notes on the field contract: two states under one word, one
   taxonomy, and the row's markup.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this
   file: **91**) and `DECISIONS.md` stays **80** decisions. (a) **§2.6.3's refusal bullet gave one answer for
