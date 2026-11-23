@@ -1,3 +1,10 @@
+# [0.16.0](https://github.com/ginkelte/hifa/compare/v0.15.0...v0.16.0) (2026-11-23)
+
+
+### Features
+
+* **web:** serve a markdown table as a table ([#44](https://github.com/ginkelte/hifa/issues/44)) ([54dfb4a](https://github.com/ginkelte/hifa/commit/54dfb4acc64b763e6f94af55abb22d3d76256e1d))
+
 # [0.15.0](https://github.com/ginkelte/hifa/compare/v0.14.0...v0.15.0) (2026-11-21)
 
 
