@@ -222,13 +222,13 @@
   // No json-enc override: `htmx:configRequest` is not cancelable, so a header swapped to JSON
   // left the body htmx had already encoded as form data — and the fragment route parses exactly
   // that (`_parse_form`). htmx's own encoding is the contract here.
+  //
+  // htmx re-reads `isError` after `htmx:beforeSwap`, so the listener above keeps a `422`, a
+  // `409` and every answer carrying `HX-Retarget` out of this handler: their bodies are swapped
+  // in place, where the sentence already is. Only a fault the swap cannot show arrives here.
   document.body.addEventListener("htmx:responseError", function (event) {
     var status = event.detail.xhr.status;
-    var elt = event.detail.elt;
-    // A refused field answered its own wrapper: the sentence is beside the control and the swap
-    // listener above put it there, so a toast would repeat it over the element (§2.1.3, §2.6.3).
-    if (status === 409 && elt && elt.closest && elt.closest(".field-inline")) return;
-    if (status === 409 || status === 500) toast("could not save: the server rejected the change", true);
+    if (status === 500) toast("could not save: the server rejected the change", true);
   });
 
   document.body.addEventListener("issue-created", function () { toast("issue created"); });
@@ -313,15 +313,21 @@
     return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable === true;
   }
 
+  // The forms `Cmd/Ctrl+Enter` may submit (§2.6.2): a field wrapper's, the comment composer's
+  // and the quick-add's. A `<details class="confirm">` of archive/delete is not one of them —
+  // its submit is a different answer, and a shortcut that fired it would be a destructive key.
+  var SUBMIT_SCOPE = ".field-inline, .comment-composer, #quick-add";
+
   document.addEventListener("keydown", function (event) {
     var editable = isEditable(event.target);
 
     // Cmd/Ctrl+Enter submits the form the focused control belongs to, and it runs before the
     // editable-target rule returns: `Enter` in a `<textarea>` is a newline, so this is how the
-    // multi-line description field of §2.6.3 saves (§2.6.2).
+    // multi-line description field of §2.6.3 saves (§2.6.2). Only the three forms that rule
+    // names are in scope; every other form keeps its own submit button.
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       var owner = event.target && event.target.form;
-      if (owner && owner.requestSubmit) {
+      if (owner && owner.closest && owner.closest(SUBMIT_SCOPE)) {
         event.preventDefault();
         owner.requestSubmit();
       }

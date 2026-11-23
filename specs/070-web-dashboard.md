@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 41
+spec_revision: 42
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -265,12 +265,15 @@ document.body.addEventListener('htmx:beforeSwap', (e) => {
 ```
 
 **HIFA-114 wrote the `409` and the retargeted `404` into that listener, and the tree has carried them
-since.** Until then the listener enabled exactly one status (`422`), and the generic `htmx:responseError`
-handler turned a `409` into the one-line toast `could not save: the server rejected the change`, so the
-`409` that §2.6.3 contracts — the wrapper back with the server's value, the message and **no** control —
-needed both changes in the same commit: the two statuses added to the listener (`app.js:213-220`), and the
-field write no longer answered by a toast (`app.js:230`, where `htmx:responseError` returns for a
-`.field-inline`). §2.6.3 states that flow as a requirement of the implementation for exactly this reason.
+since.** Until then the listener enabled exactly one status (`422`), and a `409` therefore fell through to
+the generic `htmx:responseError`, which turned it into the one-line toast `could not save: the server
+rejected the change` — the opposite of the answer §2.6.3 contracts: the wrapper back with the server's
+value, the message and **no** control. The listener above (`app.js:213-220`) is now the whole of the rule:
+htmx re-reads `isError` after `htmx:beforeSwap` and fires `htmx:responseError` only for a response it still
+holds to be an error, so a `422`, a `409` and every answer carrying `HX-Retarget` are swapped in place — and
+none of them becomes a toast over an element that already prints the sentence. What reaches
+`htmx:responseError` is the one fault the swap cannot show, a `500`; that handler has no field to except and
+no status to guess. §2.6.3 states that flow as a requirement of the implementation for exactly this reason.
 
 #### 2.1.3.1 The one JSON body under `/_/`: `GET /_/revision` (D-049)
 
@@ -1915,8 +1918,8 @@ Rules:
   the panel that is what makes a refused `title` a sentence under the title instead of a
   line above the footer. The `<p class="form-error">` line stays for a refusal with no field of its own, which
   is the layer writes' shape (§2.6.9, `partials/issue_panel.html`). Both statuses reach the wrapper through
-  the swap the `htmx:beforeSwap` listener enables (§2.1.3) — `422` is enabled in the tree today, `409` is
-  added by this ticket — because a `4xx` htmx
+  the swap the `htmx:beforeSwap` listener enables (§2.1.3) — `422` and `409` are both enabled in the tree —
+  because a `4xx` htmx
   does not swap leaves the node where it was and turns the refusal into a toast with no field marked.
 - **An issue in the trash is refused `422` on that same wrapper, and the read behind the answer has to see the
   trash.** `ISSUE_TRASHED` reaches `?view=field` like any other field refusal (§6, R29): the wrapper comes back
@@ -2901,7 +2904,7 @@ differ in exactly the step above, not in the route, the status or the header.
 | `/_/revision` without `HX-Request` | 400 | `text/plain` `fragment requires htmx` (R5, §2.1.3.1) | the tick is skipped and the page keeps what it has |
 | Validation on a page (form without JS) | 422 | same template + `form_errors` | errors next to the field |
 | Validation in a fragment / inline | 422 | the element the request named — the field wrapper for `view=field`, the `<tr>`, the card or the panel — with `.is-invalid` on the control and the message beside it; `HX-Retarget` only when there is no element to keep | field marked, control `open`, message next to it; toast |
-| A value of a control in `view=field` that resolves to no row (`state` or `member` naming none; `parent` is in `_FIELD_REFERENCE_RESOURCES` but no control sends it, §2.1.2) | 422 | the **field wrapper** of the control that was edited, re-rendered `open` with `.is-invalid` on that control and the `invalid value: ` sentence the catalogue's last row gives the domain's message — a `NotFound` about a value and not about the route, so the wrapper stays; the page route `POST /{team}/issue/{identifier}` keeps its `404` (`error.html`) for the same body, because a page has no wrapper to keep | nothing is written; the field stays open, marked, with the sentence beside it and the stored value in the control |
+| A value of a control in `view=field` that resolves to no row (`state` or `member` naming none — the two references `EDIT_COMMAND_FIELDS` sends, §2.1.2) | 422 | the **field wrapper** of the control that was edited, re-rendered `open` with `.is-invalid` on that control and the `invalid value: ` sentence the catalogue's last row gives the domain's message — a `NotFound` about a value and not about the route, so the wrapper stays; the page route `POST /{team}/issue/{identifier}` keeps its `404` (`error.html`) for the same body, because a page has no wrapper to keep | nothing is written; the field stays open, marked, with the sentence beside it and the stored value in the control |
 | `Conflict` (label in use, etc.) | 409 | partial with message | toast, no destructive swap |
 | `Validation` (drop with open children) | 422 | the panel re-rendered + `form_error` (§2.1.3, §5.4); the drop ignores the body | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `InvalidTransition` (drop on an archived issue, R20) | 409 | the panel re-rendered + `form_error`, the same body as the row above (§2.1.3, §5.4) | the card returns to its place + toast, the client reloads `/_/board/{team}` |
@@ -3815,6 +3818,18 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 42 (2026-11-23): **the quality review's two spec findings are settled, and neither moves a
+  contract.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
+  `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or scenario moves. (a) **§6's
+  `422` row and the tree disagreed about a reference nobody reads**: the row said `parent` sat in
+  `_FIELD_REFERENCE_RESOURCES` with no control to send it, and the set carried it anyway; `parent` is gone
+  from both, so the row names `state` and `member` — the two references `EDIT_COMMAND_FIELDS` sends — and the
+  comment above the set says why `parent` is not one of them. (b) **§2.1.3 described an early return the
+  client does not make.** The aside said `htmx:responseError` returned for a `.field-inline` on a `409`; the
+  handler has no such guard, and one that mattered could not exist: htmx re-reads `isError` after
+  `htmx:beforeSwap`, so a `409` never reaches `responseError` at all. The paragraph now says what the listener
+  really does — `422`, `409` and every `HX-Retarget` answer swapped in place, only a `500` left to the toast —
+  and §2.6.3's aside stops calling the `409` "added by this ticket".
 - spec_revision 41 (2026-11-23): **the round-2 review's three minors are settled, and the one that mattered
   was a focus rule promising a return the client does not make.** `version` stays **12**, the corpus stays
   **251** scenarios (§7 of this file: **91**) and `DECISIONS.md` stays **80** decisions: no route, status,

@@ -10,7 +10,7 @@
     <form id="edit-state-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
           hx-patch="{{ vm.edit_fragment }}?view=field&field=state"
           hx-target="closest .field-inline" hx-swap="outerHTML"
-          hx-sync="closest .field-inline:replace">
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button">
       <select name="state"
               class="inline-input{% if vm.fields['state'].invalid %} is-invalid{% endif %}"
               aria-label="State of {{ vm.identifier }}"{% if vm.fields['state'].invalid %} aria-invalid="true"{% endif %}

@@ -5,10 +5,15 @@ the answer is that field's wrapper, never the page, the aside or the row. The te
 after the acceptance scenarios of `16-dashboard.feature`, and they read the database beside the
 HTML — a `200` proves nothing if the column did not move, and a wrapper that answers the wrong
 field is indistinguishable from one that answers the right one unless the two are read apart.
+
+One test at the end reads `app.js` as text: the repository has no JavaScript harness, so the four
+client rules of §2.1.3/§2.6.2/§2.6.3 are pinned by their source and not by a browser, and the
+test says so in its own docstring.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +27,8 @@ from hifa.web.app import create_app
 
 runner = CliRunner()
 HTMX = {"HX-Request": "true"}
+#: `app.js`, read as text by the one static test of the client.
+JS = Path(__file__).resolve().parents[3] / "src" / "hifa" / "web" / "static" / "js" / "app.js"
 #: The title the fixture's issue already holds — the value a refused write must keep.
 STORED_TITLE = "Fix login"
 #: The description the fixture's issue already holds.
@@ -32,6 +39,12 @@ HISTORY = (
     "SELECT h.field FROM issue_history h JOIN issue i ON i.id = h.issue_id"
     " WHERE i.identifier = ? ORDER BY h.id"
 )
+#: One `<form>` opening tag of a wrapper, with every attribute it carries.
+FORM_TAG = re.compile(r"<form\b[^>]*>", re.DOTALL)
+#: The two attributes a form submits by, read from that tag.
+FORM_ATTRIBUTE = re.compile(r'\b(action|method)="([^"]*)"')
+#: One `<option>` of a `<select>` and whether it is the selected one.
+OPTION = re.compile(r'<option value="([^"]*)"( selected)?>')
 #: The seven wrappers, in the order §2.3.4 declares them.
 FIELD_NAMES = (
     "title",
@@ -51,7 +64,11 @@ def _run(*args: str) -> None:
 
 @pytest.fixture
 def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """Isolated cwd + HIFA_DB with one team (ENG) and one issue in Todo with every field set."""
+    """Isolated cwd + HIFA_DB with one team (ENG) and one issue in Todo with every field set.
+
+    Every field the editor writes is set on the row, the assignee included: the no-JS scenario
+    saves each control through its own `<form>`, and a write over an empty column proves nothing.
+    """
     project = tmp_path / "proj"
     project.mkdir()
     monkeypatch.chdir(project)
@@ -68,6 +85,8 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         STORED_DESCRIPTION,
         "--estimate",
         str(STORED_ESTIMATE),
+        "--assignee",
+        "ME",
     )
     db = tmp_path / "hifa.db"
     with sqlite3.connect(db) as conn:
@@ -166,7 +185,15 @@ def _field_markup(html: str, identifier: str, name: str) -> str:
 def test_the_description_is_edited_in_place_and_ctrl_enter_saves_it(
     seeded: SimpleNamespace,
 ) -> None:
-    """The multi-line field saves as one field, and the answer renders the stored markdown."""
+    """The multi-line field saves as one field, and the answer renders the stored markdown.
+
+    The title names the scenario of `16-dashboard.feature`, but this test pins the **server's**
+    half: the `PATCH` one field sends and the answer it gets back. `Cmd/Ctrl+Enter` is the
+    client's half — a keystroke no request of this test performs — and it is pinned by
+    `test_the_client_rules_of_the_inline_editor_are_what_app_js_says` below, which reads the
+    branch out of `app.js`. A test that posted the `PATCH` and claimed the shortcut would pass
+    with the keystroke deleted.
+    """
     response = seeded.client.patch(
         f"/_/issues/{seeded.identifier}",
         params={"view": "field", "field": "description"},
@@ -216,7 +243,15 @@ def test_the_panel_renders_one_inline_control_per_field_and_no_edit_heading(
 def test_a_refused_inline_edit_on_the_panel_answers_that_field_and_not_the_aside(
     seeded: SimpleNamespace,
 ) -> None:
-    """A refusal on a field that sits in the panel answers the wrapper, never the whole aside."""
+    """A refusal on a field that sits in the panel answers the wrapper, never the whole aside.
+
+    The row is read beside the HTML: the answer renders the stored state and no history row was
+    written, because a `422` that marked the control and still wrote would be a refusal in name
+    only.
+    """
+    stored_state = _value_of("state_id", seeded.db, seeded.identifier)
+    before = _history(seeded.db, seeded.identifier)
+
     response = seeded.client.patch(
         f"/_/issues/{seeded.identifier}",
         params={"view": "field", "field": "state"},
@@ -228,6 +263,8 @@ def test_a_refused_inline_edit_on_the_panel_answers_that_field_and_not_the_aside
     assert f'id="field-state-{seeded.identifier}"' in response.text
     assert "is-invalid" in response.text
     assert "<aside" not in response.text
+    assert _value_of("state_id", seeded.db, seeded.identifier) == stored_state
+    assert _history(seeded.db, seeded.identifier) == before, "a refused edit wrote a history row"
 
 
 def test_an_inline_edit_of_an_archived_issue_is_refused_with_the_message_and_no_control(
@@ -253,19 +290,58 @@ def test_an_inline_edit_of_an_archived_issue_is_refused_with_the_message_and_no_
     assert _value_of("title", seeded.db, seeded.identifier) == STORED_TITLE
 
 
+def _form_of(html: str, identifier: str, name: str) -> dict[str, str]:
+    """The `action` and `method` of the `<form>` inside one field wrapper, read from the page."""
+    match = FORM_TAG.search(_field_markup(html, identifier, name))
+    assert match is not None, f"the {name} wrapper renders no form to submit without JavaScript"
+    return dict(FORM_ATTRIBUTE.findall(match.group(0)))
+
+
 def test_without_javascript_each_inline_control_still_saves_through_the_page_form(
     seeded: SimpleNamespace,
 ) -> None:
-    """The field form is a real page form: the same node submits without a script."""
-    response = seeded.client.post(
-        f"/ENG/issue/{seeded.identifier}",
-        data={"estimate": "3"},
-        follow_redirects=False,
+    """Each wrapper's own `<form>` is the no-JS path, and the page is what states its URL.
+
+    The detail page is read first and every write is taken from the markup the renderer
+    produced: the `action` and `method` of the `<form>` inside each of the seven wrappers, and
+    for the two `<select>`s an option the control does not have `selected`. A hardcoded URL
+    passed with every one of them pointing elsewhere; reading the page is the only way the
+    `action` and the `method` are what is being tested. The row is read back after each post,
+    because a `303` proves a route answered and not that the column moved.
+    """
+    page = seeded.client.get(f"/ENG/issue/{seeded.identifier}")
+    assert page.status_code == 200
+    detail_url = f"/ENG/issue/{seeded.identifier}"
+
+    # The select that is not the stored one: any of its options is a value the control itself
+    # offers, so the write is one a reader could have made without typing a reference.
+    next_state = next(
+        option
+        for option, selected in OPTION.findall(_field_markup(page.text, seeded.identifier, "state"))
+        if not selected
     )
 
-    assert response.status_code == 303
-    assert response.headers["location"] == f"/ENG/issue/{seeded.identifier}"
-    assert _value_of("estimate", seeded.db, seeded.identifier) == 3
+    # field -> the column it writes, the value the form sends, and what the column must hold.
+    writes = (
+        ("title", "title", "Fix login without JS", "Fix login without JS"),
+        ("description", "description", "second draft", "second draft"),
+        ("priority", "priority", "2", 2),
+        ("state", "state_id", next_state, next_state),
+        ("assignee", "assignee_id", "", None),
+        ("due_date", "due_date", "2026-12-31", "2026-12-31"),
+        ("estimate", "estimate", "3", 3),
+    )
+
+    for field, column, value, stored in writes:
+        form = _form_of(page.text, seeded.identifier, field)
+        assert form["method"] == "post", f"{field} posts with {form['method']!r}, not post"
+        assert form["action"] == detail_url, f"{field} posts to {form['action']!r}"
+
+        response = seeded.client.post(form["action"], data={field: value}, follow_redirects=False)
+
+        assert response.status_code == 303, field
+        assert response.headers["location"] == detail_url, field
+        assert _value_of(column, seeded.db, seeded.identifier) == stored, field
 
 
 def test_the_list_row_keeps_its_own_inline_title_control_and_is_not_a_field_wrapper(
@@ -324,3 +400,96 @@ def test_an_inline_edit_of_a_trashed_issue_is_refused_with_the_message_and_the_o
     assert f"{seeded.identifier} is in the trash; restore it first" in html
     assert "hx-patch" not in html
     assert _value_of("title", seeded.db, seeded.identifier) == STORED_TITLE
+
+
+# --- the client ---------------------------------------------------------------------------
+
+
+def _brace_block(source: str, opening: int) -> str:
+    """The block a `{` at `opening` opens, up to its matching `}`.
+
+    Counting braces from the opener is what makes one rule's block addressable: a substring
+    searched over the whole file passes with the rule moved into another handler, or quoted in a
+    comment, and neither is the code that runs.
+    """
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening : index + 1]
+    raise AssertionError(f"unbalanced braces at offset {opening}")
+
+
+def _handlers(source: str, event: str) -> list[str]:
+    """The body of every `addEventListener("<event>", function (…) { … })` of `app.js`."""
+    blocks: list[str] = []
+    start = 0
+    while True:
+        index = source.find(f'addEventListener("{event}"', start)
+        if index < 0:
+            return blocks
+        # A named handler (`addEventListener("…", initBoardSortable)`) has no body here.
+        statement = source.index(")", index)
+        handler = source.find("function", index, statement)
+        start = index + 1
+        if handler < 0:
+            continue
+        opening = source.index("{", handler)
+        blocks.append(_brace_block(source, opening))
+        start = opening
+
+
+def test_the_client_rules_of_the_inline_editor_are_what_app_js_says() -> None:
+    """The four client rules of §2.1.3/§2.6.2/§2.6.3, pinned by reading `app.js` as text.
+
+    **This test does not run the client.** The repository has no JavaScript harness — no Node
+    build step, no bundler and no browser in the test job — so what is asserted here is that each
+    rule is written in the block that implements it, and no more: the listener that enables the
+    swap of a `409` and of an `HX-Retarget` body, `requestSubmit()` in the `Cmd/Ctrl+Enter`
+    branch and the scope that keeps a confirmation `<form>` out of it, the field's
+    `details[open]` read **before** the panel branch, and the two focus destinations
+    (`data-field` and the panel). A keystroke, a swap and a focus are the browser's half; the
+    server's half is the tests above.
+    """
+    source = JS.read_text(encoding="utf-8")
+
+    # 1. A refusal that replaces a node is swapped in — `422`, `409` and every `HX-Retarget`.
+    swaps = [block for block in _handlers(source, "htmx:beforeSwap") if "shouldSwap" in block]
+    assert len(swaps) == 1, "the listener that enables the swap of a refusal is gone or doubled"
+    assert "xhr.status === 409" in swaps[0]
+    assert 'getResponseHeader("HX-Retarget")' in swaps[0]
+    assert "shouldSwap = true" in swaps[0]
+    assert "isError = false" in swaps[0]
+
+    # 2. `Cmd/Ctrl+Enter` submits the form of the focused control, and only the three of §2.6.2.
+    (keydown,) = _handlers(source, "keydown")
+    start = keydown.index('event.key === "Enter" && (event.metaKey || event.ctrlKey)')
+    enter = _brace_block(keydown, keydown.index("{", start))
+    assert "requestSubmit()" in enter
+    assert "closest(SUBMIT_SCOPE)" in enter
+    declared = source.index("var SUBMIT_SCOPE")
+    scope = source[declared : source.index(";", declared)]
+    assert ".field-inline" in scope
+    assert "#quick-add" in scope
+
+    # 3. `Esc` closes the field's `<details>` before the panel branch runs: one key, one thing.
+    start = keydown.index('event.key === "Escape"')
+    escape = _brace_block(keydown, keydown.index("{", start))
+    assert "details[open]" in escape
+    assert "panelIsOpen()" in escape
+    assert escape.index("details[open]") < escape.index("panelIsOpen()")
+
+    # 4. Focus returns to the wrapper the answer replaced, and to the panel when it opened.
+    (focus_field,) = [
+        block for block in _handlers(source, "htmx:afterSwap") if "focusField" in block
+    ]
+    assert '[data-field="' in focus_field
+    assert "panel.focus()" in focus_field
+    (focus_source,) = [
+        block for block in _handlers(source, "htmx:beforeSwap") if "focusField" in block
+    ]
+    assert 'getAttribute("data-field")' in focus_source
+    assert "=== PANEL" in focus_source

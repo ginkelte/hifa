@@ -10,7 +10,7 @@
     <form id="edit-estimate-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
           hx-patch="{{ vm.edit_fragment }}?view=field&field=estimate"
           hx-target="closest .field-inline" hx-swap="outerHTML"
-          hx-sync="closest .field-inline:replace">
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button">
       <input type="number" step="any" name="estimate" value="{{ vm.estimate_value }}"
              class="inline-input{% if vm.fields['estimate'].invalid %} is-invalid{% endif %}"
              aria-label="Estimate of {{ vm.identifier }}" autocomplete="off"{% if vm.fields['estimate'].invalid %} aria-invalid="true"{% endif %}
