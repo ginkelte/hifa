@@ -126,7 +126,8 @@ class _Allowlist(HTMLParser):
         if tag in ALLOWED_TAGS and tag not in VOID_TAGS:
             self.parts.append(f"</{tag}>")
             if tag == "table":
-                # Only a table that opened a wrapper closes one, so no `</div>` arrives unopened.
+                # Each `</table>` closes the wrapper its own `<table>` opened: the pairing is
+                # the input's (balanced tags, escaped markup), not something tested in this method.
                 self.parts.append("</div>")
 
     def handle_data(self, data: str) -> None:
