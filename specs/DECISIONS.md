@@ -4893,8 +4893,8 @@ subject is form 2's comparison, and it fails when the fold is removed.
 
 **Date:** 2026-11-22 · **Wins:** SPEC-070 §2.3.6 (the construction of the renderer) and R15 (the tag
 allowlist), which SPEC-000 REQ-S003 names as the sanitizer contract · **Touches:** SPEC-070 §2.3.6,
-R15, §7 and §11 (`spec_revision` 31 → 32, `version` 10 → 11); SPEC-001 §7 and its frontmatter
-(`spec_revision` 17 → 18); `specs/001-mvp-v1.tasks.md`; `specs/INDEX.md`;
+R15, §7 and §11 (`spec_revision` 31 → 32, `version` 10 → 11); SPEC-001 §7, §4 (REQ-S004) and its
+frontmatter (`spec_revision` 17 → 18); `specs/001-mvp-v1.tasks.md` (T-10); `specs/INDEX.md`;
 `specs/acceptance/001-mvp-v1/17-dashboard-hardening.feature`; `src/hifa/web/markdown.py` and
 `src/hifa/web/static/css/app.css`, the implementation this entry contracts
 

@@ -1006,8 +1006,9 @@ def render_markdown(text: str | None) -> str:
   drops the attribute and keeps the cell text. No other tag carries `style` and no other attribute
   joins `ALLOWED_ATTRS`. The value is tested by the check its own attribute selects — `href`
   against `ALLOWED_SCHEMES`, `style` against `ALLOWED_STYLES` — so a `style` value never passes
-  through the `href` scheme test (a `text-align:center` read as a URL has no scheme and would be
-  dropped). The rule is an exact-match list and not a CSS parser: the renderer emits three literal
+  through the `href` scheme test (`urlparse("text-align:center")` reads `text-align` as the
+  scheme, which is not in `ALLOWED_SCHEMES`, and that is why the attribute would be dropped). The
+  rule is an exact-match list and not a CSS parser: the renderer emits three literal
   strings, the allowlist accepts three literal strings, and anything a declaration parser would have
   to interpret is refused, so the check cannot be grown by a value it misreads.
 - **The sanitizer wraps every `table` it emits in `<div class="table-scroll">…</div>`.** The wrapper
@@ -1019,13 +1020,14 @@ def render_markdown(text: str | None) -> str:
   (`border-collapse: collapse` and `margin: 0 0 12px`) and `.description th`/`.description td`
   (`1px solid var(--border)` and `padding: 6px 10px`); `th` carries `var(--surface-2)` and weight
   600, and `th`/`td` default to `text-align: left` — the inline `style` of an aligned column wins
-  over the stylesheet, which is why the alignment survives. The `@media (max-width: 900px)` rule is
-  `.description table, .description pre { display: block; max-width: 100%; overflow-x: auto; }`. Its
-  `.description pre` half is unchanged — `display: block`, `max-width: 100%`, `overflow-x: auto` —
-  and the overflow the `table` half carried moves to `.description .table-scroll`, which takes
-  `max-width: 100%` and `overflow-x: auto` **without** `display: block`. So a wide table scrolls in
-  its own box while keeping `display: table` at every width; `display: block` on the table is what
-  breaks the alignment of its own header.
+  over the stylesheet, which is why the alignment survives. The `@media (max-width: 900px)` block
+  keeps `.description pre { display: block; max-width: 100%; overflow-x: auto; }` unchanged and
+  gains `.description .table-scroll { max-width: 100%; overflow-x: auto; }`; `.description table`
+  leaves the media block entirely — no `display: block`, no `max-width` and no `overflow-x` on the
+  table at any width. A wide table scrolls inside `.table-scroll` and keeps `display: table` at
+  every width, because `display: block` on the table is what breaks the alignment of its own
+  header with its cells. The shipped selector paired `.description table` with `.description pre`;
+  the table half goes.
 - `markdown-it-py` is declared in `pyproject.toml` in the **base group** (not in the `[web]`
   extra): the dashboard uses the renderer, but the dependency is not optional (D-020). Version
   pinned in `pyproject.toml` and in `uv.lock` like the rest of the dependencies.
