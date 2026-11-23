@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Request
@@ -787,27 +787,62 @@ def issue_panel_fragment(request: Request, identifier: str) -> Response:
 
 @router.patch("/_/issues/{identifier}", dependencies=[HTMX])
 def issue_edit_fragment(
-    request: Request, identifier: str, view: str = "list", body: bytes = Body(default=b"")
+    request: Request,
+    identifier: str,
+    view: str = "list",
+    field: str | None = None,
+    body: bytes = Body(default=b""),
 ) -> Response:
-    """One field write from the list, the board or the panel; the element comes back edited.
+    """Write one field and answer the element that changed.
 
     `view` picks the element that answers — the `<tr>` of the list (`outerHTML`), the card of
-    the board or the whole panel — and defaults to `list` when the caller does not say. The body
-    is `application/x-www-form-urlencoded`: a key that is absent keeps the stored value, an empty
-    string clears the field the command lets be cleared.
+    the board, the whole panel, or **one field wrapper** (`view=field`, §2.1.3/§2.6.3) — and
+    defaults to `list` when the caller does not say. `view=field` names the control it answers
+    in `field`, because the body carries the value and not the field's identity: a `422` for an
+    empty value has a body of `title=` and nothing in it says which wrapper to answer. A field
+    that names none of the seven controls is a `404` with `partials/fragment_error.html`, the
+    answer this layer has for a resolution that failed and has no element to keep.
 
-    A refusal keeps the element: `422` re-renders the same row, card or panel with the control
-    marked and the message beside it, and `409` (a write to an archived issue) re-renders it with
-    the message and no control. `404` is the only answer that cannot keep it — the element the
-    client asked for does not exist, and `error.html`'s fragment says so in the toast area.
+    The body is `application/x-www-form-urlencoded`: a key that is absent keeps the stored value,
+    an empty string clears the field the command lets be cleared.
+
+    A refusal keeps the element: `422` re-renders the same row, card, panel or wrapper with the
+    control marked and the message beside it, and `409` (a write to an archived issue) re-renders
+    it with the message and no control. For `view=field` the message is keyed on the field the
+    request named, because `ISSUE_ARCHIVED`/`ISSUE_TRASHED` name `ref`/`trashed` and neither is a
+    control (§2.3.4). `404` is the only answer that cannot keep it — the element the client asked
+    for does not exist, and the fragment says so in the toast area.
+
+    Args:
+        request: The incoming request; its app state carries the database path and read-only flag.
+        identifier: The issue reference — an identifier or a ULID — as it came in the path.
+        view: The element to re-render: `list`, `board`, `panel` or `field`.
+        field: The control `view=field` answers; one of `EDIT_FORM_FIELDS`, ignored otherwise.
+        body: The urlencoded form body; a field that is absent is left untouched.
+
+    Returns:
+        The row, card, panel or wrapper, or the fragment error of a refused or unresolved write.
     """
     if not _can_write(request):
         return _fragment_error(request, status_code=403, message="server is read-only")
+    if view == "field" and field not in readmodels.EDIT_FORM_FIELDS:
+        return _unknown_field(request, identifier, field)
     fields = _parse_form(body)
     try:
         _update_from_form(request, identifier, fields)
     except Validation as exc:
         control, message = _refusal(exc, identifier=identifier, verb="edit")
+        if view == "field":
+            # The requested field is the key, never the control the error names: the wrapper
+            # prints only its own `fields[<name>].message` and would come back mute otherwise.
+            return _issue_edit_fragment(
+                request,
+                identifier,
+                view=view,
+                field=field,
+                status_code=422,
+                form_errors={field: message} if field else None,
+            )
         return _issue_edit_fragment(
             request,
             identifier,
@@ -816,15 +851,40 @@ def issue_edit_fragment(
             form_errors={control: message} if control else None,
             form_error=None if control else message,
         )
+    except NotFound as exc:
+        # A value the reader typed into a control and that resolves to no row is the field's own
+        # refusal, not a failed route: the wrapper comes back marked with the sentence, the way
+        # any other `422` does. An unknown issue keeps its `404` — it is not a field's value.
+        if view != "field" or exc.resource not in _FIELD_REFERENCE_RESOURCES:
+            raise
+        message = refusal_sentence(exc, verb="edit", identifier=identifier)
+        return _issue_edit_fragment(
+            request,
+            identifier,
+            view=view,
+            field=field,
+            status_code=422,
+            form_errors={field: message} if field else None,
+        )
     except InvalidTransition as exc:
+        message = refusal_sentence(exc, verb="edit", identifier=identifier)
+        if view == "field":
+            return _issue_edit_fragment(
+                request,
+                identifier,
+                view=view,
+                field=field,
+                status_code=409,
+                form_errors={field: message} if field else None,
+            )
         return _issue_edit_fragment(
             request,
             identifier,
             view=view,
             status_code=409,
-            form_error=refusal_sentence(exc, verb="edit", identifier=identifier),
+            form_error=message,
         )
-    response = _issue_edit_fragment(request, identifier, view=view, status_code=200)
+    response = _issue_edit_fragment(request, identifier, view=view, field=field, status_code=200)
     response.headers["HX-Trigger"] = "issue-updated"
     return response
 
@@ -1297,6 +1357,10 @@ EDIT_COMMAND_FIELDS: dict[str, str] = {
 EDIT_CLEARABLE = frozenset({"description", "assignee", "due_date", "estimate"})
 #: The `field` a use case reports -> the control that carries it (only the ones that differ).
 EDIT_FIELD_ALIASES: dict[str, str] = {"assignee_id": "assignee"}
+#: The `NotFound.resource` values a field's own value can produce: a reference the reader typed
+#: into one control and that resolves to no row. For `view=field` they are that control's `422`
+#: and never a failed route — an unknown issue is not one of them and keeps its `404`.
+_FIELD_REFERENCE_RESOURCES: Final[frozenset[str]] = frozenset({"state", "member", "parent"})
 
 
 def _parse_estimate(value: str) -> float | None:
@@ -1713,30 +1777,95 @@ def _issue_page_error(
     return _render(request, "issue_detail.html", {"page": page, "vm": vm}, status_code=status_code)
 
 
+def _unknown_field(request: Request, identifier: str, field: str | None) -> HTMLResponse:
+    """Answer `404` to a `view=field` naming no control of §2.1.2.
+
+    The issue is resolved first so the sentence names the row the route found and not the path
+    segment the reader typed, which may be a ULID (§6). An unknown issue keeps its own `404`;
+    the difference between the two answers is the message, not the status.
+
+    Args:
+        request: The incoming request, used for the connection and for the fragment's page context.
+        identifier: The issue reference the request named.
+        field: The `field` query parameter, as the reader sent it.
+
+    Returns:
+        `partials/fragment_error.html` with `HX-Retarget: #toasts` and `HX-Reswap: beforeend`.
+
+    Raises:
+        NotFound: When the issue itself does not resolve; the single handler answers it.
+    """
+    detail = boards.issue_detail(
+        _database(request), identifier, include=frozenset(), include_trashed=True
+    )
+    return _fragment_error(
+        request,
+        status_code=404,
+        message=f"field '{field or ''}' is not a field of {detail.issue.identifier}",
+    )
+
+
 def _issue_edit_fragment(
     request: Request,
     identifier: str,
     *,
     view: str,
     status_code: int,
+    field: str | None = None,
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
     confirm_open: str | None = None,
     draft: str | None = None,
 ) -> HTMLResponse:
-    """The element a `PATCH` answers — the row of the list, the card or the panel — refused or not.
+    """Render the element a `PATCH` answers — the row, the card, the panel or one field wrapper.
 
     The element is re-read after the write, so what comes back is the stored row: the client
-    swaps it in place and never has to merge the fields it did not send.
+    swaps it in place and never has to merge the fields it did not send. `view=field` answers
+    the one partial of §2.2 that prints that wrapper, and its read passes `include_trashed=True`
+    as the panel's does, because a trashed issue's field is refused `422` and not `404`.
+
+    Args:
+        request: The incoming request; its app state carries the database path.
+        identifier: The issue reference the request named.
+        view: The element to render: `list`, `board`, `panel` or `field`.
+        status_code: The status the answer carries: `200`, or the `422`/`409` of a refusal.
+        field: The control `view=field` renders; required, and one of `EDIT_FORM_FIELDS`, for it.
+        form_errors: The per-control refusal messages, keyed by the control's name.
+        form_error: The refusal sentence for an element that has no control to mark.
+        confirm_open: The confirmation block a refusal re-renders open, on the panel.
+        draft: The comment text the reader had typed when a comment write was refused.
+
+    Returns:
+        The rendered element as an `HTMLResponse` with the status the caller asked for.
+
+    Raises:
+        ValueError: If `view=field` arrives with a name outside `EDIT_FORM_FIELDS`.
+        NotFound: If the issue does not resolve under the read this view performs.
     """
+    if view == "field" and field not in readmodels.EDIT_FORM_FIELDS:
+        raise ValueError(f"view=field named no control: {field!r}")
     detail = boards.issue_detail(
         _database(request),
         identifier,
         include=boards.RENDERED_INCLUDE if view == "panel" else frozenset(),
-        include_trashed=view == "panel",
+        include_trashed=view in ("panel", "field"),
     )
     message = form_error or next((text for text in (form_errors or {}).values() if text), None)
     control = next((name for name, text in (form_errors or {}).items() if text), None)
+    if view == "field" and field is not None:
+        vm = _issue_detail_vm(
+            request,
+            detail,
+            form_errors=form_errors,
+            form_error=form_error,
+            surface="field",
+        )
+        return _render(
+            request,
+            f"partials/field_{field}.html",
+            {"page": _page(request, title=detail.issue.identifier, nav="issue"), "vm": vm},
+            status_code=status_code,
+        )
     if view == "panel":
         vm = _issue_detail_vm(
             request,

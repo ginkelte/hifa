@@ -1,0 +1,40 @@
+{#- The due date as one inline field (SPEC-070 §2.6.3): the value is the stored date's label
+    (`.is-overdue` when it is in the past), the control a `<input type="date">` saved on `change`. -#}
+<div class="field-inline" id="field-due_date-{{ vm.identifier }}" data-field="due_date">
+  {% if vm.fields["due_date"].writable %}
+  <details{% if vm.fields["due_date"].open %} open{% endif %}>
+    <summary class="field-value">
+      <span class="field-label">Due</span>
+      <span class="field-text">{% if vm.has_due %}<span class="due{% if vm.is_overdue %} is-overdue{% endif %}">{{ vm.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</span>
+    </summary>
+    <form id="edit-due_date-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=field&field=due_date"
+          hx-target="closest .field-inline" hx-swap="outerHTML"
+          hx-sync="closest .field-inline:replace">
+      <input type="date" name="due_date" value="{{ vm.due_value }}"
+             class="inline-input{% if vm.fields['due_date'].invalid %} is-invalid{% endif %}"
+             aria-label="Due date of {{ vm.identifier }}"{% if vm.fields['due_date'].invalid %} aria-invalid="true"{% endif %}
+             hx-patch="{{ vm.edit_fragment }}?view=field&field=due_date"
+             hx-trigger="change"
+             hx-target="closest .field-inline" hx-swap="outerHTML"
+             hx-sync="closest .field-inline:replace">
+      <button type="submit" class="btn field-save">Save</button>
+      {% if vm.fields["due_date"].message %}<p class="form-error" role="alert">{{ vm.fields["due_date"].message }}</p>{% endif %}
+    </form>
+  </details>
+  {% elif vm.fields["due_date"].open %}
+  <details open>
+    <summary class="field-value" data-readonly data-invalid>
+      <span class="field-label">Due</span>
+      <span class="field-text">{% if vm.has_due %}<span class="due{% if vm.is_overdue %} is-overdue{% endif %}">{{ vm.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</span>
+    </summary>
+    {% if vm.fields["due_date"].message %}<p class="form-error" role="alert">{{ vm.fields["due_date"].message }}</p>{% endif %}
+  </details>
+  {% else %}
+  <div class="field-value" data-readonly data-invalid>
+    <span class="field-label">Due</span>
+    <span class="field-text">{% if vm.has_due %}<span class="due{% if vm.is_overdue %} is-overdue{% endif %}">{{ vm.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</span>
+  </div>
+  {% if vm.fields["due_date"].message %}<p class="form-error" role="alert">{{ vm.fields["due_date"].message }}</p>{% endif %}
+  {% endif %}
+</div>

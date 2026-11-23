@@ -1,0 +1,38 @@
+{#- The description as one inline field (SPEC-070 §2.6.3). `Enter` in a `<textarea>` is a
+    newline, so the control saves through the form it owns: the `Save` below it, or the
+    `Cmd/Ctrl+Enter` of §2.6.2 that submits the form the focused control belongs to. `blur` is
+    deliberately not a trigger: clicking away from a half-written note is not a commit. -#}
+<div class="field-inline" id="field-description-{{ vm.identifier }}" data-field="description">
+  {% if vm.fields["description"].writable %}
+  <details{% if vm.fields["description"].open %} open{% endif %}>
+    <summary class="field-value">
+      <span class="field-label">Description</span>
+      <div class="field-text description">{{ vm.description_html | safe }}</div>
+    </summary>
+    <form id="edit-description-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=field&field=description"
+          hx-target="closest .field-inline" hx-swap="outerHTML"
+          hx-sync="closest .field-inline:replace">
+      <textarea rows="6" name="description"
+                class="inline-input{% if vm.fields['description'].invalid %} is-invalid{% endif %}"
+                aria-label="Description of {{ vm.identifier }}"{% if vm.fields['description'].invalid %} aria-invalid="true"{% endif %}>{{ vm.description_raw }}</textarea>
+      <button type="submit" class="btn field-save">Save</button>
+      {% if vm.fields["description"].message %}<p class="form-error" role="alert">{{ vm.fields["description"].message }}</p>{% endif %}
+    </form>
+  </details>
+  {% elif vm.fields["description"].open %}
+  <details open>
+    <summary class="field-value" data-readonly data-invalid>
+      <span class="field-label">Description</span>
+      <div class="field-text description">{{ vm.description_html | safe }}</div>
+    </summary>
+    {% if vm.fields["description"].message %}<p class="form-error" role="alert">{{ vm.fields["description"].message }}</p>{% endif %}
+  </details>
+  {% else %}
+  <div class="field-value" data-readonly data-invalid>
+    <span class="field-label">Description</span>
+    <div class="field-text description">{{ vm.description_html | safe }}</div>
+  </div>
+  {% if vm.fields["description"].message %}<p class="form-error" role="alert">{{ vm.fields["description"].message }}</p>{% endif %}
+  {% endif %}
+</div>

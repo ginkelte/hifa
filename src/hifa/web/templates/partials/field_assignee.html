@@ -1,0 +1,41 @@
+{#- The assignee as one inline field (SPEC-070 §2.6.3): a text input holding the member id, the
+    reference the command resolves. The roster is `[]` in this layer's model and a picker is a
+    separate ticket, so an empty value unassigns and no `<select>` is printed. -#}
+<div class="field-inline" id="field-assignee-{{ vm.identifier }}" data-field="assignee">
+  {% if vm.fields["assignee"].writable %}
+  <details{% if vm.fields["assignee"].open %} open{% endif %}>
+    <summary class="field-value">
+      <span class="field-label">Assignee</span>
+      <span class="field-text">{% if vm.has_assignee %}{{ vm.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</span>
+    </summary>
+    <form id="edit-assignee-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=field&field=assignee"
+          hx-target="closest .field-inline" hx-swap="outerHTML"
+          hx-sync="closest .field-inline:replace">
+      <input type="text" name="assignee" value="{{ vm.assignee_id }}"
+             class="inline-input{% if vm.fields['assignee'].invalid %} is-invalid{% endif %}"
+             aria-label="Assignee of {{ vm.identifier }}" autocomplete="off"{% if vm.fields['assignee'].invalid %} aria-invalid="true"{% endif %}
+             hx-patch="{{ vm.edit_fragment }}?view=field&field=assignee"
+             hx-trigger="blur changed"
+             hx-target="closest .field-inline" hx-swap="outerHTML"
+             hx-sync="closest .field-inline:replace">
+      <button type="submit" class="btn field-save">Save</button>
+      {% if vm.fields["assignee"].message %}<p class="form-error" role="alert">{{ vm.fields["assignee"].message }}</p>{% endif %}
+    </form>
+  </details>
+  {% elif vm.fields["assignee"].open %}
+  <details open>
+    <summary class="field-value" data-readonly data-invalid>
+      <span class="field-label">Assignee</span>
+      <span class="field-text">{% if vm.has_assignee %}{{ vm.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</span>
+    </summary>
+    {% if vm.fields["assignee"].message %}<p class="form-error" role="alert">{{ vm.fields["assignee"].message }}</p>{% endif %}
+  </details>
+  {% else %}
+  <div class="field-value" data-readonly data-invalid>
+    <span class="field-label">Assignee</span>
+    <span class="field-text">{% if vm.has_assignee %}{{ vm.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</span>
+  </div>
+  {% if vm.fields["assignee"].message %}<p class="form-error" role="alert">{{ vm.fields["assignee"].message }}</p>{% endif %}
+  {% endif %}
+</div>

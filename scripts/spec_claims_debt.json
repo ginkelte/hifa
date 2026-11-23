@@ -634,7 +634,7 @@
     },
     {
       "ticket": "HIFA-114",
-      "reason": "the in-place per-field editor is contracted here and its e2e tests land with the implementation; the scenarios are @deferred to this ticket until then",
+      "reason": "the per-field inline editor landed: its ten scenarios are pinned by tests named after their titles, so the cluster records the owner and holds no accepted keys",
       "keys": []
     }
   ]

@@ -233,7 +233,8 @@ def test_list_renders_identifiers_and_state(seeded: SimpleNamespace) -> None:
 def test_detail_renders_the_issue(seeded: SimpleNamespace) -> None:
     response = seeded.client.get("/ENG/issue/ENG-1")
     assert response.status_code == 200
-    assert "detail-title" in response.text
+    # The title is the field itself, not a heading above one (SPEC-070 §2.6.3).
+    assert 'id="field-title-ENG-1"' in response.text
     assert "Fix SSO login" in response.text
     with sqlite3.connect(seeded.db) as conn:
         member_name = conn.execute("SELECT display_name FROM member LIMIT 1").fetchone()[0]

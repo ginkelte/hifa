@@ -1,0 +1,40 @@
+{#- The estimate as one inline field (SPEC-070 §2.6.3): the value is `N pts`, the control a
+    number input saved on `blur changed`, on `Enter` and on its own `Save`. -#}
+<div class="field-inline" id="field-estimate-{{ vm.identifier }}" data-field="estimate">
+  {% if vm.fields["estimate"].writable %}
+  <details{% if vm.fields["estimate"].open %} open{% endif %}>
+    <summary class="field-value">
+      <span class="field-label">Estimate</span>
+      <span class="field-text">{{ vm.estimate_label }}</span>
+    </summary>
+    <form id="edit-estimate-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=field&field=estimate"
+          hx-target="closest .field-inline" hx-swap="outerHTML"
+          hx-sync="closest .field-inline:replace">
+      <input type="number" step="any" name="estimate" value="{{ vm.estimate_value }}"
+             class="inline-input{% if vm.fields['estimate'].invalid %} is-invalid{% endif %}"
+             aria-label="Estimate of {{ vm.identifier }}" autocomplete="off"{% if vm.fields['estimate'].invalid %} aria-invalid="true"{% endif %}
+             hx-patch="{{ vm.edit_fragment }}?view=field&field=estimate"
+             hx-trigger="blur changed"
+             hx-target="closest .field-inline" hx-swap="outerHTML"
+             hx-sync="closest .field-inline:replace">
+      <button type="submit" class="btn field-save">Save</button>
+      {% if vm.fields["estimate"].message %}<p class="form-error" role="alert">{{ vm.fields["estimate"].message }}</p>{% endif %}
+    </form>
+  </details>
+  {% elif vm.fields["estimate"].open %}
+  <details open>
+    <summary class="field-value" data-readonly data-invalid>
+      <span class="field-label">Estimate</span>
+      <span class="field-text">{{ vm.estimate_label }}</span>
+    </summary>
+    {% if vm.fields["estimate"].message %}<p class="form-error" role="alert">{{ vm.fields["estimate"].message }}</p>{% endif %}
+  </details>
+  {% else %}
+  <div class="field-value" data-readonly data-invalid>
+    <span class="field-label">Estimate</span>
+    <span class="field-text">{{ vm.estimate_label }}</span>
+  </div>
+  {% if vm.fields["estimate"].message %}<p class="form-error" role="alert">{{ vm.fields["estimate"].message }}</p>{% endif %}
+  {% endif %}
+</div>

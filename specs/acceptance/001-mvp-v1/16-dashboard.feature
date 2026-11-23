@@ -238,7 +238,7 @@ Feature: HTTP dashboard
   #   * "the description field's markup" is the substring from `id="field-description-{identifier}"` to the
   #     next `id="field-`, so an assertion on it is about that field and not about the page.
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the detail page renders each field as an inline control and no pooled Edit form
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a GET to "/ENG/issue/ENG-13"
@@ -249,7 +249,7 @@ Feature: HTTP dashboard
     And the HTML does not contain "form-title"
     And the HTML does not contain "class=\"issue-edit\""
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: an inline title edit on the detail page answers the field it changed
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
@@ -260,7 +260,7 @@ Feature: HTTP dashboard
     And the HTML does not contain "<aside"
     And the response carries the header "HX-Trigger" with "issue-updated"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: a refused inline edit keeps the control and the message beside it
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":""}
@@ -271,7 +271,7 @@ Feature: HTTP dashboard
     And the title of "ENG-13" is "Fix login"
     And no row was added to "issue_history" for "ENG-13"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the description is edited in place and Ctrl+Enter saves it
     Given the issue "ENG-13" in the state "Todo" with description "first draft"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=description" with the header "HX-Request: true" and the body {"description":"**final** draft"}
@@ -279,7 +279,7 @@ Feature: HTTP dashboard
     And the HTML contains "<strong>final</strong>"
     And there is exactly 1 row in "issue_history" for "ENG-13" with field "description"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the description's control is a textarea with a Save and no blur trigger
     Given the issue "ENG-13" in the state "Todo" with description "first draft"
     When I execute a GET to "/ENG/issue/ENG-13"
@@ -289,7 +289,7 @@ Feature: HTTP dashboard
     And the description field's markup carries "?view=field&field=description"
     And the description field's markup carries no "blur changed"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the panel renders one inline control per field and no Edit heading
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
@@ -300,7 +300,7 @@ Feature: HTTP dashboard
     And the HTML does not contain "<dt>State</dt>"
     And the HTML does not contain "<dt>Assignee</dt>"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: a refused inline edit on the panel answers that field and not the aside
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=state" with the header "HX-Request: true" and the body {"state":"No Such State"}
@@ -309,7 +309,7 @@ Feature: HTTP dashboard
     And the HTML contains "is-invalid"
     And the HTML does not contain "<aside"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: an inline edit of an archived issue is refused with the message and no control
     Given the issue "ENG-13" in the state "Todo" with title "Fix login" archived at "2026-11-10T12:00:00Z" and not in trash
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
@@ -321,7 +321,7 @@ Feature: HTTP dashboard
     And the HTML does not contain "hx-patch"
     And the title of "ENG-13" is "Fix login"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: without JavaScript each inline control still saves through the page form
     Given the issue "ENG-13" in the state "Todo" with estimate 1
     When I execute a POST to "/ENG/issue/ENG-13" with the form {"estimate":"3"}
@@ -329,7 +329,7 @@ Feature: HTTP dashboard
     And the "Location" header is "/ENG/issue/ENG-13"
     And the estimate of "ENG-13" is 3
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the list row keeps its own inline title control and is not a field wrapper
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}

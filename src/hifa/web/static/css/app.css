@@ -429,7 +429,6 @@ tr.row-empty td { color: var(--text-muted); }
 
 /* --- edit controls ------------------------------------------------------------------ */
 .inline-input { width: 100%; max-width: 360px; }
-.field { display: block; margin: 0 0 10px; }
 .field-label { display: block; margin-bottom: 2px; color: var(--text-muted); font-size: 12px; }
 .field-input {
   width: 100%;
@@ -443,9 +442,16 @@ tr.row-empty td { color: var(--text-muted); }
 }
 textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
 .is-invalid { border-color: var(--urgent); }
-.issue-edit { margin: 12px 0; }
-.form-title { margin: 0 0 8px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; }
-.form-actions { margin-top: 8px; }
+
+/* --- the inline field (SPEC-070 §2.5.8) ---------------------------------------------- */
+.field-inline { margin: 0 0 6px; min-width: 0; }
+.field-value { display: flex; gap: 8px; align-items: baseline; cursor: text; }
+.field-value[data-readonly] { cursor: default; }
+.field-value[data-invalid] { color: var(--urgent); }
+.field-text { min-width: 0; overflow-wrap: anywhere; }
+.field-edit { display: flex; gap: 6px; align-items: flex-start; margin-top: 4px; }
+.field-save { flex: 0 0 auto; padding: 2px 8px; }
+.detail-fields { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; }
 
 /* --- panel overlay ----------------------------------------------------------------- */
 .panel-slot:empty { display: none; }
@@ -508,7 +514,6 @@ textarea.field-input { min-height: 96px; font: 12px/1.4 var(--mono); }
   color: var(--text-muted);
 }
 .confirm-line { margin: 6px 0 8px; font: 12px var(--ui); color: var(--text); }
-.confirm .form-actions { display: flex; gap: 8px; }
 .btn-danger { border-color: var(--urgent); color: var(--urgent); }
 .btn-danger:hover { background: var(--urgent); color: var(--bg); }
 @media (max-width: 900px) {

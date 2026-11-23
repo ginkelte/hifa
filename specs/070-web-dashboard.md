@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 38
+spec_revision: 39
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -3141,7 +3141,7 @@ Feature: hifa web dashboard
     And the body contains the class "is-invalid"
     And the body is the row with the field marked
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the detail page renders each field as an inline control and no pooled Edit form
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a GET to "/ENG/issue/ENG-13"
@@ -3152,7 +3152,7 @@ Feature: hifa web dashboard
     And the HTML does not contain "form-title"
     And the HTML does not contain "class=\"issue-edit\""
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: an inline title edit on the detail page answers the field it changed
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
@@ -3163,7 +3163,7 @@ Feature: hifa web dashboard
     And the HTML does not contain "<aside"
     And the response carries the header "HX-Trigger" with "issue-updated"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: a refused inline edit keeps the control and the message beside it
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":""}
@@ -3174,7 +3174,7 @@ Feature: hifa web dashboard
     And the title of "ENG-13" is "Fix login"
     And no row was added to "issue_history" for "ENG-13"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the description is edited in place and Ctrl+Enter saves it
     Given the issue "ENG-13" in the state "Todo" with description "first draft"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=description" with the header "HX-Request: true" and the body {"description":"**final** draft"}
@@ -3182,7 +3182,7 @@ Feature: hifa web dashboard
     And the HTML contains "<strong>final</strong>"
     And there is exactly 1 row in "issue_history" for "ENG-13" with field "description"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the description's control is a textarea with a Save and no blur trigger
     Given the issue "ENG-13" in the state "Todo" with description "first draft"
     When I execute a GET to "/ENG/issue/ENG-13"
@@ -3192,7 +3192,7 @@ Feature: hifa web dashboard
     And the description field's markup carries "?view=field&field=description"
     And the description field's markup carries no "blur changed"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the panel renders one inline control per field and no Edit heading
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
@@ -3203,7 +3203,7 @@ Feature: hifa web dashboard
     And the HTML does not contain "<dt>State</dt>"
     And the HTML does not contain "<dt>Assignee</dt>"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: a refused inline edit on the panel answers that field and not the aside
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=state" with the header "HX-Request: true" and the body {"state":"No Such State"}
@@ -3212,7 +3212,7 @@ Feature: hifa web dashboard
     And the HTML contains "is-invalid"
     And the HTML does not contain "<aside"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: an inline edit of an archived issue is refused with the message and no control
     Given the issue "ENG-13" in the state "Todo" with title "Fix login" archived at "2026-11-10T12:00:00Z" and not in trash
     When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
@@ -3224,7 +3224,7 @@ Feature: hifa web dashboard
     And the HTML does not contain "hx-patch"
     And the title of "ENG-13" is "Fix login"
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: without JavaScript each inline control still saves through the page form
     Given the issue "ENG-13" in the state "Todo" with estimate 1
     When I execute a POST to "/ENG/issue/ENG-13" with the form {"estimate":"3"}
@@ -3232,7 +3232,7 @@ Feature: hifa web dashboard
     And the "Location" header is "/ENG/issue/ENG-13"
     And the estimate of "ENG-13" is 3
 
-  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  @REQ-F013 @REQ-F035
   Scenario: the list row keeps its own inline title control and is not a field wrapper
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
@@ -3805,6 +3805,19 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 39 (2026-11-23): **the field contract is implemented and its ten deferrals are paid.**
+  `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and `DECISIONS.md`
+  stays **80** decisions: no route, status, value of `view` or scenario moves — this revision records that
+  the tree now answers what §2.1.3, §2.3.4, §2.5.8 and §2.6.3 declared, so the "new work of HIFA-114"
+  asides of §2.1.3 and §2.6.2 describe the client and the route that ship. `readmodels.build_issue_vm`
+  builds the seven-entry `fields` dict (`writable` is `can_write` and neither layer, `open` is the field a
+  `422` hands back and the trash's, `invalid`/`message` are that control's entry of `form_errors`), the
+  `PATCH` answers `?view=field&field={name}` with one wrapper and keys its refusals on the requested field,
+  and the seven `partials/field_*.html` replace the pooled `issue_form_fields.html` on both surfaces. The
+  ten scenarios of §7 and of `16-dashboard.feature` lose their `@deferred(HIFA-114)`: each is pinned by the
+  test whose name is its title, in `tests/e2e/web/test_dashboard_fields.py`. The `HIFA-114` cluster of
+  `scripts/spec_claims_debt.json` keeps its ticket and holds no keys, which is what
+  `scripts/spec_claims_check.py` reports: `0 new, 0 broken`.
 - spec_revision 38 (2026-11-23): **the focus return is one sentence with three branches, and the third branch
   moves nothing.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
   `DECISIONS.md` stays **80** decisions. The bullet of "the server is the truth" said focus went "to the
