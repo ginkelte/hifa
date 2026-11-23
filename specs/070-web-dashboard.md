@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 40
+spec_revision: 41
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -264,12 +264,13 @@ document.body.addEventListener('htmx:beforeSwap', (e) => {
 });
 ```
 
-**The `409` and the retargeted `404` are new work of HIFA-114, not a description of what runs today.** The
-listener in the tree enables exactly one status (`422`), and the generic `htmx:responseError` handler turns
-a `409` into the one-line toast `could not save: the server rejected the change`, so the `409` that §2.6.3
-contracts — the wrapper back with the server's value, the message and **no** control — needs both changes in
-the same commit: the two statuses added to the listener, and the field write no longer answered by a toast.
-§2.6.3 states that flow as a requirement of the implementation for exactly this reason.
+**HIFA-114 wrote the `409` and the retargeted `404` into that listener, and the tree has carried them
+since.** Until then the listener enabled exactly one status (`422`), and the generic `htmx:responseError`
+handler turned a `409` into the one-line toast `could not save: the server rejected the change`, so the
+`409` that §2.6.3 contracts — the wrapper back with the server's value, the message and **no** control —
+needed both changes in the same commit: the two statuses added to the listener (`app.js:213-220`), and the
+field write no longer answered by a toast (`app.js:230`, where `htmx:responseError` returns for a
+`.field-inline`). §2.6.3 states that flow as a requirement of the implementation for exactly this reason.
 
 #### 2.1.3.1 The one JSON body under `/_/`: `GET /_/revision` (D-049)
 
@@ -1713,22 +1714,27 @@ Implementation rules:
   — except `Esc` and `Cmd+Enter`.
 - `Cmd/Ctrl+Enter` submits the `form` the focused control belongs to (`form.requestSubmit()`), and it runs
   **before** the editable-target rule returns: it is how the multi-line `description` control of §2.6.3
-  saves, because `Enter` in a `<textarea>` is a newline and never a submit. **This branch does not exist in
-  the tree today, and this ticket writes it:** the shell's `keydown` handler returns as soon as
-  `event.metaKey || event.ctrlKey` is set, before it examines a key, and nothing under `src/hifa/web/` calls
-  `requestSubmit()`, so the rule is the contract of this revision and not a description of the client it
-  ships with. The table row above that names the `description` control is the one that depends on it.
+  saves, because `Enter` in a `<textarea>` is a newline and never a submit. **HIFA-114 wrote that branch,
+  and the tree has carried it since:** until then the shell's `keydown` handler returned as soon as
+  `event.metaKey || event.ctrlKey` was set, before it examined a key, and nothing under `src/hifa/web/`
+  called `requestSubmit()`, so the rule was a contract with no client behind it. The branch now runs first
+  (`app.js:322-329`), and the table row above that names the `description` control is the one that depends
+  on it.
 - `Esc` closes the nearest open field control (`closest .field-inline details[open]`) **before** the panel
   branch runs, so one key never means two things: a reader who is typing in a field that sits in the panel
-  closes the field first and the panel next. **This branch does not exist in the tree today, and this ticket
-  writes it:** the shell's `keydown` (`app.js:270-275`) answers `Escape` with `closePanel()` and returns —
-  there is no `details[open]` lookup and no field branch before it — so a field's `<details>` inside the panel
-  closes only because the panel does, and a field outside the panel does not close at all. The ordering above
-  is the contract of this revision, the same way the `Cmd/Ctrl+Enter` bullet declares its own missing branch.
+  closes the field first and the panel next. **HIFA-114 wrote that ordering, and the tree has carried it
+  since:** until then the shell's `keydown` answered `Escape` with `closePanel()` and returned — there was
+  no `details[open]` lookup and no field branch before it — so a field's `<details>` inside the panel
+  closed only because the panel did, and a field outside the panel did not close at all. The field branch
+  of `app.js:331-340` is what makes the ordering above the shipped behaviour and not a promise for later.
 - `j`/`k` move real focus (`element.focus()`), not a class: the row has `tabindex="-1"` and
   `:focus-visible` with the outline of §2.5.3. Focusing does `scrollIntoView({block: "nearest"})`.
-- Focus state survives an htmx swap (`htmx:afterSwap` re-focuses by `data-identifier`, and by `data-field`
-  for the field wrapper that replaced a saved control, §2.6.3).
+- Focus state survives an htmx swap, and the swap decides where it goes: `htmx:afterSwap` returns it by
+  `data-field` to the wrapper of the field the answer replaced (§2.6.3) and by `data-identifier` to the row
+  or card — **except** the swap that opens the panel, whose destination is the panel itself
+  (`<aside id="panel" tabindex="-1">`, §2.6.9) and which returns before the `data-identifier` branch
+  (`app.js:267-275`), so closing that panel leaves focus on `<body>`: the row that asked never takes it
+  back, and nothing here promises a restoration the client does not perform.
 - In the board, `j`/`k` walk the DOM in column order (left→right) and `board_order` within each one.
 - The shortcuts are documented in `?` (not implemented in v1) and in the status-line help at the
   bottom, which is text, not a menu.
@@ -2609,7 +2615,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R8** | **One `PATCH` in flight per row** (`hx-sync="closest tr:replace"`); the second discards the first. No queues and no automatic retries. → **REQ-F070-05** |
 | **R9** | **Drag & drop sends neighbors, not positions.** Single payload: `{state_id, before, after}` with identifiers (`before`/`after` = `null` at the edge). Sending `sort_order`, `board_order`, `rebalance` or the whole column is forbidden; computing the float on the client is forbidden. The position (`(prev+next)/2`, `±1024`, `1024`) is computed by `domain/ranking.between` inside `move_issue`/`reorder_issue` (SPEC-040, D-012). → **REQ-F070-06** |
 | **R10** | **The rebalance is decided by the server.** On `RANKING_EXHAUSTED`, SPEC-040 rebalances the scope and retries once in the same transaction (REQ-F040-08); the client does not request `rebalance` and does not know the 1024 multiple. If the retry fails, `422` `RANKING_EXHAUSTED` + board reload. → **REQ-F070-06** |
-| **R11** | **htmx does not swap 4xx by default, and every refusal that replaces a node says so in one listener.** A global listener enables the swap for `422` and `409` — the two statuses whose body re-renders the element the request named — and for a `/_/` 4xx that carries `HX-Retarget`, which is the `partials/fragment_error.html` of a failed resolution; the `text/plain` refusals (an unknown `state_id`, the cross-site `403`, the missing-header `400`) carry no `HX-Retarget` and stay unswapped. Without that listener, an invalid field would leave the UI mute: it is the most common bug in this stack. The `409` half is new work of HIFA-114, and §2.1.3 says why. → **REQ-F070-09** |
+| **R11** | **htmx does not swap 4xx by default, and every refusal that replaces a node says so in one listener.** A global listener enables the swap for `422` and `409` — the two statuses whose body re-renders the element the request named — and for a `/_/` 4xx that carries `HX-Retarget`, which is the `partials/fragment_error.html` of a failed resolution; the `text/plain` refusals (an unknown `state_id`, the cross-site `403`, the missing-header `400`) carry no `HX-Retarget` and stay unswapped. Without that listener, an invalid field would leave the UI mute: it is the most common bug in this stack. The `409` half is the part HIFA-114 added, and §2.1.3 says why. → **REQ-F070-09** |
 | **R12** | **Events by header.** Successful mutations emit `HX-Trigger` with `issue-created`, `issue-updated`, `issue-moved`, `issue-archived`, `issue-deleted`, `issue-restored`, `board-reordered`, `comment-created` — this is the complete catalogue, and the row of §2.1.3 that documents the header names the same set; the counters listen for those events (`hx-trigger="issue-moved from:body"`). Polling exists in exactly two places and nowhere else: `/_/counts` every 30 s (counters) and `/_/revision` every `REVISION_POLL` (the change signal of §2.6.8, R26). Neither re-renders the collection it watches. → **REQ-F070-10** |
 | **R13** | **One read model per entity.** The panel and the detail page use the same `issue_vm`; the row and the card share `row_vm`/`card_vm` with the same derived keys (`priority_glyph`, `due_label`, `is_overdue`). → **REQ-F070-03** |
 | **R14** | **Strict CSP without `unsafe-eval`.** `script-src 'self'` forces the Alpine CSP build (`Alpine.data()` registered in `app.js`); `x-data="{…}"` with expressions is forbidden and so is inline `<script>`. → **REQ-S070-02**, **REQ-S070-03** |
@@ -2895,7 +2901,7 @@ differ in exactly the step above, not in the route, the status or the header.
 | `/_/revision` without `HX-Request` | 400 | `text/plain` `fragment requires htmx` (R5, §2.1.3.1) | the tick is skipped and the page keeps what it has |
 | Validation on a page (form without JS) | 422 | same template + `form_errors` | errors next to the field |
 | Validation in a fragment / inline | 422 | the element the request named — the field wrapper for `view=field`, the `<tr>`, the card or the panel — with `.is-invalid` on the control and the message beside it; `HX-Retarget` only when there is no element to keep | field marked, control `open`, message next to it; toast |
-| A value of a control in `view=field` that resolves to no row (`state`, `member` or `parent` naming none) | 422 | the **field wrapper** of the control that was edited, re-rendered `open` with `.is-invalid` on that control and the `invalid value: ` sentence the catalogue's last row gives the domain's message — a `NotFound` about a value and not about the route, so the wrapper stays; the page route `POST /{team}/issue/{identifier}` keeps its `404` (`error.html`) for the same body, because a page has no wrapper to keep | nothing is written; the field stays open, marked, with the sentence beside it and the stored value in the control |
+| A value of a control in `view=field` that resolves to no row (`state` or `member` naming none; `parent` is in `_FIELD_REFERENCE_RESOURCES` but no control sends it, §2.1.2) | 422 | the **field wrapper** of the control that was edited, re-rendered `open` with `.is-invalid` on that control and the `invalid value: ` sentence the catalogue's last row gives the domain's message — a `NotFound` about a value and not about the route, so the wrapper stays; the page route `POST /{team}/issue/{identifier}` keeps its `404` (`error.html`) for the same body, because a page has no wrapper to keep | nothing is written; the field stays open, marked, with the sentence beside it and the stored value in the control |
 | `Conflict` (label in use, etc.) | 409 | partial with message | toast, no destructive swap |
 | `Validation` (drop with open children) | 422 | the panel re-rendered + `form_error` (§2.1.3, §5.4); the drop ignores the body | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `InvalidTransition` (drop on an archived issue, R20) | 409 | the panel re-rendered + `form_error`, the same body as the row above (§2.1.3, §5.4) | the card returns to its place + toast, the client reloads `/_/board/{team}` |
@@ -3809,6 +3815,23 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 41 (2026-11-23): **the round-2 review's three minors are settled, and the one that mattered
+  was a focus rule promising a return the client does not make.** `version` stays **12**, the corpus stays
+  **251** scenarios (§7 of this file: **91**) and `DECISIONS.md` stays **80** decisions: no route, status,
+  value of `view` or scenario moves. (a) **§2.6.2's focus bullet sent every swap through `data-identifier`**,
+  but the panel's own `htmx:afterSwap` focuses the panel and returns before that branch
+  (`app.js:267-275`): the bullet now names the two destinations — `data-field` for the saved field's
+  wrapper, `data-identifier` for the row or card — and says that the swap which opens the panel focuses the
+  panel itself (§2.6.9) and that closing it leaves focus on `<body>`, with no restoration invented for the
+  row that asked. (b) **Three asides still described HIFA-114's work as unwritten while `app.js` shipped
+  it** — the `409` and the `HX-Retarget` (`app.js:213-220`), `requestSubmit()` for `Cmd/Ctrl+Enter`
+  (`app.js:322-329`) and the `Escape` field branch before the panel (`app.js:331-340`): they are past tense
+  now, with the ticket and the reason each one gave kept, and spec_revision 39's sentence that quoted them
+  by name is reworded with them. (c) **§6's `422` row enumerated `parent` among the control values that
+  resolve to no row**, though the `PATCH …?view=field` builds its `UpdateIssue` from `EDIT_COMMAND_FIELDS`
+  alone (`app.py:1480-1498`), which carries no `parent`: the row names `state` and `member` and says that
+  `parent` sits in `_FIELD_REFERENCE_RESOURCES` (`app.py:1363`) with no control to send it, which is
+  §2.1.2's seven. Clause (d) of spec_revision 40 is corrected here.
 - spec_revision 40 (2026-11-23): **the compliance review's five findings are settled, and the one that
   mattered was a focus with no destination.** `version` stays **12**, the corpus stays **251** scenarios (§7
   of this file: **91**) and `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or
@@ -3830,8 +3853,8 @@ Feature: hifa web dashboard
 - spec_revision 39 (2026-11-23): **the field contract is implemented and its ten deferrals are paid.**
   `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and `DECISIONS.md`
   stays **80** decisions: no route, status, value of `view` or scenario moves — this revision records that
-  the tree now answers what §2.1.3, §2.3.4, §2.5.8 and §2.6.3 declared, so the "new work of HIFA-114"
-  asides of §2.1.3 and §2.6.2 describe the client and the route that ship. `readmodels.build_issue_vm`
+  the tree now answers what §2.1.3, §2.3.4, §2.5.8 and §2.6.3 declared, so the asides of §2.1.3 and §2.6.2
+  that had carried the work as not yet written describe the client and the route that ship. `readmodels.build_issue_vm`
   builds the seven-entry `fields` dict (`writable` is `can_write` and neither layer, `open` is the field a
   `422` hands back and the trash's, `invalid`/`message` are that control's entry of `form_errors`), the
   `PATCH` answers `?view=field&field={name}` with one wrapper and keys its refusals on the requested field,
