@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 12
-spec_revision: 44
+version: 13
+spec_revision: 45
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -13,7 +13,7 @@ implements:
 acceptance: specs/acceptance/001-mvp-v1/16-dashboard.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # SPEC-070 — Web dashboard
@@ -642,6 +642,28 @@ flags are `False`), which is why the pair reads as one string in the markup and 
 else marks the active view: no `aria-current`, no `data-*`, and the template compares no `nav` value —
 the flags are that comparison, made once, in the read model.
 
+**The Relations block is one `<li>` per row, and the far end's title is an anchor of its own, to the
+identifier's `href`.** `issue_detail.html` renders the block only when `vm.relations` is non-empty; it is
+a `<section class="relations">` with an `<h2>` and a `<ul>`, and each row carries three elements:
+
+```jinja
+<li><span class="relation-type">{{ relation.label }}</span>
+  <a class="identifier" href="{{ relation.url }}">{{ relation.identifier }}</a>
+  <a class="relation-title" href="{{ relation.url }}">{{ relation.title }}</a></li>
+```
+
+`relation-type` prints the label the read model already resolved (`blocked by` for an incoming `blocks`,
+the type's own name otherwise, §2.3.4). `identifier` is the far end's identifier and `relation-title` its
+title; the two anchors share **one** `href`, `relation.url`, and neither they nor any partial build that
+string (§2.3.4, R2). `relation-title` is also the visual rule that lets a title read as body text until it
+is pointed at: `color: var(--text)` with no underline at rest, `color: var(--accent)` with
+`text-decoration: underline` on `:hover`, declared beside the `.relation-type` rule of
+`static/css/app.css` — without it the file's global `a { color: var(--accent) }` paints a whole title as a
+link and the identifier stops being what the row's link is recognised by. The two anchors are two elements
+on purpose: one anchor around `identifier` and `title` would fold the `.identifier` contract into a new
+class and change the markup of every identifier anchor of this layer, so the identifier keeps its class and
+its treatment and the title gains a second one.
+
 ### 2.3 Read models
 
 Templates receive plain `dict`s. Jinja can only: access keys with `.` or `[]`, use `{% if %}`,
@@ -874,6 +896,8 @@ issue_vm = {
             "resolved": False,
         }
     ],
+    # One entry per row of the Relations block §2.2 declares; `url` is the one href the row's two
+    # anchors share, resolved here so the template concatenates nothing.
     "relations": [
         {
             "id": "…",
@@ -882,6 +906,7 @@ issue_vm = {
             "identifier": "ENG-7",
             "title": "…",
             "state_name": "Todo",
+            "url": "/ENG/issue/ENG-7",  # the far end's identifier page: the target of both anchors
         }
     ],
     # The timeline (§2.5.7). `history` is every row of the read model's window, oldest-first, and
@@ -953,6 +978,11 @@ issue_vm = {
 `direction` in `relations` is `"out"` (`blocks`, `duplicate`, `related`, `similar`) or `"in"`
 (the issue is the target; shown as `blocked_by` when `type == "blocks"`). The read model resolves
 the inverse; the view does not compute it.
+
+`url` is the target of **both** anchors of a row — the `identifier` anchor and the `relation-title`
+anchor of §2.2 — and the read model builds it as `/{team}/issue/{identifier}` of the far end, so the
+identifier keeps its own `.identifier` treatment while the title points at the same page. A template
+never concatenates one from `relation.identifier` and a team key (R2).
 
 **`fields` is the render decision, and it is seven keys on every build.** A field wrapper shows its value,
 and either its control or the reason there is none; which of the three is the server's answer, never a
@@ -3829,6 +3859,18 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 45 (2026-11-24): **the related issue's title is a link, and the block's markup is declared.**
+  `version` 12 → 13, because §2 gains a declared key of a read model and a class name of a template; the
+  `spec_revision` is 44 → 45. **This revision declares markup and not a scenario**: the corpus stays **251**
+  scenarios (§7 of this file: **91**), `DECISIONS.md` stays **80** decisions, and no count of §7 or of the
+  corpus moves — the implementation and the test that bites it land with HIFA-116. (a) **§2.3.4's
+  `issue_vm.relations` sample gained `url`**, the key `readmodels.py`'s `build_issue_vm` already wrote, and
+  the paragraph under `direction` says the row's two anchors share it and that no template concatenates one.
+  (b) **§2.2 declares the Relations block**: its `relation-type` label, the `identifier` anchor and the
+  second `relation-title` anchor to the same `href`, with the visual rule that keeps a title body text at
+  rest and an underline on hover, because the file's global `a { color: var(--accent) }` would otherwise
+  paint a whole title as a link. One anchor around identifier and title was rejected: it would fold the
+  `.identifier` contract into a new class and change the markup of every identifier anchor of this layer.
 - spec_revision 44 (2026-11-23): **the round-three quality review's four minors are settled, and none of them
   moves a contract.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
   `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or scenario moves. (a) **The twelve
