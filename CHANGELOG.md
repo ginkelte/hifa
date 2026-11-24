@@ -1,3 +1,10 @@
+# [0.19.0](https://github.com/ginkelte/hifa/compare/v0.18.0...v0.19.0) (2026-11-24)
+
+
+### Features
+
+* **web:** link the related issue's title in the Relations block (HIFA-116) ([#50](https://github.com/ginkelte/hifa/issues/50)) ([b71a553](https://github.com/ginkelte/hifa/commit/b71a553630918adc9de58e612c76c446ad5b899c))
+
 # [0.18.0](https://github.com/ginkelte/hifa/compare/v0.17.0...v0.18.0) (2026-11-24)
 
 
