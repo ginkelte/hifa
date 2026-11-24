@@ -28,3 +28,5 @@ REPORT   | P2 | subagent              | run/hifa-114/review-3.md      | ok
 GATE     | P2 | G3 | orchestrator | run/hifa-114/review-3.md      | class 1 (1 MAJOR, 5 MINOR)
 FIXROUND | G3 | orchestrator          | run/hifa-114/journal.jsonl    | review-2 carried 10 findings (3 MAJOR, 7 MINOR); the orchestrator's brief said 9 and the error reached the fixer's revision note
 DECISION | P2 | Ginkelte              | specs/DECISIONS.md            | BLOCKED: the panel's whole-form editor vs per-field controls is an architecture decision with a shipped .feature pinned to the old answer; the owner answers, not the loop
+DECISION | P2 | Ginkelte (delegated to orchestrator) | specs/DECISIONS.md | B: the panel keeps per-field controls only; its whole-form editor is retired; the .feature scenario at 16-dashboard.feature:206-212 is the named loser
+FIXROUND | P1 | orchestrator          | specs/070-web-dashboard.md    | round 3: D-080 amendment + ?view=panel disposition + 5 MINOR, brief-P2-fix3.md
