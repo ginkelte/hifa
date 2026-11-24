@@ -1,3 +1,10 @@
+# [0.18.0](https://github.com/ginkelte/hifa/compare/v0.17.0...v0.18.0) (2026-11-24)
+
+
+### Features
+
+* **web:** link an issue identifier written in rendered markdown (HIFA-112) ([#51](https://github.com/ginkelte/hifa/issues/51)) ([eccb1b9](https://github.com/ginkelte/hifa/commit/eccb1b93f16a80539bfff5e6d012b517750a26a4))
+
 # [0.17.0](https://github.com/ginkelte/hifa/compare/v0.16.0...v0.17.0) (2026-11-24)
 
 
