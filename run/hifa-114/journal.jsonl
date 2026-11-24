@@ -24,3 +24,7 @@ REPORT   | P2 | subagent              | run/hifa-114/review-2.md      | ok
 GATE     | P2 | G3 | orchestrator | run/hifa-114/review-2.md      | class 1 (11/13 closed, 3 MAJOR, 6 MINOR)
 FINDING  | P1 | orchestrator          | specs/DECISIONS.md            | the change contradicts §2.6.3, §2.1.3 and R27: a cross-spec conflict the protocol has no step for; AGENTS.md §3 requires a D-0NN, not a quiet edit
 FIXROUND | P1 | orchestrator          | specs/070-web-dashboard.md    | round 2: D-0NN + 3 MAJOR + 6 MINOR, brief-P2-fix2.md
+REPORT   | P2 | subagent              | run/hifa-114/review-3.md      | ok
+GATE     | P2 | G3 | orchestrator | run/hifa-114/review-3.md      | class 1 (1 MAJOR, 5 MINOR)
+FIXROUND | G3 | orchestrator          | run/hifa-114/journal.jsonl    | review-2 carried 10 findings (3 MAJOR, 7 MINOR); the orchestrator's brief said 9 and the error reached the fixer's revision note
+DECISION | P2 | Ginkelte              | specs/DECISIONS.md            | BLOCKED: the panel's whole-form editor vs per-field controls is an architecture decision with a shipped .feature pinned to the old answer; the owner answers, not the loop
