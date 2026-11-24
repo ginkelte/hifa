@@ -15,3 +15,8 @@ INJECT   | P2 | K-03-spec-contains-no-implementation,K-01-falsifiable-or-not-a-r
 REPORT   | P2 | subagent              | run/hifa-114/review.md        | ok
 GATE     | P2 | G3 | orchestrator | run/hifa-114/review.md        | class 1 (6 MAJOR, 7 MINOR)
 FIXROUND | P1 | orchestrator          | specs/070-web-dashboard.md    | 13 findings; rulings R-a..R-f recorded in brief-P2-fix.md
+REPORT   | P1 | subagent              | specs/070-web-dashboard.md    | ok (13/13 addressed)
+GATE     | P1 | G2 | orchestrator | §2.6.11 = 7976/8000 chars, rev 34, ver 12 | ok
+FIXROUND | P1 | orchestrator          | run/hifa-114/brief-P2-fix.md  | budget corrected: the cap binds the section (7976), not the total diff (13754) which the findings forced
+FIXROUND | G2 | orchestrator          | run/hifa-114/journal.jsonl    | orchestrator measured 31205 by a broken boundary rule and briefly accused both agents of a false measurement; the agents were right, the orchestrator was wrong
+DISPATCH | P2 | roles/spec-reviewer.md | run/hifa-114/review-2.md      | started
