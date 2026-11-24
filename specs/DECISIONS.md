@@ -5176,3 +5176,158 @@ decision's own text are below, and the body of the spec is the authority where t
     comment in `16-dashboard.feature` no longer counts the edit form among the group's controls — the group is
     the move `<select>`, the archive block and the delete block, and the edit is the fields themselves
     (§2.6.9). No prose of SPEC-070 states a count for that group.
+
+## D-081 — A written identifier is a link only through a mapping the read already made, and it opens the page
+
+**Date:** 2026-11-24 · **Wins:** SPEC-070 §2.3.6 (the renderer, its second parameter and the skip
+list) and R30 (the new rule), which SPEC-000 REQ-S003 names as the sanitizer contract ·
+**Touches:** SPEC-070 §2.3.6, §3, R15, R30/REQ-F070-18, §7 and §11 (`spec_revision` 44 → 45,
+`version` 12 → 13); `specs/030-sqlite-adapter.md` §2.6 and its frontmatter (`spec_revision` 25 → 26,
+`version` 10 → 11); `specs/001-mvp-v1.md` §7 and its frontmatter (`spec_revision` 19 → 20);
+`specs/001-mvp-v1.tasks.md` (header, coverage line and `based_on`);
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`; `specs/INDEX.md`;
+`scripts/spec_claims_debt.json`; and, in the implementation PR, `src/hifa/web/markdown.py`,
+`src/hifa/web/readmodels.py`, `src/hifa/adapters/sqlite/reads.py`,
+`src/hifa/web/app.py` (`_issue_detail_vm` collects the candidates and issues the one statement)
+and `src/hifa/web/static/css/app.css`
+
+Today a reference written in prose is inert text. `GET /HIFA/issue/HIFA-103` whose description says
+"follows HIFA-102" prints the words and nothing else; `render_markdown` is the only render surface
+(`src/hifa/web/markdown.py`), it is called from `readmodels.py` for `description_html` and for each
+comment's `body_html`, and it has no notion of a target. The ticket asks for the link, and the two
+questions a linkify has to answer — **which tokens become links** and **what the link opens** — are
+what this entry settles.
+
+(1) **Resolution decides, not the pattern.** The alternative was the cheap one: a pattern on the
+text, every match an anchor. It is refused on a measurement. A `\b([A-Z][A-Z0-9]{1,9}-\d+)\b` scan of
+`issue.title`, `issue.description` and `comment.body` against `$HIFA_DB` on 2026-11-24 — a snapshot of
+that file — finds **308 occurrences of 71 distinct tokens**, and **only 42 of them name an existing
+issue**. The other 29 are not issues at all — twelve of them, with the occurrences that make them
+expensive: `SPEC-070` (45 occurrences), `SPEC-050` (32), `SPEC-030` (21), `ENG-13` (19), `SPEC-040`
+(16), `SPEC-001` (11), `SPEC-060` (8), `SQL-7` (8), `SPEC-100` (7), `SPEC-090`, `SPEC-010` and
+`SPEC-020` (5 each) — because this corpus quotes its own spec ids, one SQL table name, and example
+identifiers no row carries, against four teams in the database (`HIFA` 117 issues, `PROPERTEA` 5,
+`ENG` 2, `HERMES` 1). A pattern-only autolink therefore ships **one dead link per occurrence of
+those 29 tokens — 206 in one corpus scan**: every `SPEC-070` in every description deeplinks to a 404,
+and the reader learns that an `issue-ref` is not a link. A link that opens nothing is worse than the
+plain word it replaced, so the renderer only links a candidate the caller resolved.
+
+(2) **The parameter is a mapping, not a callback.** `render_markdown(text, links=None)` takes
+`links: Mapping[str, tuple[str, str]] | None` — the candidate the author wrote, folded to upper case,
+to the canonical `(team_key, identifier)`. A callable `resolve: Callable[[str], tuple[str, str] |
+None]` was the other shape and is refused on cost: it makes one lookup per match, so the corpus's
+busiest description — 37 identifier occurrences — would pay 37 round trips to the database for one
+render, where a mapping costs the one statement the caller already made for the whole surface. The
+mapping is also the only shape that can be built correctly: the candidates have to be collected
+**before** the render (the whole page, or the panel with the description and every comment together)
+to become one `WHERE identifier IN (…)`, and a callback that answers per token cannot be batched by
+the renderer without the renderer owning the query. A `None` default keeps the old signature honest:
+a caller that passes no mapping gets the bytes revision 44 served, which is what makes the change
+additive for every other consumer.
+
+(3) **The grammar and the fold are borrowed, not restated.** `src/hifa/domain/identifier.py` publishes
+`IDENTIFIER_PATTERN` (the pattern) and `parse` (the format), the two entries of SPEC-020 §2.3's closed
+list that this rule borrows, and the scan adds neither a second pattern nor a second format. The
+candidate is the **maximal run** of identifier characters, so `HIFA-1034` is one candidate and
+never `HIFA-103` plus a `4`, and `XHIFA-103` is one candidate and never `HIFA-103` after an `X`;
+`parse` is case-sensitive, so the run is folded with `str.upper()` first, which is exactly what the
+read path does (`upper(:ref)` in `issue_id_by_ref`, SPEC-030 §2.6, SQL-7 row 1). The fold is applied
+**in Python** and the statement carries literal values, because `upper(identifier)` against the
+column — the shape that made SQL-7 row 1 `SCAN issue` — would turn the one statement into a full
+scan; with values written folded, each `IN` element is an index seek on `sqlite_autoindex_issue_2`.
+
+(4) **The anchor is a plain `href` to the canonical URL, not an htmx panel fetch.** The panel route
+(`GET /_/issues/{identifier}/panel`) exists and a click could have swapped it into the aside, which is
+the interaction every other in-page affordance of this layer uses. It is refused for four reasons that
+all point the same way. First, the target is a **page**: R6 makes `/{team}/issue/{identifier}` the
+canonical URL and answers `303` to it from a non-canonical spelling, so a click is a navigation by
+definition; an htmx swap would leave the address bar on the issue the reader was reading. Second, a
+plain `href` keeps the browser's own verbs — middle click, `Cmd`-click, "open in new tab", the
+back button — that an `hx-get` takes away, and it keeps R4's promise that every page reads without
+JavaScript. Third, the panel is a state of the page the reader is on, not a destination: opening a
+second issue's panel over the first one is the panel's `Show all`/close model, not a reference's job,
+and it would need a target, a history entry and a focus rule the ticket did not buy. Fourth, the
+`href` carries the **canonical** team key and identifier rather than the author's spelling
+(`hifa-103` links to `/HIFA/issue/HIFA-103`), because a non-canonical path pays a `303` hop on every
+click, while the anchor's **text** stays the author's own spelling so the sentence reads as it was
+written.
+
+(5) **What the sanitizer gains, and why it cannot be reached from input.** `a` is already in
+`ALLOWED_TAGS`, but two things are new: the `class` attribute, and an `href` that is a site-relative
+path rather than an `http(s)`/`mailto` URL. Both are granted **to the class and to nothing else** — the
+walker keeps `("a", "class")` when the value is exactly `issue-ref`, and a `href` beginning with `/`
+only on an anchor that carries that class — so R15's scheme rule is unchanged for every link an
+author writes. The class is unreachable from user text: `html=False` escapes an `<a class="issue-ref">`
+an author types, commonmark has no attribute syntax, and `linkify` stays off; the module is the only
+writer of the class, which is what makes "the class is the permission" a closed rule rather than a
+hole. CSS is prose in §2.3.6 (`a.issue-ref` adds the underline the global `a` rule does not carry) and
+the stylesheet edit belongs to the implementation, like every other visual rule of that section.
+
+(6) **The corpus pins eight and defers them.** `16-dashboard.feature` and §7 gain the same eight
+scenarios — the resolved link, the folded spelling with a canonical `href`, a token that resolves to
+nothing, a reference in backticks, `HIFA-1034`/`XHIFA-103`, a reference in a comment body, the one
+statement per surface, and a cross-team reference: an `ENG` page whose description names an existing
+`HIFA-1` must link to `/HIFA/issue/HIFA-1`, which is the only case a team taken from the page instead
+of the mapping's `team_key` passes — each `@deferred(HIFA-112)` until its test lands. `HIFA-112` is
+registered in `scripts/spec_claims_debt.json` as the ticket of a cluster with **no keys**, the
+convention D-080 stated: a key for a scenario a `@deferred` already accounts for is stale by
+construction and `scripts/spec_claims_check.py` fails it with "accepted key names no unaccounted
+scenario", so the cluster records the owner and the reason and the deferrals are the measurement. The
+count moves in four places — `specs/001-mvp-v1.md` §7, `specs/001-mvp-v1.tasks.md` (header and
+coverage line) and `specs/INDEX.md` — to **259 scenarios (247 `Scenario` + 12 `Scenario Outline`)**, the
+`grep -cE '^  (Scenario|Scenario Outline):'` of the seventeen files, and §7 of SPEC-070 is **99**.
+
+## Amendments to D-081 (review round, 2026-11-24)
+
+**Touches: two entries added, one removed, in the row itself.** The row did not name SPEC-030 and did
+name `src/hifa/domain/identifier.py`; it now names **`specs/030-sqlite-adapter.md`**, whose §2.6
+contracts `issue_ref_links(conn, refs)` — the batch twin of `issue_id_by_ref`, one statement over
+`issue` joined to `team` on `team.id = issue.team_id`, answering
+`{folded candidate: (team.key, issue.identifier)}` with no visibility predicate, because the page
+links a trashed row and an archived one alike — and `src/hifa/adapters/sqlite/reads.py` for that
+function beside the reasons it already listed. SPEC-030 moves `version` 10 → 11 and `spec_revision`
+25 → 26 for it: a function joining §2's closed export list changes §2 for an existing requirement,
+which is what a version bump records. `src/hifa/domain/identifier.py` left the row because the
+scanner lives in `src/hifa/web/markdown.py` and imports `IDENTIFIER_PATTERN` from it read-only, so
+SPEC-020 §2.3's closed export list stands, nothing joins it and SPEC-020 moves no revision at all.
+`src/hifa/web/app.py` was also added to the row, for `_issue_detail_vm`, which collects the
+candidates and issues the one statement, so the row gained three entries, not two.
+
+**The scanner's home is `src/hifa/web/markdown.py`, and its grammar is two entries of SPEC-020 §2.3's
+list (as (3) now states).** `identifier.py`'s export list is closed by SPEC-020 §2.3, so nothing joins
+it and SPEC-020 is not touched by this ticket. The scanner is
+`issue_ref_candidates(text: str | None) -> list[str]` in `src/hifa/web/markdown.py`, returning the
+folded distinct candidates of one text and asking `IDENTIFIER_PATTERN.fullmatch` of each maximal run:
+`IDENTIFIER_PATTERN` is the pattern and `parse` the format, the two entries of that closed list this
+rule borrows, and no other name of that module is cited or joined. **Both** callers call that same
+function — `render_markdown`, where it rewrites the text, and `_issue_detail_vm` in
+`src/hifa/web/app.py`, where it collects the description's and every comment's candidates before the
+one statement — so one grammar decides what is linked and what is asked.
+
+**Correction to (2): the cost illustration carries the measured corpus, not a round number.**
+Paragraph (2) said a description "with 30 references pays 30 round trips"; the corpus was measured and
+its busiest description holds **37 identifier occurrences, 22 of them distinct** (`HIFA-112` itself),
+then 32 occurrences of 9 distinct (`HIFA-114`) and 29 of 10 (`HIFA-46`) — `$HIFA_DB`,
+`issue.description`, measured 2026-11-24. Paragraph (2) and §2.3.6's one-statement bullet now carry that
+figure with its provenance, and §7 pins the two halves of the rule together: 14 references named in
+one description and its comments cost **one** statement and print **14** links, so N references do not
+cost N statements. Paragraph (1), paragraph (6) and the `Touches` row are corrected in place on the
+same terms: this entry lands in the same commit and no part of it has been published, which is the
+only thing the append-only rule protects.
+
+**Correction to (1): the twelve named tokens are 12 of the 29, not all of them.** The measurement
+stands, and it is what the rule rests on: against `$HIFA_DB` on 2026-11-24 — a snapshot of that file —
+a token scan of `issue.title`, `issue.description` and `comment.body` finds **308 occurrences of 71
+distinct tokens**, of which **42 name an existing issue** and **the other 29 do not**. The list in (1)
+is the twelve most frequent of those 29 and does not enumerate the rest; a pattern-only autolink would
+emit a dead link on every occurrence of all 29, and the six that carry an occurrence count in that
+list alone account for 144 of the 308.
+
+**Correction to (6): the corpus pins eight, and the counts are 259 and 99.** Paragraph (6) pinned
+seven scenarios and moved the count to **258 (246 `Scenario` + 12 `Scenario Outline`)** with §7 at
+**98**; the block is those seven plus a cross-team case — an `ENG` page whose description names an
+existing `HIFA-1` must link to `/HIFA/issue/HIFA-1`, the only case a team taken from the page instead
+of the mapping's `team_key` passes — so `16-dashboard.feature` and SPEC-070 §7 carry **eight**
+scenarios, each `@deferred(HIFA-112)`, and (6) now reads **259 scenarios (247 `Scenario` + 12
+`Scenario Outline`)**, measured with `grep -cE '^  (Scenario|Scenario Outline):'` over
+`specs/acceptance/` on 2026-11-24, with §7 of SPEC-070 at **99**.
