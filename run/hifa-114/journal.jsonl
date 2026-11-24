@@ -8,3 +8,4 @@ DECISION | P0 | Ginkelte              | run/hifa-114/intent.md        | Q1 field
 DECISION | P0 | Ginkelte              | run/hifa-114/intent.md        | Q2 the no-JS form stays as fallback; "no separate form" means no extra form
 DECISION | P0 | Ginkelte              | run/hifa-114/intent.md        | Q3 panel field set = detail field set, per P2 parity
 DISPATCH | P1 | roles/spec-author.md  | specs/070-web-dashboard.md    | started
+FIXROUND | P0 | orchestrator          | run/hifa-114/journal.jsonl    | the three DECISION lines above are ORCHESTRATOR ASSUMPTIONS, not the requester's answers; owner remains the requester and the assumptions must be confirmed or overridden before P4
