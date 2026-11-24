@@ -8,6 +8,7 @@
     "HIFA-106",
     "HIFA-107",
     "HIFA-108",
+    "HIFA-114",
     "HIFA-8",
     "HIFA-9",
     "HIFA-90"
@@ -630,6 +631,11 @@
         "17-dashboard-hardening.feature::markdown with script is sanitized before rendering",
         "17-dashboard-hardening.feature::the server does not emit cors headers"
       ]
+    },
+    {
+      "ticket": "HIFA-114",
+      "reason": "the in-place per-field editor is contracted here and its e2e tests land with the implementation; the scenarios are @deferred to this ticket until then",
+      "keys": []
     }
   ]
 }

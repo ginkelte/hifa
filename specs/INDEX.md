@@ -184,8 +184,8 @@ enforced for every other actor (D-036).
 
 ## Acceptance criteria
 
-`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 241 scenarios**
-(229 `Scenario` + 12 `Scenario Outline`, each outline counted once),
+`specs/acceptance/001-mvp-v1/` — **17 `.feature` files, 1 `Feature` per file, 251 scenarios**
+(239 `Scenario` + 12 `Scenario Outline`, each outline counted once),
 all with exactly one `When` (verified by parsing every file with `gherkin-official`).
 The per-component Gherkin lives **inline** in each spec (§7); the individual `.feature` files are
 debt P-01 in `DECISIONS.md`.

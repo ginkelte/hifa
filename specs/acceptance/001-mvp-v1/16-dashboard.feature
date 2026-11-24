@@ -226,6 +226,119 @@ Feature: HTTP dashboard
     Then the status is 404
     And no issue has the identifier "ENG-999"
 
+  # The field is the control (SPEC-070 §2.6.3, D-080). The seven editable fields of an issue — title,
+  # description, priority, state, assignee, due_date, estimate — edit in place on both detail surfaces, one
+  # field per request, and the answer is the field wrapper (`?view=field&field={name}`) and not the page, the
+  # aside or the row. The scenarios below assume the fixture of the block above plus:
+  #   * the wrapper of a field is `<div class="field-inline" id="field-{name}-{identifier}">` and the control
+  #     state lives in its `<details>`, which renders `open` when the server kept it open for a refusal; a
+  #     wrapper whose read model says `writable: False` prints its value and its message with **no** control
+  #     — no `<details>` at all on an archived issue's `409`, an open one on a trashed issue's `422`
+  #     (§2.3.4, §2.6.3);
+  #   * "the description field's markup" is the substring from `id="field-description-{identifier}"` to the
+  #     next `id="field-`, so an assertion on it is about that field and not about the page.
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: the detail page renders each field as an inline control and no pooled Edit form
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the status is 200
+    And the HTML contains "hx-patch"
+    And the HTML contains "id=\"field-title-ENG-13\""
+    And the HTML contains "?view=field&field=title"
+    And the HTML does not contain "form-title"
+    And the HTML does not contain "class=\"issue-edit\""
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: an inline title edit on the detail page answers the field it changed
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
+    Then the status is 200
+    And the HTML contains "id=\"field-title-ENG-13\""
+    And the HTML contains "Fix SSO login"
+    And the HTML does not contain "<html>"
+    And the HTML does not contain "<aside"
+    And the response carries the header "HX-Trigger" with "issue-updated"
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: a refused inline edit keeps the control and the message beside it
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":""}
+    Then the status is 422
+    And the HTML contains "is-invalid"
+    And the HTML contains "<details open"
+    And the HTML contains "class=\"form-error\""
+    And the title of "ENG-13" is "Fix login"
+    And no row was added to "issue_history" for "ENG-13"
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: the description is edited in place and Ctrl+Enter saves it
+    Given the issue "ENG-13" in the state "Todo" with description "first draft"
+    When I execute a PATCH to "/_/issues/ENG-13?view=field&field=description" with the header "HX-Request: true" and the body {"description":"**final** draft"}
+    Then the status is 200
+    And the HTML contains "<strong>final</strong>"
+    And there is exactly 1 row in "issue_history" for "ENG-13" with field "description"
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: the description's control is a textarea with a Save and no blur trigger
+    Given the issue "ENG-13" in the state "Todo" with description "first draft"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains "<textarea"
+    And the description field's markup carries "name=\"description\""
+    And the description field's markup carries "field-save"
+    And the description field's markup carries "?view=field&field=description"
+    And the description field's markup carries no "blur changed"
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: the panel renders one inline control per field and no Edit heading
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
+    Then the status is 200
+    And the HTML does not contain "form-title"
+    And the HTML contains "hx-patch=\"/_/issues/ENG-13?view=field&field=title\""
+    And the HTML contains "hx-patch=\"/_/issues/ENG-13?view=field&field=estimate\""
+    And the HTML does not contain "<dt>State</dt>"
+    And the HTML does not contain "<dt>Assignee</dt>"
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: a refused inline edit on the panel answers that field and not the aside
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=field&field=state" with the header "HX-Request: true" and the body {"state":"No Such State"}
+    Then the status is 422
+    And the HTML contains "id=\"field-state-ENG-13\""
+    And the HTML contains "is-invalid"
+    And the HTML does not contain "<aside"
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: an inline edit of an archived issue is refused with the message and no control
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login" archived at "2026-11-10T12:00:00Z" and not in trash
+    When I execute a PATCH to "/_/issues/ENG-13?view=field&field=title" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
+    Then the status is 409
+    And the HTML contains "id=\"field-title-ENG-13\""
+    And the HTML contains "archived"
+    And the HTML contains "data-readonly"
+    And the HTML does not contain "<details"
+    And the HTML does not contain "hx-patch"
+    And the title of "ENG-13" is "Fix login"
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: without JavaScript each inline control still saves through the page form
+    Given the issue "ENG-13" in the state "Todo" with estimate 1
+    When I execute a POST to "/ENG/issue/ENG-13" with the form {"estimate":"3"}
+    Then the status is 303
+    And the "Location" header is "/ENG/issue/ENG-13"
+    And the estimate of "ENG-13" is 3
+
+  @REQ-F013 @REQ-F035 @deferred(HIFA-114)
+  Scenario: the list row keeps its own inline title control and is not a field wrapper
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login"
+    When I execute a PATCH to "/_/issues/ENG-13?view=list" with the header "HX-Request: true" and the body {"title":"Fix SSO login"}
+    Then the status is 200
+    And the HTML contains "<tr id=\"issue-ENG-13\""
+    And the HTML contains "closest tr"
+    And the HTML does not contain "field-inline"
+    And the HTML does not contain "view=field"
+
   @REQ-F015 @REQ-F035
   Scenario: the move form appends the issue to the target column
     Given the issue "ENG-12" in the state "In Progress" and the issue "ENG-13" in the state "Todo"
@@ -511,9 +624,11 @@ Feature: HTTP dashboard
 
   @REQ-F015 @REQ-F035
   Scenario: the detail page of a trashed issue is served with Restore as its only control
-    # the four absences are the four controls of the action group (§2.6.9): the edit form, the move
-    # `<select name="state_id">`, the archive block and the delete block. `Fix login` is the positive
-    # half: the page renders the issue and not an empty shell with one button.
+    # the three absences are the three controls of the action group (§2.6.9): the move
+    # `<select name="state_id">`, the archive block and the delete block. The edit is not one of them and
+    # never was a control of the footer — the field forms are the fields themselves, and a trashed issue's
+    # wrappers carry no control at all (`writable: False`, §2.6.3), which is the fourth absence here.
+    # `Fix login` is the positive half: the page renders the issue and not an empty shell with one button.
     Given the issue "ENG-13" in the state "Todo" with title "Fix login" in trash and not archived
     When I execute a GET to "/ENG/issue/ENG-13"
     Then the status is 200
@@ -526,8 +641,9 @@ Feature: HTTP dashboard
 
   @REQ-F015 @REQ-F035
   Scenario: the panel of a trashed issue is served with Restore as its only control
-    # the same four absences as the page, through the fragment route and the `/_/` handles the
-    # panel footer renders (`hx-post` to the layer route, no `hx-target`: the success is a 204).
+    # the same three group controls absent as on the page — and the field wrappers' own controls with
+    # them (§2.6.3) — through the fragment route and the `/_/` handles the panel footer renders
+    # (`hx-post` to the layer route, no `hx-target`: the success is a 204).
     Given the issue "ENG-13" in the state "Todo" with title "Fix login" in trash and not archived
     When I execute a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
     Then the status is 200
@@ -656,8 +772,12 @@ Feature: HTTP dashboard
   @REQ-F013 @REQ-F015 @REQ-F035
   Scenario: a visible issue's page and panel carry the four controls of the action group
     # the positive the two trashed scenarios above are the absence of (`vm.can_write` is the group's
-    # one gate, and the layer picks the branch inside it): a visible issue renders the four controls on
-    # the page and on the panel, and no `Restore`, which a trashed issue alone offers (§2.6.9, D-059).
+    # one gate, and the layer picks the branch inside it): a visible issue renders the action group —
+    # the move control and the two confirmation blocks — on the page and on the panel, and no
+    # `Restore`, which a trashed issue alone offers (§2.6.9, D-059). The last pair of assertions pins
+    # action="/ENG/issue/ENG-13", which is the post target of the seven inline field forms and not a
+    # fourth control of the group (§2.6.3). The title is this test's name and is not renamed; the
+    # count it used to imply is not in the steps (D-080, SPEC-070 §11).
     Given the issue "ENG-13" in the state "Todo" with title "Fix login"
     When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
     Then the first status is 200
