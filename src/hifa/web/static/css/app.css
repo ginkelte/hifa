@@ -34,6 +34,9 @@ html, body {
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-hover); }
+/* An identifier reference reads as a link inside a sentence; the selector is not scoped to
+   `.description` because the same anchor reaches a comment body. */
+a.issue-ref { text-decoration: underline; text-underline-offset: 2px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .dim { color: var(--text-dim); }
 .spacer { flex: 1; }

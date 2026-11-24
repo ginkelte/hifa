@@ -3,8 +3,8 @@ id: SPEC-030
 title: SQLite adapter
 component: persistence
 status: review
-version: 10
-spec_revision: 25
+version: 11
+spec_revision: 26
 depends_on: [SPEC-010, SPEC-020]
 implements:
   - src/hifa/adapters/sqlite/**
@@ -16,7 +16,7 @@ implements:
 acceptance: specs/acceptance/030-sqlite-adapter.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-21
+updated: 2026-11-24
 ---
 
 # SPEC-030 — SQLite adapter
@@ -61,7 +61,7 @@ that feed the CLI, the API and the dashboard (board, list, detail, agenda).
 | `UnitOfWork`, `Repos`, `RetryPolicy`, `UNSET`, `Unset` | `uow` | classes / sentinel | yes |
 | `migrate`, `current_version`, `pending_migrations`, `backup_database`, `MigrationResult` | `migrate` | functions / dataclass | yes |
 | `TeamRepo`, `IssueRepo`, `LabelRepo`, `ProjectRepo`, `CycleRepo`, `CommentRepo`, `HistoryRepo` | `*_repo` | classes | yes |
-| `ListFilters`, `IssuePage`, `SORT_KEYS`, `encode_cursor`, `decode_cursor`, `LabelRef`, `IssueListItem`, `Board`, `BoardGroup`, `IssueDetail`, `AgendaEntry`, `board_view`, `list_view`, `blocked_view`, `issue_detail`, `issue_id_by_ref`, `issue_id_by_number`, `team_by_previous_key`, `agenda` | `reads` | dataclasses / functions | yes |
+| `ListFilters`, `IssuePage`, `SORT_KEYS`, `encode_cursor`, `decode_cursor`, `LabelRef`, `IssueListItem`, `Board`, `BoardGroup`, `IssueDetail`, `AgendaEntry`, `board_view`, `list_view`, `blocked_view`, `issue_detail`, `issue_id_by_ref`, `issue_ref_links`, `issue_id_by_number`, `team_by_previous_key`, `agenda` | `reads` | dataclasses / functions | yes |
 
 ### 2.1 `connection.py`
 
@@ -1499,6 +1499,25 @@ def issue_id_by_ref(conn: sqlite3.Connection, ref: str) -> str | None:
     handed before it asks for a detail. Visibility is the caller's, as with the other lookups."""
 
 
+def issue_ref_links(conn: sqlite3.Connection, refs: Sequence[str]) -> dict[str, tuple[str, str]]:
+    """The batch twin of `issue_id_by_ref`: every folded candidate in `refs` that names a current
+    identifier → `(team.key, issue.identifier)`, the canonical pair SPEC-070's reference autolink
+    writes into its `href` (SPEC-070 §2.3.6, R30, D-081). The caller folds with `str.upper()` —
+    the `upper(:ref)` that function's identifier branch applies, the column stored normalised —
+    and passes the candidates already folded, so each element stays an index seek on
+    `sqlite_autoindex_issue_2` and no `upper()` touches the column. One statement: it projects
+    `issue.identifier` and `team.key` over `issue JOIN team ON team.id = issue.team_id` filtered by
+    `WHERE issue.identifier IN (…)` with literal values, because the join is what answers a team
+    key beside the identifier, and the link's `href` needs both.
+
+    Visibility is the surface's and this read adds no filter: **trashed and archived rows are in
+    the answer** and nothing else is excluded, because the detail page and the panel answer `200`
+    for an issue in either layer and link a reference to it (SPEC-070 R29, D-059). A candidate that
+    names nothing is absent from the answer — not an error, and not a key holding `None` — so the
+    caller links exactly what the mapping carries. An empty `refs` issues no statement and answers
+    `{}`."""
+
+
 def team_by_previous_key(conn: sqlite3.Connection, key: str) -> tuple[Team, str] | None:
     """The team that left `key` behind, with the key as `team_previous_key` stored it; None when no
     rotation carries it. `team_previous_key` is keyed `(team_id, key)`, so two teams may have left the
@@ -1555,6 +1574,20 @@ def agenda(
 The read models are **flat** `dataclass(frozen=True, slots=True)`: no logic, no computed
 properties and no references to `sqlite3`. `reads.py` receives a read-only connection (the one from
 `UnitOfWork.read()` or a `Database.ro_connection()`), never a write `UnitOfWork`.
+
+**A rendered page's reference candidates are resolved by one statement, and it is `issue_ref_links`.**
+A dashboard render knows what it is about to print — one description and every comment of that
+issue — so it collects the identifiers written in that text (SPEC-070 §2.3.6's
+`issue_ref_candidates`, one scan) and asks this read for all of them at once: `issue` joined to
+`team` on `team.id = issue.team_id`, projecting `identifier` and `team.key`, filtered by `IN (…)`
+over `issue.identifier` with the folded candidates as literal values. It is `issue_id_by_ref`
+batched — the same `upper(:ref)` fold, applied by the caller in Python so every element is an index
+seek — and it carries **no visibility predicate**: a trashed row and an archived row are both
+answers, because the detail page and the panel answer `200` for an issue in either layer (SPEC-070
+R29, D-059) and a reference to it is a live link. A candidate the answer does not carry is text, and
+the caller links nothing for it. §2.5's totals do not move: this is not a statement of
+`issue_detail` (SQL-7) but one statement the surface's caller makes before it renders, recorded in
+SPEC-070 §3.
 
 **`q` is a title filter, not search (D-025).** `ListFilters.q` filters **titles only**, with
 `i.title LIKE ? ESCAPE '\'` and the term wrapped as `%term%`. The `%`, `_` and `\` characters *inside*
@@ -2280,6 +2313,19 @@ Feature: SQLite adapter
   shows a `SCAN`, the solution is a new index in a migration, not a change in the adapter.
 
 ## Notes
+
+- spec_revision 26 (2026-11-24): **`reads` gains `issue_ref_links`, the batched reference lookup
+  (HIFA-112, D-081).** `version` 10 → 11: a function joins §2's closed export list, which is §2's
+  ground, and no DDL moves. `issue_ref_links(conn, refs)` answers `{folded candidate: (team.key,
+  issue.identifier)}` for every candidate that names a current identifier, in one statement over
+  `issue` joined to `team` on `team.id = issue.team_id` and filtered by an `IN (…)` over
+  `issue.identifier` with literal values; it is `issue_id_by_ref` batched — the same `upper(:ref)`
+  fold performed by the caller, the same index seek per element — and it carries no visibility
+  predicate, so a trashed and an archived row are both answers, because SPEC-070's detail page and
+  panel answer `200` for an issue in either layer and link a reference to it (SPEC-070 R30, R29).
+  §2.5's totals and every signature of §2.4 are unchanged; the one consumer is the dashboard's
+  render, which collects its candidates with SPEC-070 §2.3.6's `issue_ref_candidates` before the
+  call.
 
 - spec_revision 25 (2026-11-21): **row 3's index is `key` alone, and the tie-break is a sort (HIFA-83,
   D-078).** `version` stays 10: no name, signature or DDL moves. `idx_team_previous_key_key` is created

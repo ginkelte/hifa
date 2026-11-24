@@ -8,7 +8,7 @@ import json
 import re
 import sqlite3
 import string
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
@@ -703,6 +703,46 @@ def issue_id_by_ref(conn: sqlite3.Connection, ref: str) -> str | None:
         {"ref": text},
     ).fetchone()
     return None if row is None else str(row["id"])
+
+
+def issue_ref_links(conn: sqlite3.Connection, refs: Sequence[str]) -> dict[str, tuple[str, str]]:
+    """The folded candidates of `refs` that name a current identifier, with their canonical pair.
+
+    The batch twin of `issue_id_by_ref`: one statement over `issue JOIN team ON
+    team.id = issue.team_id`, projecting `issue.identifier` and `team.key`, filtered by
+    `WHERE issue.identifier IN (…)` — the join is what answers a team key beside the identifier,
+    and a reference's `href` needs both (SPEC-070 §2.3.6, R30, D-081).
+
+    The caller folds with `str.upper()` — the `upper(:ref)` the identifier branch of
+    `issue_id_by_ref` applies, the column stored normalised — and passes the candidates already
+    folded: no `upper()` touches the column, so each value stays an index seek on
+    `sqlite_autoindex_issue_2` instead of turning the statement into a scan of `issue` (SQL-7
+    row 1). Visibility is the surface's and this read adds no filter: **trashed and archived rows
+    are in the answer**, because the detail page and the panel answer `200` for an issue in either
+    layer and link a reference to it (SPEC-070 R29, D-059). A candidate that names nothing is
+    absent from the answer — never a key holding `None` — so the caller links exactly what the
+    mapping carries. An empty `refs` issues no statement and answers `{}`.
+
+    Args:
+        conn: An open connection; the statement is read-only and opens no transaction.
+        refs: The candidates, already folded to upper case and already distinct: the caller that
+            owns their first-appearance order dedupes them once, and this read binds the values
+            as it receives them.
+
+    Returns:
+        `issue.identifier` → `(team.key, issue.identifier)`, keyed by the folded candidate.
+    """
+    values = tuple(refs)
+    if not values:
+        return {}
+    placeholders = ", ".join("?" for _ in values)
+    rows = conn.execute(
+        "SELECT issue.identifier AS identifier, team.key AS key "
+        "FROM issue JOIN team ON team.id = issue.team_id "
+        f"WHERE issue.identifier IN ({placeholders})",
+        values,
+    ).fetchall()
+    return {str(row["identifier"]): (str(row["key"]), str(row["identifier"])) for row in rows}
 
 
 def issue_id_by_number(conn: sqlite3.Connection, *, team_id: str, number: int) -> str | None:
@@ -1565,6 +1605,7 @@ __all__ = [
     "issue_detail",
     "issue_id_by_number",
     "issue_id_by_ref",
+    "issue_ref_links",
     "list_teams",
     "local_member",
     "list_view",

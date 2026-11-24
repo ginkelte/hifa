@@ -72,6 +72,68 @@ Feature: HTTP dashboard
     And the HTML contains the "<strong>" tag
     And the HTML contains the body of the comment
 
+  # The reference autolink (SPEC-070 §2.3.6, R30, D-081). The mapping is the caller's, so a token
+  # the read did not resolve is never a link: each scenario creates the issue a reference names.
+  @REQ-F035
+  Scenario: an issue reference in a description links to the issue it names
+    Given the issue "ENG-12" and the issue "ENG-13" with description "follows ENG-12"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
+    And the link's text is "ENG-12"
+
+  @REQ-F035
+  Scenario: a reference typed in another case links to the canonical URL
+    Given the issue "ENG-12" and the issue "ENG-13" with description "follows eng-12"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
+    And the link's text is "eng-12"
+
+  @REQ-F035
+  Scenario: a token that names no issue stays text
+    Given the issue "ENG-13" with description "SPEC-050, SQL-7 and SPEC-070"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains no link of class "issue-ref"
+    And the HTML contains the text "SPEC-050"
+    And the HTML contains the text "SQL-7"
+
+  @REQ-F035
+  Scenario: a reference inside code is not linked
+    Given the issue "ENG-12" and the issue "ENG-13" with description "`ENG-12` in backticks"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains "<code>ENG-12</code>"
+    And the HTML contains no link of class "issue-ref"
+
+  @REQ-F035
+  Scenario: a reference glued to other characters does not link
+    Given the issue "HIFA-103" and the issue "ENG-13" with description "HIFA-1034, XHIFA-103 and HIFA-103"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains a link of class "issue-ref" to "/HIFA/issue/HIFA-103"
+    And the HTML contains exactly 1 link of class "issue-ref"
+    And the HTML contains the text "HIFA-1034"
+    And the HTML contains the text "XHIFA-103"
+
+  @REQ-F035
+  Scenario: a reference in a comment body links to the issue it names
+    Given the issue "ENG-12" and the issue "ENG-13" with description "plain" and 1 comment "blocked by ENG-12"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
+
+  @REQ-F035
+  Scenario: a reference to another team's issue links to that team's page
+    Given the issue "HIFA-1" and the issue "ENG-13" with description "blocked by HIFA-1"
+    When I execute a GET to "/ENG/issue/ENG-13"
+    Then the HTML contains a link of class "issue-ref" to "/HIFA/issue/HIFA-1"
+    And the link's text is "HIFA-1"
+
+  @REQ-F035
+  Scenario: the references of a surface are resolved in one statement
+    # 14 references, one statement: the resolution reads the `issue` table joined to `team` once for
+    # all of them, so N references do not cost N statements.
+    Given 14 issues on team ENG, 12 named in the description of "ENG-13" and 2 in its 3 comments
+    When I execute a GET to "/ENG/issue/ENG-13" with the statements counted
+    Then exactly 1 statement reads the "issue" table joined to "team" to resolve the references
+    And the HTML contains 14 links of class "issue-ref"
+
   @REQ-F013 @REQ-F035 @slow
   Scenario: the page and the panel both carry the composer for a visible issue
     # the positive that a page rendering no composer fails: the box is not decoration, it is the
