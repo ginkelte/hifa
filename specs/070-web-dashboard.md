@@ -3704,21 +3704,21 @@ Feature: hifa web dashboard
 
   # The reference autolink (R30, D-081). The mapping is the caller's, so a token the read did not
   # resolve is never a link: the steps create the issue a reference names before naming it.
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: an issue reference in a description links to the issue it names
     Given a team ENG with the issues ENG-12 and ENG-13, ENG-13 describing "follows ENG-12"
     When GET /ENG/issue/ENG-13 is requested
     Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
     And the link's text is "ENG-12"
 
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: a reference typed in another case links to the canonical URL
     Given a team ENG with the issues ENG-12 and ENG-13, ENG-13 describing "follows eng-12"
     When GET /ENG/issue/ENG-13 is requested
     Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
     And the link's text is "eng-12"
 
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: a token that names no issue stays text
     Given a team ENG with the issue ENG-13 describing "SPEC-050, SQL-7 and SPEC-070"
     When GET /ENG/issue/ENG-13 is requested
@@ -3726,14 +3726,14 @@ Feature: hifa web dashboard
     And the HTML contains the text "SPEC-050"
     And the HTML contains the text "SQL-7"
 
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: a reference inside code is not linked
     Given a team ENG with the issues ENG-12 and ENG-13, ENG-13 describing "`ENG-12` in backticks"
     When GET /ENG/issue/ENG-13 is requested
     Then the HTML contains "<code>ENG-12</code>"
     And the HTML contains no link of class "issue-ref"
 
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: a reference glued to other characters does not link
     Given a team ENG with the issue ENG-13 describing "HIFA-1034, XHIFA-103 and HIFA-103", and the issue HIFA-103 existing on team HIFA
     When GET /ENG/issue/ENG-13 is requested
@@ -3742,20 +3742,20 @@ Feature: hifa web dashboard
     And the HTML contains the text "HIFA-1034"
     And the HTML contains the text "XHIFA-103"
 
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: a reference in a comment body links to the issue it names
     Given a team ENG with the issues ENG-12 and ENG-13, and a comment on ENG-13 saying "blocked by ENG-12"
     When GET /ENG/issue/ENG-13 is requested
     Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
 
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: a reference to another team's issue links to that team's page
     Given a team ENG with the issue ENG-13 describing "blocked by HIFA-1", and the issue HIFA-1 existing on team HIFA
     When GET /ENG/issue/ENG-13 is requested
     Then the HTML contains a link of class "issue-ref" to "/HIFA/issue/HIFA-1"
     And the link's text is "HIFA-1"
 
-  @REQ-F035 @deferred(HIFA-112)
+  @REQ-F035
   Scenario: the references of a surface are resolved in one statement
     # 14 references, one statement: the resolution reads the `issue` table joined to `team` once for
     # all of them, so N references do not cost N statements.
