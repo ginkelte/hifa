@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 11
-spec_revision: 32
+version: 12
+spec_revision: 33
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -13,7 +13,7 @@ implements:
 acceptance: specs/acceptance/001-mvp-v1/16-dashboard.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-22
+updated: 2026-11-24
 ---
 
 # SPEC-070 — Web dashboard
@@ -165,7 +165,7 @@ Failed validation in a form without JS ⇒ `422` + template with the errors next
 | GET | `/_/issues/{identifier}/card` | one `<article class="card">` | `#card-{identifier}` | `outerHTML` | manual refresh |
 | GET | `/_/issues/{identifier}/panel` | `<aside id="panel">` with the detail | `#panel` | `innerHTML` | row click (`hx-get` + `hx-push-url`) |
 | GET | `/_/issues/{identifier}/field/{field}` | edit control for one field | the field itself | `outerHTML` | click on the field |
-| PATCH | `/_/issues/{identifier}?view=list\|board\|panel` | the updated row (`view=list`), card (`view=board`) or panel (`view=panel`) | `#issue-{identifier}` / `#card-{identifier}` / `#panel` | `outerHTML` for `list` and `board`, `innerHTML` for `panel` | inline-edit blur/Enter, select change, the description's `Save` (§2.6.3) |
+| PATCH | `/_/issues/{identifier}?view=list\|board\|panel\|field` | the updated row (`view=list`), card (`view=board`), panel (`view=panel`) or one field's read state (`view=field`, §2.6.11) | `#issue-{identifier}` / `#card-{identifier}` / `#panel` / the field itself | `outerHTML` for `list`, `board` and `field`, `innerHTML` for `panel` | inline-edit blur/Enter, select change, the description's `Save` (§2.6.3) |
 | POST | `/_/issues` | new `<tr>` | `#issues-tbody` | `afterbegin` | quick-add submit |
 | POST | `/_/issues/{identifier}/move` | `204` with no body | — | `none` | sortablejs drop (§2.6.4); the panel footer's `<select>` + `Move` (§2.6.9, §5.7.1) |
 | POST | `/_/issues/{identifier}/archive` | `204` with no body | — | `none` | panel action, with `confirm=1` (§2.6.9) |
@@ -2135,6 +2135,98 @@ it, is the one §6 names.
 `specs/acceptance/001-mvp-v1/16-dashboard.feature`). The `Cmd/Ctrl+Enter` submission and the 44 px
 target are verified by hand in a browser at 1280 px and at 320 px, like the rest of §2.6.9.
 
+#### 2.6.11 Editing one field in place (HIFA-114)
+
+§2.6.3's exchange, extended to the detail page and the panel: one gesture, one field.
+
+**Three decisions, each owned by the requester.** Unanswered; the orchestrator assumed them. Overridden,
+A1 and A3 cost a row and a scenario each; A2 waives `REQ-N006`/P5 and needs a `D-0NN`.
+
+| Id | Decision | Owner |
+|---|---|---|
+| **A1** | The field set is the seven the edit form posts (`title`, `description`, `priority`, `state`, `assignee`, `due_date`, `estimate`); the references `issue edit` also sets (`project`, `milestone`, `cycle`, `parent`) and labels are non-goals. | requester |
+| **A2** | "No separate form" means no *additional* form: the page form stays the no-JS path. | requester |
+| **A3** | The panel edits the same seven as the detail page: P2 forbids one edge surface carrying a capability the other lacks. | requester |
+
+**The seven fields, and the verb that already carries each (P1).** No flag is added: `hifa issue edit`
+writes each today (SPEC-050 §2.5.3). `{field}` is the wire name of the first column - `due_date`, never
+`due`; `state`, never `state_id`. Clearing is the CLI's too: an empty value clears `description`,
+`assignee`, `due_date` and `estimate`, `priority=none` clears priority, `title` and `state` never clear.
+
+| `{field}` | Control | `hifa issue edit` flag |
+|---|---|---|
+| `title` | text | `-t/--title` |
+| `description` | textarea + `Save` | `-d/--description` |
+| `priority` | select | `-p/--priority` |
+| `state` | select | `-s/--state` |
+| `assignee` | select | `-a/--assignee` |
+| `due_date` | date | `--due` |
+| `estimate` | number | `-e/--estimate` |
+
+**One partial, four hosts, two markups.** `partials/field_control.html` renders one field in two states, in
+the row, the card, the detail page and the panel. **read**: a
+`<span class="field-value" data-field="{field}">` with the value as text (`-` if none), `hx-get` to the
+field fragment of §2.1.3, `hx-target="closest [data-field]"` and `hx-swap="outerHTML"`. **edit**: the
+control of §2.6.3, its `blur changed` trigger and refused-value rule (R7, R8), carrying the same
+`data-field`, with `hx-patch="/_/issues/{identifier}?view=field"` and the same target and swap. Both read
+`issue_vm.fields`, seven `{name, label, display, edit_url, is_empty}` dicts (R2, R3).
+
+**Two routes, each answering one field (R27, P8).** `GET /_/issues/{identifier}/field/{field}` answers the
+edit state: `200` the control, `404` for a `{field}` outside the seven or a reference that does not resolve,
+`400 fragment requires htmx` without `HX-Request` (R5), `403 partials/fragment_error.html` in `--read-only`
+(R18); its `FRAGMENT_ALLOWLIST` line in `scripts/check_edge_parity.py` lands in the same commit (P8), and
+the `issue.edit` row needs no change. `PATCH ...?view=field` answers the read state of the field just written -
+`200`, `HX-Trigger: issue-updated`, `HX-Revision` - so one field opens and closes. `description` keeps
+`?view=panel`, because the panel answers a committed textarea with rendered markdown, and `view=list|board`
+are unchanged (§2.1.3). `view=field` reads the base `IssueDetail`, with no `include_trashed`, so a trashed
+identifier is `404` and this is no third surface over the trash (R29).
+
+**States (P3).**
+
+| State | What the reader sees |
+|---|---|
+| read, empty | the value in `span[data-field]`; `-` if none; none when layered (R18, R29) |
+| saving, refused | the typed value painted first (R7), one `PATCH` in flight (R8); then the **server's** value, `.is-invalid`, §6's sentence |
+
+Without JS the page form is the path (`method="post"` -> `303`) and `[data-js-only]` is hidden by `.no-js`
+(§2.6.6). With it, the mirror: the form carries `data-page-form` and `app.css` gains
+`.js [data-page-form] { display: none }`; it is never deleted (A2). `Tab` reaches the fields in the table's
+order, `Enter` saves the focused control, `Esc` restores the stored value; nothing is hover-only; each
+control is at least **44 px** tall below `900px`; the block is one column at **320px**, no sideways scroll
+(P5).
+
+**Requirements and their scenarios.** One behaviour and one command each, from the repository root; each
+selector is a test of `tests/e2e/web/test_field_edit.py`.
+
+| Id | Requirement | Command |
+|---|---|---|
+| **REQ-F070-18** | A save carries **one** field: the other six keep theirs, `updated_at` moves once, one history row is written. | `pytest -k one_field_one_write` |
+| **REQ-F070-19** | Both surfaces offer the same seven (A3, P2): seven `data-field` values each. | `pytest -k both_surfaces_same_set` |
+| **REQ-F070-20** | The set is exactly those seven: `project`, `milestone`, `cycle`, `parent`, `labels`, `title ` (a trailing space) are offered and accepted nowhere (A1). | `pytest -k field_set_is_closed` |
+| **REQ-F070-21** | An absent field changes nothing; empty clears `description`, `assignee`, `due_date`, `estimate`; `priority=none` clears priority; a blank `title` is `422`. | `pytest -k clearing_is_a_value` |
+| **REQ-F070-22** | The field fragment answers its four statuses, guarded, in `--read-only` too. | `pytest -k field_fragment` |
+| **REQ-F070-23** | `PATCH ...?view=field` answers one `span[data-field]` and no `<html>`; trashed is `404` (R29). | `pytest -k answer_is_the_field` |
+| **REQ-F070-24** | A refusal re-renders that field with §6's sentence and `.is-invalid`; the typed value is not kept. | `pytest -k refusal_keeps_the_field` |
+| **REQ-F070-25** | Without JS both surfaces edit all seven through the page form and a `303` (A2, P5). | `pytest -k no_js_still_edits` |
+| **REQ-F070-26** | Each field is reachable and saveable by keyboard, 44 px tall below 900 px, one column at 320 px, no sideways scroll (P5). | `pytest -k keyboard_and_320` |
+
+**Delivery breakdown.**
+
+| Id, goal | Paths | `done-when` |
+|---|---|---|
+| **T-114.1** the field dicts | `src/hifa/web/readmodels.py` | `pytest tests/unit/web -k issue_vm` green: seven, in order |
+| **T-114.2** the two states | `src/hifa/web/templates/partials/field_control.html` | the read state on both surfaces; seven edit states |
+| **T-114.3** the two routes, clear included | `src/hifa/web/app.py`, `scripts/check_edge_parity.py` | `python scripts/check_edge_parity.py` green; four statuses |
+| **T-114.4** the markup switch | `src/hifa/web/static/css/app.css`, `src/hifa/web/templates/issue_detail.html`, `src/hifa/web/templates/partials/issue_panel.html` | the form posts seven, the fragment one |
+| **T-114.5** the acceptance | `tests/e2e/web/test_field_edit.py` | every command above is green |
+
+**Non-goals.** The four references (A1); labels, whose chips the row of §2.6.3 keeps (A1); bulk or
+whole-form edit; `description` on a row; a new CLI flag; a change to the page form or `REQ-N006`; a third
+trash surface (R29).
+
+**Open questions, each with its owner.** (1) Does "cada campo" include the four references? requester. (2)
+Does `description` stop being a textarea with `Save`? requester; kept as §2.6.3's here.
+
 ## 3. Data it touches
 
 The dashboard does not execute SQL: the read models are built by `hifa/adapters/sqlite/reads.py`
@@ -3253,6 +3345,8 @@ Feature: hifa web dashboard
   §2.6.9; the whole-page floor is T-19.
 
 ## 11. Notes
+
+- spec_revision 33 (2026-11-24): **a field is edited in place, on the detail page and the panel (HIFA-114).** §2.6.11 declares the field set, the control fragment `GET /_/issues/{identifier}/field/{field}` and the answer `PATCH ...?view=field`. `version` 11 -> 12.
 
 - spec_revision 32 (2026-11-22): **a markdown table is served as a table (HIFA-113, D-079).** `GET
   /HERMES/issue/HERMES-1` answered a GFM table as one `<p>` of pipe characters, and the two layers
