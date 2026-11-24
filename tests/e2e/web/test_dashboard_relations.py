@@ -80,9 +80,14 @@ def test_the_title_of_a_related_issue_links_to_that_issue(
     assert [href for _, href, _ in anchors] == ["/ENG/issue/ENG-2", "/ENG/issue/ENG-2"]
     assert [html_lib.unescape(text) for _, _, text in anchors] == ["ENG-2", FAR_TITLE]
     assert [classes.split() for classes, _, _ in anchors] == [["identifier"], ["relation-title"]]
-    # The title lives inside its anchor: taken with the anchors away, the row keeps the label
-    # and the two spaces where the elements met, and never the title as loose text.
+    # The row's reading order, on its visible text: every tag is dropped without standing in for
+    # a space, so the only separators left are the template's own. Label, identifier, title, in
+    # that order and each apart from the next; joining the two anchors on one line renders
+    # `ENG-2Rotate the session keys` and fails here, where the anchors' texts would not notice.
+    assert " ".join(re.sub(r"<[^>]+>", "", row).split()) == f"related ENG-2 {FAR_TITLE}"
+    # The title lives inside its anchor: with the anchors taken away, the row keeps only the
+    # label, and neither the identifier nor the title survives as loose text of its own.
     loose = ANCHOR.sub("", row)
     assert FAR_TITLE not in loose
     assert "ENG-2" not in loose
-    assert "related" in loose
+    assert '<span class="relation-type">related</span>' in loose
