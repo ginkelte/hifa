@@ -656,8 +656,8 @@ a `<section class="relations">` with an `<h2>` and a `<ul>`, and each row carrie
 the type's own name otherwise, §2.3.4). `identifier` is the far end's identifier and `relation-title` its
 title; both anchors take their `href` from `relation.url`, the key §2.3.4 declares. `relation-title` is also
 the visual rule that lets a title read as body text until it is pointed at: `color: var(--text)` at rest,
-`color: var(--accent)` with `text-decoration: underline` on `:hover`, declared beside the `.relation-type`
-rule of `static/css/app.css` — without it the file's global
+`color: var(--accent-hover)` with `text-decoration: underline` on `:hover`, declared beside the
+`.relation-type` rule of `static/css/app.css` — without it the file's global
 `a { color: var(--accent); text-decoration: none; }` paints a whole title in the link colour and the
 identifier stops being what the row's link is recognised by. The two anchors are two elements on purpose: one
 anchor around `identifier` and `title` would change this row's markup and break the `.identifier` rule that
@@ -3866,8 +3866,10 @@ Feature: hifa web dashboard
   `spec_revision` is 44 → 45. **This revision declares markup and not a scenario**: the corpus stays **251**
   scenarios (§7 of this file: **91**), `DECISIONS.md` stays **80** decisions, and no count of §7 or of the
   corpus moves — the implementation and the test that bites it land with HIFA-116. (a) **§2.3.4's
-  `issue_vm.relations` sample gained `url`**, the key `readmodels.py`'s `build_issue_vm` already wrote, and
-  the paragraph under `direction` says the row's two anchors share it and that no template concatenates one.
+  `issue_vm.relations` sample gained `url` and `label`**, the two keys `readmodels.py`'s `build_issue_vm`
+  already wrote — the one href both of the row's anchors share and the resolved name the `relation-type`
+  label prints — and the paragraph under `direction` says both: `label` is the resolved inverse, and the
+  row's two anchors share the one `url` with no template concatenating one.
   (b) **§2.2 declares the Relations block**: its `relation-type` label, the `identifier` anchor and the
   second `relation-title` anchor to the same `href`, with the visual rule that keeps a title body text at
   rest and an underline on hover, because the file's global
