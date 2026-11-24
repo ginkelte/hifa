@@ -85,9 +85,10 @@ def test_the_title_of_a_related_issue_links_to_that_issue(
     # that order and each apart from the next; joining the two anchors on one line renders
     # `ENG-2Rotate the session keys` and fails here, where the anchors' texts would not notice.
     assert " ".join(re.sub(r"<[^>]+>", "", row).split()) == f"related ENG-2 {FAR_TITLE}"
-    # The title lives inside its anchor: with the anchors taken away, the row keeps only the
-    # label, and neither the identifier nor the title survives as loose text of its own.
+    # The title lives inside its anchor: with the anchors taken away, the row still carries the
+    # label as an element of its own, and neither the identifier nor the title survives as loose
+    # text beside the anchor.
     loose = ANCHOR.sub("", row)
     assert FAR_TITLE not in loose
     assert "ENG-2" not in loose
-    assert '<span class="relation-type">related</span>' in loose
+    assert re.search(r'<span class="relation-type">\s*related\s*</span>', loose), loose
