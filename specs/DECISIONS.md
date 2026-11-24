@@ -4959,3 +4959,62 @@ in front of a value that is not a URL: `urlparse("text-align:center").scheme` is
 attribute of every aligned column is dropped and the alignment of (4) is gone with no test failing.
 The predicate is therefore the attribute's own — `href` against `ALLOWED_SCHEMES`, `style` against
 `ALLOWED_STYLES` — and SPEC-070 §2.3.6 states it beside the three values.
+
+## D-080 — A field's in-place control is one route, `?view=field`, on both surfaces
+
+**Date:** 2026-11-24 · **Wins:** SPEC-070 §2.6.11's one-route-per-field rule, restated below as the
+invariant · **Loses:** SPEC-070 §2.6.3's panel-`description` exception, §2.1.3's rationale that made
+the panel's textarea "the one editable field that is not inline", and R27's parenthetical that named
+`?view=panel` the description editor · **Touches:** SPEC-070 §2.1.3, §2.6.3, §2.6.6, §2.6.11, R27, §6,
+§7 and §11 (`spec_revision` 34 -> 35, `version` 12 stands); no other file moves
+
+**The invariant.** A field's in-place control is **one** route, `PATCH /_/issues/{identifier}?view=field`,
+on **both** surfaces, for **all seven** fields — `description` included. The panel is a host of that
+control, not a second way to write the same field: the panel's `description` is the `<textarea>` + `Save`
+of `partials/field_control.html`, and it posts `?view=field` like `title` or `estimate`.
+
+**The conflict.** Two sections of SPEC-070 contracted one request two ways. §2.6.3 (`:1593-1596`) ruled
+that "`description` is **not** inline: it is edited in the panel with a `<textarea>` and a Save button",
+§2.1.3 (`:194`) justified the `?view=panel` view value by that same textarea, and R27 (`:2320`) answered
+`?view=panel` "for the description editor of §2.6.3"; §2.6.11 (`:2200-2202`) contracted `?view=field`
+"for all seven, `description` included, on both surfaces: one route per field, no exception", and then
+asked the requester which of the two the panel's `description` keeps. Both cannot hold: a panel
+regenerated from the file renders a `?view=panel` textarea-and-`Save` (§2.6.3) *and* a `?view=field`
+control (§2.6.11) for one value, which is two editors, two save paths and two answers for one field.
+
+**Why this side wins (1) — the losing side is the one that regenerates twice.** §2.6.3 is the *row*
+section: its subject is the `<td>` of a list row, whose inline set is `title`, `state`, `assignee`,
+`priority`, `due_date`, `estimate` and `labels`. Its `description` sentence is a statement about rows
+that was written before the panel had a per-field control, and it is the only sentence in the corpus
+that makes a field's editor depend on which surface the reader is on. Keeping it means every future
+host of `field_control.html` needs an exception clause, which is the shape P2 (edge parity) forbids:
+a capability that behaves differently per surface.
+
+**Why this side wins (2) — one field, one write path, one test.** With one route, `REQ-F070-18...24` are
+assertable on either surface with the same request and the same body, `?view=field` is the answer the
+client re-renders into the field's own host on both, and the panel keeps no second save control whose
+`Save` button would be a second write path for one value to test. The mechanism that makes a
+`<textarea>` necessary — markdown, multiple lines — is a property of the *control*, not of a route.
+
+**What `?view=panel` still is, and why it is not deleted.** It remains the **form-level** answer of the
+panel's `<form>` (`partials/issue_panel.html` carries `hx-patch="...?view=panel"`, `hx-target="#panel"`):
+a `PATCH` that asks for the panel rather than one field answers the `<aside>`, which is what
+`specs/acceptance/001-mvp-v1/16-dashboard.feature`'s `the panel edit answers the panel` pins and what
+`tests/e2e/web/test_dashboard.py` exercises. It is **not** a field's route: no per-field control carries
+it, and §2.6.3, §2.1.3 and R27 now say so in those words. Deleting the value instead would contradict a
+shipped acceptance scenario for a ticket about in-place editing, and a route value with a shipped client
+is not the thing this entry removes.
+
+**The five sentences that move.** §2.6.3: the `description` bullet becomes "no *row* control ... its
+in-place control is the panel's and the detail page's textarea + `Save` of §2.6.11, through
+`?view=field`", and the panel form's `hx-patch` sentence names both values. §2.1.3: the paragraph that
+existed to justify `?view=panel` becomes the form-level answer, pointing at §2.6.11 and this entry.
+R27: the edit answer names the field (`?view=field`) and the panel (the form-level `?view=panel`).
+§2.6.6's capability row "Edit a field" states the in-place control per field instead of "the row's own
+control ... `description` in the panel with a Save". §2.6.11: the open question that re-opened the choice
+is gone, and the `?view=panel` sentence is reduced to "not a field's route".
+
+**What this entry does not decide.** Whether `?view=panel` should eventually become the route of a
+whole-form write with no fragment client (it has a form-level client and a shipped scenario today); and
+the four references of A1, which stay out of the seven. Both are the requester's, and neither is a
+second answer for a field.

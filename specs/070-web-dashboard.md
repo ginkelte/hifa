@@ -4,7 +4,7 @@ title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
 version: 12
-spec_revision: 34
+spec_revision: 35
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -165,7 +165,7 @@ Failed validation in a form without JS ⇒ `422` + template with the errors next
 | GET | `/_/issues/{identifier}/card` | one `<article class="card">` | `#card-{identifier}` | `outerHTML` | manual refresh |
 | GET | `/_/issues/{identifier}/panel` | `<aside id="panel">` with the detail | `#panel` | `innerHTML` | row click (`hx-get` + `hx-push-url`) |
 | GET | `/_/issues/{identifier}/field/{field}` | edit control for one field | the field itself | `outerHTML` | click on the field |
-| PATCH | `/_/issues/{identifier}?view=list\|board\|panel\|field` | the updated row (`view=list`), card (`view=board`), panel (`view=panel`) or one field's read state (`view=field`, §2.6.11) | `#issue-{identifier}` / `#card-{identifier}` / `#panel` / the field itself | `outerHTML` for `list`, `board` and `field`, `innerHTML` for `panel` | inline-edit blur/Enter, select change, the description's `Save` (§2.6.3) |
+| PATCH | `/_/issues/{identifier}?view=list\|board\|panel\|field` | the updated row (`view=list`), card (`view=board`), panel (`view=panel`) or one field's read state (`view=field`, §2.6.11) | `#issue-{identifier}` / `#card-{identifier}` / `#panel` / the field itself | `outerHTML` for `list`, `board` and `field`, `innerHTML` for `panel` | inline-edit blur/Enter and select change (§2.6.3, §2.6.11); a whole-form submit from the panel (§2.1.3) |
 | POST | `/_/issues` | new `<tr>` | `#issues-tbody` | `afterbegin` | quick-add submit |
 | POST | `/_/issues/{identifier}/move` | `204` with no body | — | `none` | sortablejs drop (§2.6.4); the panel footer's `<select>` + `Move` (§2.6.9, §5.7.1) |
 | POST | `/_/issues/{identifier}/archive` | `204` with no body | — | `none` | panel action, with `confirm=1` (§2.6.9) |
@@ -191,11 +191,13 @@ reader sees are the server's (D-054). In these four rows `—` in the `hx-target
 carries **no** target, and `none` in `hx-swap` is the attribute the rendered forms carry: a `204` has no
 body to put anywhere, and the confirmation forms of §2.6.9 render exactly these two cells.
 
-`PATCH …?view=panel` exists because the panel carries the one editable field that is not inline — the
-description textarea and its Save button (§2.6.3) — and its answer must be the panel itself, not a row
-that is not on the page: the target is `#panel`, the swap `innerHTML`, and the body the `<aside>` of
-`partials/issue_panel.html`. With `view=list` and `view=board` nothing changes: target the row or the
-card, swap `outerHTML`, body the `<tr>`/`<article>`.
+`PATCH …?view=panel` is the panel's **form-level** answer: a body that asks for the panel rather
+than for one field answers the panel itself, not a row that is not on the page — the target is
+`#panel`, the swap `innerHTML`, and the body the `<aside>` of `partials/issue_panel.html`, which is
+the answer `16-dashboard.feature`'s `the panel edit answers the panel` pins. It is **not** a field's
+route: every in-place control of the seven, the panel's `description` included, carries
+`?view=field` (§2.6.11, D-080), so one field never has two answers. With `view=list` and `view=board`
+nothing changes: target the row or the card, swap `outerHTML`, body the `<tr>`/`<article>`.
 
 **A refusal keeps the element.** A layer write that the domain refuses (`422`/`409`, §6) answers with
 the **panel re-rendered** from the read model plus `form_error`, so the form stays where the reader is
@@ -209,7 +211,7 @@ Headers the server must read or emit:
 |---|---|---|
 | `HX-Request: true` | input | if missing on a `/_/*`, respond `400` (`fragment requires htmx`) |
 | `HX-Trigger` | output | events of §2.6.4/§2.6.5, of the layer writes and of the comment write (`issue-created`, `issue-updated`, `issue-moved`, `issue-archived`, `issue-deleted`, `issue-restored`, `board-reordered`, `comment-created`) |
-| `HX-Retarget` | output | on `422` of an inline edit: re-targets the `<form>` that failed |
+| `HX-Retarget` | output | on `422` of an inline edit: re-targets the `<form>` that failed, or `#panel` when the permitted body is the panel (§6's trashed `?view=field` row) |
 | `HX-Push-Url` | output | when opening the panel: pushes `/{team}/issue/{identifier}` |
 | `HX-Reswap` | output | `none` when the fragment only updates counters |
 | `HX-Revision` | output | the number the request observed (§2.6.8) — for a write, the number read **after** it committed, the same observation the page marker and `/_/revision` report and the one the board it just changed already reflects: on every `200`/`201`/`204` of this layer, pages and fragments alike, so the page adopts it and never reloads what it has just been given. The four bodyless writes of the table above carry it too (§5.7 step 5), and a `204` is the one answer that renders no element for the number to land on: nothing adopts it there, and the collection re-read the client performs afterwards is the answer that reports the number the page keeps (§5.7 steps 6-7, §2.6.8, D-050) |
@@ -756,8 +758,12 @@ issue_vm = {
     ],
     "assignees": [{"id": "…", "name": "Ginkelte", "initials": "VI", "is_current": True}],
     # The seven in-place fields of §2.6.11, always seven and always in this order: `name` is the
-    # `{field}` of the routes, `display` the value already formatted ("-" when empty), `href` the page
+    # `{field}` of the routes, `label` the field's own name for the control's `<label>` ("Title",
+    # "Due date"), `display` the value already formatted ("-" when empty), `href` the page
     # that carries the form (the control's no-JS fallback) and `edit_url` the field fragment.
+    # `is_empty` is the one key a template may branch on when it paints the empty placeholder: the
+    # test is a boolean, never `display == "-"`, because a comparison in Jinja is logic (R2) and a
+    # caller that formats `display` differently would silently change the style with it.
     "fields": [
         {
             "name": "title",
@@ -1580,8 +1586,9 @@ Rules:
   `hx-include="#edit-{identifier}"` (what htmx serializes). `hidden` keeps it out of the layout, not
   out of the document, and `method`/`action` stay as the no-JS fallback (2.6.6). The panel's edit form
   is the same shape and keeps them too — `method="post"` and `action="/{team}/issue/{identifier}"`,
-  plus its own `hx-patch` to `?view=panel` — so the no-JS submit reaches §2.1.2's page form from
-  either surface, and `action="/ENG/issue/ENG-13"` is markup of the panel as much as of a row.
+  plus its own `hx-patch`, `?view=field` on a field control (§2.6.11) and `?view=panel` on the form
+  itself (D-080) — so the no-JS submit reaches §2.1.2's page form from either surface, and
+  `action="/ENG/issue/ENG-13"` is markup of the panel as much as of a row.
 - `hx-patch` on the `<form>` is what turns a submit into a `PATCH`. `Enter` in the control is the
   implicit submission of its form owner — the same `hx-patch` — so there is no second `hx-trigger`.
 - `hx-include="#edit-{identifier}"` sends every field of that row's form, not just the edited one: a
@@ -1592,8 +1599,9 @@ Rules:
   does not queue).
 - Fields editable inline: `title` (text), `state` (`<select>`), `assignee` (`<select>`),
   `priority` (`<select>` with glyphs), `due_date` (`<input type="date">`), `estimate` (number),
-  `labels` (chips + menu). `description` is **not** inline: it is edited in the panel with a
-  `<textarea>` and a Save button (it needs markdown and is multi-line).
+  `labels` (chips + menu). `description` has no **row** control: it needs markdown and is multi-line,
+  so its in-place control is the `<textarea>` + `Save` of §2.6.11 on the detail page and in the panel,
+  saved through `?view=field` like the other six (D-080).
 - **The `PATCH` body is form-urlencoded — htmx's own encoding of the form.** No extension and no
   request-rewriting hook in `app.js`: the layer parses urlencoded only, every `/_/` write goes through
   `_parse_form`, and the single JSON body under `/_/` is the revision probe of §2.1.3.1 (D-049). A body
@@ -1745,7 +1753,7 @@ thumb stays a tap.
 | Read board, list, detail | yes (full HTML from the server) | same |
 | Navigate between pages | yes (`<a href>`) | same (no `hx-boost`: navigation is not intercepted) |
 | Create issue | yes (`<form method="post">` → `303`) | quick-add with `hx-post`, row inserted |
-| Edit a field | yes (the row's own control posts the hidden page form of §2.6.3; `description` in the panel with a Save) | optimistic inline (§2.6.3) |
+| Edit a field | yes (the read control's `href` opens the page, whose form of §2.1.2 posts any subset of the seven and answers `303`; §2.6.11) | optimistic in place: one control per field, `?view=field`, on the detail page and in the panel (§2.6.3, §2.6.11) |
 | Comment | yes | `hx-post` + append |
 | Move state | yes (`<select>` + button) | drag & drop on the board; the same `<select>` in the panel footer, whose answer re-reads the collection (§5.7.1) |
 | Reorder columns | no (`hifa state update NAME --before/--after`, SPEC-050 §2.5.6) | drag & drop of the column |
@@ -1762,11 +1770,13 @@ Rules:
 - `<noscript>` in `base.html`: one line saying that drag & drop, the palette, the shortcuts and the
   automatic refresh need JS and that everything else works the same. Without `<noscript>` there is
   no message (nothing is assumed about the user).
-- `<body>` carries `class="no-js"` and `app.js` switches it to `js` on its first line; CSS hides
-  JS-only controls with `.no-js [data-js-only] { display: none }`, and the mirror attribute
-  `data-no-js-only` hides a control that only works *without* JS (§2.6.11's page form) through the same class
-  pair in the other direction. One mechanism, two carriers. That way there is no "flash" of dead
-  controls and no control left in the mode the reader is not in.
+- `<body>` carries `class="no-js"` and `app.js` switches it to `js` on its first line. Two selectors,
+  one mechanism, two carriers: `.no-js [data-js-only] { display: none }` hides a control that needs
+  JS, and its mirror `.js [data-no-js-only] { display: none }` hides one that only works *without* it
+  (§2.6.11's page form). Both are `app.css` declarations, and one static test reads the stylesheet and
+  pins both selectors (REQ-F070-26, `tests/unit/web/test_field_layout.py`): a carrier no test reads is
+  debt (P8). That way there is no "flash" of dead controls and no control left in the mode the reader
+  is not in.
 
 #### 2.6.8 Noticing a write from another connection (D-049)
 
@@ -2153,9 +2163,8 @@ target are verified by hand in a browser at 1280 px and at 320 px, like the rest
 
 #### 2.6.11 Editing one field in place (HIFA-114)
 
-§2.6.3's exchange, extended to the detail page and the panel: one gesture, one field. Three decisions,
-each owned by the requester: unanswered, the orchestrator assumed them; overridden, A1/A3 cost a row and
-a scenario each, A2 waives `REQ-N006`/P5 and needs a `D-0NN`.
+§2.6.3's exchange, extended to the detail page and the panel: one gesture, one field. The three decisions
+below were the requester's; unanswered, the orchestrator assumed them.
 
 | Id | Decision | Owner |
 |---|---|---|
@@ -2164,10 +2173,8 @@ a scenario each, A2 waives `REQ-N006`/P5 and needs a `D-0NN`.
 | **A3** | The panel edits the same seven as the detail page: P2 forbids one edge surface carrying a capability the other lacks. | requester |
 
 **The seven fields, and the verb that carries each (P1).** `hifa issue edit` writes each today
-(SPEC-050 §2.5.3), so no flag is added. `{field}` is the wire name of the first column - `due_date`, never
-`due`; `state`, never `state_id`. Clearing is the CLI's too: empty clears `description`, `assignee`,
-`due_date`, `estimate`, `priority=none` clears priority, `title` and `state` never clear; an empty `state`
-or `priority` is a refusal, not a clear - `422` `invalid value`, the domain's message (REQ-F070-21).
+(SPEC-050 §2.5.3), so no flag is added; `{field}` is the wire name of the first column - `due_date`, never
+`due`, `state`, never `state_id` - and clearing is REQ-F070-21's.
 
 | `{field}` | Control | `hifa issue edit` flag |
 |---|---|---|
@@ -2179,33 +2186,34 @@ or `priority` is a refusal, not a clear - `422` `invalid value`, the domain's me
 | `due_date` | date | `--due` |
 | `estimate` | number | `-e/--estimate` |
 
-**One partial, two hosts, two markups.** `partials/field_control.html` renders one field in two states, on
-the detail page and in the panel (T-114.2, T-114.4). No card host (a non-goal; §2.6.4/§2.6.9 keep it
+**One partial, two hosts, two markups.** `partials/field_control.html` renders one field in two states,
+on the detail page and in the panel (T-114.2, T-114.4). No card host (§2.6.4/§2.6.9 keep it
 control-free), no row host (§2.6.3 owns it). **read**: an
 `<a class="field-value" data-field="{field}" href="/{team}/issue/{identifier}">` with the value as text
 (`-` if none), `hx-get` to the field fragment of §2.1.3, `hx-target="closest [data-field]"` and
-`hx-swap="outerHTML"`. The `href` is the page, not the fragment (R5), so R4 and §2.6.6's tested rule hold,
-and without JS the field opens the page carrying the form. **edit**: §2.6.3's control, its `blur changed`
-trigger and refused-value rule (R7), the same `data-field`,
+`hx-swap="outerHTML"`. The `href` is the page, not the fragment (R5), so R4 and §2.6.6's tested rule
+hold. **edit**: §2.6.3's control, its `blur changed` trigger and refused-value rule (R7), the same
+`data-field`,
 `hx-patch="/_/issues/{identifier}?view=field"`, the target and swap unchanged, and two substitutions (one
 issue per host, no row): the hidden form is `id="field-form-{field}"`, named by `form="field-form-{field}"`
 and `hx-include="#field-form-{field}"`, and `hx-sync` is `this:replace` rather than `closest tr:replace`
 (R8), so `Enter` submits through the form owner and a second save discards the first. Both read
 `issue_vm.fields` (§2.3.4).
 
-**Seven fields, one route pair (R27, P8).** `GET /_/issues/{identifier}/field/{field}` answers the edit
+**Seven fields, one route pair (R27, P8, D-080).** `GET /_/issues/{identifier}/field/{field}` answers the edit
 state: `200` the control, `404` `text/plain` for a `{field}` outside the seven or an identifier the base
 read does not return, `400 fragment requires htmx` without `HX-Request` (R5), `403` the fragment error in
 `--read-only` (R18); its `FRAGMENT_ALLOWLIST` line lands in `scripts/check_edge_parity.py` in the same
 commit (P8). `PATCH ...?view=field` answers the read state of the field just written - `200`,
 `HX-Trigger: issue-updated`, `HX-Revision` - for all seven, `description` included, on both surfaces: one
-route per field, no exception. `?view=panel` is not: it is §2.6.3's answer for the panel's own editor
-(§2.1.3), and on the detail page `#panel` is `base.html`'s empty slide-over (§2.2).
+route per field, no exception (D-080). `?view=panel` is not a field's route: it is the panel form's own
+answer (§2.1.3).
 
 **The read and the write part company on the trash: §6's asymmetry.** The fragment reads the base
 `IssueDetail` like the row (§2.1.4), no `include_trashed`: a trashed identifier is `404`, and no third
-surface reads the trash (R29). The write refuses it as §6 does for `edit` - `422` `ISSUE_TRASHED`, the
-field back with `.is-invalid` - and `edit` does not move off `422`.
+surface reads the trash (R29). The write answers `422` `ISSUE_TRASHED` as §6 does for `edit`, and its
+body is the panel re-rendered - the one read that may speak for a trashed issue (§2.1.4, D-059) - with
+the sentence, `HX-Retarget: #panel` and `HX-Reswap: innerHTML`.
 
 **States (P3).**
 
@@ -2214,12 +2222,15 @@ field back with `.is-invalid` - and `edit` does not move off `422`.
 | read | the value in `[data-field]`, `-` if none; in `--read-only`, and on a trashed or archived issue, no control renders and the value is text, with no `href`, `hx-get` or `data-field` (R18, R29) |
 | saving, refused | the typed value painted (R7), one `PATCH` in flight (R8); then the **server's** value, `.is-invalid`, §6's sentence |
 
-Without JS the page form is the path (`method="post"` -> `303`); with it §2.6.6's mechanism hides it
-with that section's mirror attribute `data-no-js-only`, never deleted (A2). `Tab` walks the table's
-order, `Enter` saves, `Esc` restores the value (P5).
+Without JS the **page form** is the only path: the read control's `href` opens
+`/{team}/issue/{identifier}`, whose form of §2.1.2 posts any subset of the seven and answers `303`
+(A2, REQ-F070-25) - the panel is none, since `/_/` answers `400` without `HX-Request` (R5). With JS
+`data-no-js-only` hides that form, never deletes it; `Tab` walks the fields, `Enter` saves, `Esc`
+restores (P5).
 
-**Requirements and their scenarios.** One verification each, its working directory in the row; the `-k`
-name is the test's. The last is hand-checked: no Playwright here, so no selector decides it.
+**Requirements and their scenarios.** One verification and one scenario each (§7); commands run from
+the repository root, and each scenario's last step names its own, so the pair is decidable without this
+table. The last is hand-checked: no Playwright here.
 
 | Id | Requirement | Verification |
 |---|---|---|
@@ -2228,26 +2239,25 @@ name is the test's. The last is hand-checked: no Playwright here, so no selector
 | **REQ-F070-20** | No `data-field` outside the seven, no `?view=field` write naming `project`, `milestone`, `cycle`, `parent` or `labels` (each `404`); label routes and chips untouched (A1). | `pytest -k field_set_is_closed` (repository root) |
 | **REQ-F070-21** | An absent field changes nothing; empty clears `description`, `assignee`, `due_date`, `estimate`; `priority=none` clears priority; blank `title`, empty `state` and empty `priority` are `422`. | `pytest -k clearing_is_a_value` (repository root) |
 | **REQ-F070-22** | The fragment answers `200`, `404`, `400`, `403` with §6's bodies and media types, in `--read-only` too. | `pytest -k field_fragment` (repository root) |
-| **REQ-F070-23** | `PATCH ...?view=field` answers one `[data-field]` and no `<html>`; trashed is `422` `ISSUE_TRASHED` (R29, §6). | `pytest -k answer_is_the_field` (repository root) |
+| **REQ-F070-23** | `PATCH ...?view=field` answers one `[data-field]` and no `<html>`; trashed is `422` `ISSUE_TRASHED` with the panel (R29, §6). | `pytest -k answer_is_the_field` (repository root) |
 | **REQ-F070-24** | A refusal re-renders that field with §6's sentence and `.is-invalid`; the typed value is not kept. | `pytest -k refusal_keeps_the_field` (repository root) |
-| **REQ-F070-25** | Without JS both surfaces edit all seven through the page form and a `303` (A2, P5). | `pytest -k no_js_still_edits` (repository root) |
-| **REQ-F070-26** | `app.css` gives the field control `min-height: 44px` and the field block one column, inside `@media (max-width: 900px)`. | `pytest tests/unit/web/test_field_layout.py` (repository root) |
+| **REQ-F070-25** | Without JS the **page form** of §2.1.2 - reached from the read control's `href` - edits all seven and answers `303`; the panel is no no-JS path (`/_/` is `400` without `HX-Request`, R5, and `#panel` is empty on load; A2, P5). | `pytest -k no_js_still_edits` |
+| **REQ-F070-26** | `app.css` gives the field control `min-height: 44px` and the field block one column, inside `@media (max-width: 900px)`, and carries both progressive-enhancement selectors `.no-js [data-js-only]` and `.js [data-no-js-only]`, each `display: none`. | `pytest tests/unit/web/test_field_layout.py` |
 | **REQ-F070-27** | Each field is reachable and saveable by keyboard, and nothing at 320 px scrolls sideways (P5). | by hand in a browser at **1280 px** and **320 px** (§7, manual) |
 
 **Delivery breakdown.** T-114.1 `src/hifa/web/readmodels.py` (dicts green); T-114.2
 `src/hifa/web/templates/partials/field_control.html` (two states); T-114.3 `src/hifa/web/app.py`,
 `scripts/check_edge_parity.py` (parity green); T-114.4 `src/hifa/web/static/css/app.css`,
 `src/hifa/web/templates/issue_detail.html`, `src/hifa/web/templates/partials/issue_panel.html`,
-`tests/unit/web/test_field_layout.py` (form seven, fragment one); T-114.5 `tests/e2e/web/test_field_edit.py`
-(all green).
+`tests/unit/web/test_field_layout.py`; T-114.5 `tests/e2e/web/test_field_edit.py`.
 
 **Non-goals.** The four references (A1); labels, whose routes and chips stay (A1, REQ-F070-20); bulk or
 whole-form edit; `description` on a row; a new CLI flag; a change to the page form or `REQ-N006`; a third
 trash surface (R29); a control on a card.
 
-**Open questions, each with its owner.** (1) Does "cada campo" include the four references? requester. (2)
-Does the panel's `description` keep §2.6.3's `?view=panel` editor (§2.1.3) or take `?view=field`? requester:
-either answer is a requirement of its own, not an exception here.
+**Open question, with its owner.** Does "cada campo" include the four references? requester: a
+requirement of its own, not an exception here. The panel's `description` was the other; D-080 answers
+it: `?view=field`.
 
 ## 3. Data it touches
 
@@ -2298,7 +2308,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R5** | **A fragment requires `HX-Request`.** Without that header, `/_/*` responds `400` with `text/plain`. It keeps a fragment from being indexed or opened as a half page. → **REQ-F070-02** |
 | **R6** | **Canonical URL.** The detail lives at `/{team}/issue/{identifier}`; requesting it by ULID redirects `303` to the identifier. Two URLs never serve the same content with 200. → **REQ-F070-01** |
 | **R7** | **Bounded optimism.** The client paints the value before the response and **always** replaces the node with the server response. On error, it restores and notifies. There is no business state on the client. → **REQ-F070-05** |
-| **R8** | **One `PATCH` in flight per row** (`hx-sync="closest tr:replace"`); the second discards the first. No queues and no automatic retries. → **REQ-F070-05** |
+| **R8** | **One `PATCH` in flight per control**, and the second discards the first: `hx-sync` scopes it to the control, so `this:replace` on the field control, which has no row (§2.6.11), and `closest tr:replace` on a row's (§2.6.3) — the attribute follows the host, and no host leaves the guard inert. No queues and no automatic retries. → **REQ-F070-05** |
 | **R9** | **Drag & drop sends neighbors, not positions.** Single payload: `{state_id, before, after}` with identifiers (`before`/`after` = `null` at the edge). Sending `sort_order`, `board_order`, `rebalance` or the whole column is forbidden; computing the float on the client is forbidden. The position (`(prev+next)/2`, `±1024`, `1024`) is computed by `domain/ranking.between` inside `move_issue`/`reorder_issue` (SPEC-040, D-012). → **REQ-F070-06** |
 | **R10** | **The rebalance is decided by the server.** On `RANKING_EXHAUSTED`, SPEC-040 rebalances the scope and retries once in the same transaction (REQ-F040-08); the client does not request `rebalance` and does not know the 1024 multiple. If the retry fails, `422` `RANKING_EXHAUSTED` + board reload. → **REQ-F070-06** |
 | **R11** | **htmx does not swap 4xx by default.** A global listener enables the swap only for `422` (and for `409` in the panel). Without that listener, an invalid field would leave the UI mute: it is the most common bug in this stack. → **REQ-F070-09** |
@@ -2317,7 +2327,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R24** | **`default_team` is never absent, and the root never guesses.** `config.py` always resolves `[cli].default_team` — the configured value, else `[team].key`, which itself defaults to `DEFAULT_TEAM_KEY` (SPEC-100 §2.3) — so "2+ teams and no default" is **not** a reachable state and is not what the picker is for. What `GET /` does, in this order: (1) the resolved default names a team that exists ⇒ `303` to `/{key}/board`; (2) exactly one non-archived team ⇒ `303` to it (this is the fresh-database case, where the default key exists); (3) **canonical picker case** — the default names a team that is **not in the database** (a second team created under another key, a regenerated `.bak`, a `.hifa.toml` copied from another workspace) and there are 2+ non-archived teams ⇒ `200` `team_picker.html` (§2.3.8) listing every team and linking to `/{team}/board`, with `reason = "several_teams"`; (4) **secondary case** — the caller passed no default at all (`create_app(default_team=None)`: embedding, tests, a bootstrap that skipped config) and there are 2+ teams ⇒ the same `200` picker, with `reason = "no_default_team"`; (5) no teams ⇒ `404` `error.html`. It never picks by `created_at`, alphabetical order, cookie or session, and never answers `404` when a usable answer exists. → **REQ-F070-14** |
 | **R25** | **Reordering the columns changes the presentation order, nothing else.** `POST /_/states/{id}/position` writes `workflow_state.position` and **only** that: no issue changes `state_id` or `board_order`, no `issue_history` row is written and no counter moves. The payload is `{before, after}` with **state ids** (`null` at the edge), never a float; the new `position` is `domain.ranking.between(prev, next)` computed on the server and persisted by `update_state`. The response is `204` + `HX-Trigger: board-reordered` with no swap (the DOM already moved), `403` in `--read-only`, `404` for an unknown state and `422` for neighbours from another team. The canonical order a **new** team is seeded with is `DEFAULT_STATES` (SPEC-100 §2.5, D-034); an existing team is reordered with this route or with `hifa state update` (SPEC-050 §2.5.6), never with a migration. → **REQ-F070-06** |
 | **R26** | **The page notices a foreign write by a change signal, never by a timer.** `GET /_/revision` answers `{"revision": <n>}` read from `PRAGMA data_version` on the process's single long-lived read connection (§2.1.3.1, §3, D-049); the number changes iff another connection committed since the previous read — which is what the CLI is, and what the process's own per-request connections are. The page carries the number it was rendered with (`<body data-revision>`, `page["revision"]`) and adopts the `HX-Revision` of an answer that replaced the collection; a panel, a row, the palette or the counters do not adopt (D-050); the poller (`hx-trigger="every {{ page.revision_poll }}"`, `hx-swap="none"`, visibility enforced in the client by cancelling `htmx:beforeRequest` while the tab is hidden — never as a `[condition]` filter, which the CSP's `script-src 'self'` makes unrunnable) reloads `page["refresh_url"]` into `#board`/`#issues-tbody` **only when the numbers differ**, so no request and no swap happens while nothing changed. The reload is **deferred, never forced**, while a detail panel is open, the quick add holds unsaved text or a drag is in flight; the last revision seen is applied as soon as the interaction ends (§2.6.8). The number is opaque — compared for equality, never ordered, never arithmetic, never displayed. Without JS nothing of this runs and a reload shows the new data (P5). The probe is a read: `--read-only` neither blocks it nor changes it. → **REQ-F070-15** |
-| **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The **seven** page forms of §2.1.2 — the quick add, the edit, `move`, the comment and the three layer writes — each have the `/_/` fragment of §2.1.3 that answers them, and each form on a fragment-bearing surface carries the `hx-*` that points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card or the panel after an edit (`?view=panel` answers the panel, for the description editor of §2.6.3), `204` with no body after a move, an archive, a delete or a restore, `200` with the one `<li>` a comment writes (§2.6.10), `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
+| **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The **seven** page forms of §2.1.2 — the quick add, the edit, `move`, the comment and the three layer writes — each have the `/_/` fragment of §2.1.3 that answers them, and each form on a fragment-bearing surface carries the `hx-*` that points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card, the field or the panel after an edit — `?view=field` for one field on either surface (§2.6.11, D-080), `?view=panel` for a body that asks for the panel (§2.1.3) — `204` with no body after a move, an archive, a delete or a restore, `200` with the one `<li>` a comment writes (§2.6.10), `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
 | **R28** | **A state-changing request from another origin is refused before the route runs, and a request with no origin information is allowed.** Every request whose method is outside `GET`/`HEAD`/`OPTIONS` is answered `403`, `text/plain` `cross-site write refused`, `Cache-Control: no-store` — returned by one middleware installed by `create_app` inside `_headers`, never raised as an exception — when `Sec-Fetch-Site` is `cross-site` or `same-site`, or when that header is absent and `Origin` names another authority or is `null`; `same-origin`, `none`, an `Origin` whose authority is `Host`'s, and a request with neither header are served. The comparison is the authority (host and port, compared case-insensitively, the scheme dropped), so a browser whose `Origin` says `https` behind a plain `http` tunnel still writes, and `Origin: null` — which names no authority — is refused. The guard reads no path, no route table, no table and no body, so it precedes the `HX-Request` `400` (R5), the read-only `403` (R18) and the use case, and a cross-site write to an unknown identifier is `403` rather than `404`. It does not authenticate, does not close the tunnel and does not make a header a credential — a client that sets its own headers can set any, and a same-origin page can write by definition; and it covers no read, because a cross-site read is served and its bytes are unreadable to the other origin (REQ-S005). → **REQ-F070-16** |
 | **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block, no comment composer (§2.6.10) — and every write but `restore` refuses it, the comment included — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind those surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **the three surfaces of §2.1.4 that pass the keyword are its only consumers**: the page, the panel fragment and the history fragment — the first two are the two surfaces, and the third re-renders the second's own list. No other route passes it: the row and the card never do, and the asymmetry — page, panel and history fragment pass it, collection members do not — is the rule and not an implementation detail. **The one route that shares the panel's call is not a third surface**: `GET /_/issues/{identifier}/history` (§2.1.4) re-renders the panel's own timeline with the panel's two `include` names and its keyword, so it answers what the panel already answers and adds no surface over the trash — a `Show all` on a trashed issue's panel is the panel talking, and its `200` is that `200`. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write, `archive` and a comment refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the four controls (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
 
@@ -2369,7 +2379,8 @@ Component-specific requirements:
 3. `app.issues.update_issue(uow, UpdateIssue(issue=ref, title=...), actor)` → UPDATE issue +
    INSERT issue_history (one transaction).
 4. Serialize the row → partials/issue_row.html; 200 with HX-Trigger: issue-updated.
-5. Domain error ⇒ 422/409 with the same partial + message in `.field-error`; HX-Retarget to the form.
+5. Domain error ⇒ 422/409 with the same partial + message in `.field-error`; `HX-Retarget` to the
+   `<form>` that failed, or to `#panel` when the body is the panel (§6's trashed `?view=field` row).
 ```
 
 ### 5.4 Drag & drop (move)
@@ -2567,14 +2578,14 @@ differ in exactly the step above, not in the route, the status or the header.
 | `/_/revision` without `HX-Request` | 400 | `text/plain` `fragment requires htmx` (R5, §2.1.3.1) | the tick is skipped and the page keeps what it has |
 | Validation on a page (form without JS) | 422 | same template + `form_errors` | errors next to the field |
 | Validation in a fragment / inline | 422 | partial with `.is-invalid` + `HX-Retarget` | field marked + toast |
-| `GET /_/issues/{identifier}/field/{field}` with a `{field}` outside the seven, or an identifier the base read does not return (a trashed issue included) | 404 | `text/plain`: `unknown field` for the first, `issue 'ENG-999' does not exist` for the second (§2.6.11); nothing is swapped | the value stays the text it was |
-| `PATCH /_/issues/{identifier}?view=field` on an issue in the trash (`ISSUE_TRASHED`) | 422 | that field re-rendered from the read model with `.is-invalid` and `ENG-13 is in the trash; restore it first` | the server's value replaces the typed one; the field stays open |
+| `GET /_/issues/{identifier}/field/{field}`, or `PATCH /_/issues/{identifier}?view=field`, with a `{field}` outside the seven; or a `GET` of an identifier the base read does not return (a trashed issue included) | 404 | `text/plain`: `unknown field` for the first, on both methods of the pair; `issue 'ENG-999' does not exist` for the second (§2.6.11); nothing is swapped | the value stays the text it was |
+| `PATCH /_/issues/{identifier}?view=field` on an issue in the trash (`ISSUE_TRASHED`) | 422 | the **panel** of §2.1.4's read with `include_trashed=True` (one of R29's three consumers, so no fourth reads the trash) re-rendered with the sentence `ENG-13 is in the trash; restore it first`, `HX-Retarget: #panel` and `HX-Reswap: innerHTML` | the panel replaces the field's host; a trashed issue renders no control, so its value is text (§2.6.11, R29) and no `.is-invalid` field is created |
 | `Conflict` (label in use, etc.) | 409 | partial with message | toast, no destructive swap |
 | `Validation` (drop with open children) | 422 | the panel re-rendered + `form_error` (§2.1.3, §5.4); the drop ignores the body | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `InvalidTransition` (drop on an archived issue, R20) | 409 | the panel re-rendered + `form_error`, the same body as the row above (§2.1.3, §5.4) | the card returns to its place + toast, the client reloads `/_/board/{team}` |
 | `archive` / `delete` without `confirm=1` | 422 | the page (or the panel) with the `<details>` block rendered `open` and `form_error` | nothing is written; the block stays open |
 | `archive` of a parent with open sub-issues (`CLOSE_WITH_OPEN_CHILDREN`) | 422 | the page (or the panel) with the message | nothing is written; `archived_at` unchanged |
-| `edit`, `move`, a label or `assignee` write, a comment, or `archive` of an issue in the trash (`ISSUE_TRASHED`) | 422 | the page (or the panel) with the message; a comment sent by a client that still holds a stale form gets the message and **no** composer, because the gate of §2.6.10 renders none for a trashed issue | nothing is written |
+| `edit` (a body that asks for the panel), `move`, a label or `assignee` write, a comment, or `archive` of an issue in the trash (`ISSUE_TRASHED`) | 422 | the page (or the panel) with the message; the `?view=field` body is the row above, so one request has one answer; a comment sent by a client that still holds a stale form gets the message and **no** composer, because the gate of §2.6.10 renders none for a trashed issue | nothing is written |
 | `delete` of an issue already in the trash | 204 (`/`), 303 (page) | no body; `/{team}/list` | a no-op: no history row, `trashed` and `updated_at` unchanged (SPEC-040 §5.5, §5.7 step 7) |
 | `move`, an edit or a comment on an archived issue (`InvalidTransition`, R20) | 409 | the page (or the panel) with the message and the way out | nothing is written; the panel offers `Restore` |
 | `restore` of a visible issue | 204 (`/`), 303 (page) | no body; the detail | a no-op: no row, no history (SPEC-050 §2.5.3) |
@@ -3299,66 +3310,76 @@ Feature: hifa web dashboard
     And each history row contains a "time" element with a "datetime" attribute
     And the page contains no "FROM" and no "TO" column header
 
-  # HIFA-114: a field edited in place (§2.6.11). Each name is the `-k` selector of its test in
-  # tests/e2e/web/test_field_edit.py; the last one is manual on this host (no Playwright).
+  # HIFA-114: a field edited in place (§2.6.11). One scenario per requirement, REQ-F070-18...27; every
+  # last step names the command and the directory it runs in, and the last scenario is manual on this
+  # host (no Playwright).
   Scenario: one save carries one field
-    Given the issue "ENG-13" in the state "Todo" with title "Fix login" and estimate 3
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login", description "draft", priority "low", assignee "administrator", due date "2026-12-01" and estimate 3
     When I execute a PATCH to "/_/issues/ENG-13?view=field" with the form {"title":"Fix SSO login"} and the header "HX-Request: true"
-    Then the status is 200 and the estimate of "ENG-13" is still 3
-    And there is exactly 1 row in "issue_history" for "ENG-13" with field "title"
+    Then the status is 200 and "ENG-13" has title "Fix SSO login" and description "draft", priority "low", state "Todo", assignee "administrator", due date "2026-12-01" and estimate 3 unchanged
+    And the "updated_at" of "ENG-13" moved once and there is exactly 1 row in "issue_history" for "ENG-13" with field "title"
+    And the check is "pytest -k one_field_one_write" run from the repository root
 
   Scenario: both surfaces offer the same seven fields
     Given the issue "ENG-13" in the state "Todo"
     When I execute a GET to "/ENG/issue/ENG-13" and then a GET to "/_/issues/ENG-13/panel" with the header "HX-Request: true"
     Then each answer contains the 7 "data-field" values "title", "description", "priority", "state", "assignee", "due_date" and "estimate"
+    And the check is "pytest -k both_surfaces_same_set" run from the repository root
 
   Scenario: the in-place set is closed to the references and to labels
     Given the issue "ENG-13" in the state "Todo"
     When I execute a GET to "/ENG/issue/ENG-13" and a PATCH to "/_/issues/ENG-13?view=field" with the form {"labels":"bug"}
     Then the HTML contains no "data-field=\"labels\"" and no "data-field=\"project\"", and the PATCH answers 404
     And a POST to "/_/issues/ENG-13/labels" still answers 200 with a chip
+    And the check is "pytest -k field_set_is_closed" run from the repository root
 
   Scenario: clearing is a value and never a default
-    Given the issue "ENG-13" in the state "Todo" assigned to "administrator"
-    When PATCH "/_/issues/ENG-13?view=field" is sent with {"assignee":""}, then {"state":""}, then {"priority":""}
-    Then the assignee of "ENG-13" is empty and its state is still "Todo"
-    And the empty state and the empty priority answer 422 and write no history row
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login", description "draft", priority "low", assignee "administrator", due date "2026-12-01" and estimate 3
+    When PATCH "/_/issues/ENG-13?view=field" is sent with {"description":""}, then {"assignee":""}, then {"due_date":""}, then {"estimate":""}, then {"priority":"none"}, then {"title":"Fix login"} alone
+    Then the description, assignee, due date and estimate of "ENG-13" are empty, its priority is "none", its state is still "Todo" and its title is "Fix login"
+    And {"state":""}, {"priority":""} and {"title":""} each answer 422 and write no history row
+    And the check is "pytest -k clearing_is_a_value" run from the repository root
 
   Scenario: the field fragment answers its four statuses
     Given the issue "ENG-13" in the state "Todo", and an app created with read_only true
     When GET "/_/issues/ENG-13/field/title" is sent with HX-Request, without it, with "mood", and in read-only mode
     Then the statuses are 200, 400, 404 and 403
     And the 400 and 404 bodies are plain text and the 403 body is the fragment error
+    And the check is "pytest -k field_fragment" run from the repository root
 
-  Scenario: the write answers the field and no document
-    Given the issue "ENG-13" in the state "Todo"
-    When PATCH "/_/issues/ENG-13?view=field" is sent with {"title":"Fix SSO login"} and HX-Request
-    Then the status is 200 and the body carries one "[data-field]" with no "<html>"
-    And the HX-Trigger header contains "issue-updated"
-
-  Scenario: a save on a trashed issue is refused as a write
-    Given the issue "ENG-13" in the trash
-    When PATCH "/_/issues/ENG-13?view=field" is sent with {"title":"Fix"} and HX-Request
-    Then the status is 422
-    And the body contains "ENG-13 is in the trash; restore it first" and the class "is-invalid"
+  Scenario: the write answers the field and no document, and the trash is a refusal
+    Given the issue "ENG-13" in the state "Todo", put in the trash after its first save
+    When PATCH "/_/issues/ENG-13?view=field" is sent with {"title":"Fix SSO login"} and HX-Request, and again with {"title":"Fix"} once it is trashed
+    Then the first answer is 200, its body carries one "[data-field]" with no "<html>", and its "HX-Trigger" contains "issue-updated"
+    And the second answer is 422 with "ENG-13 is in the trash; restore it first", the body of the panel and the header "HX-Retarget: #panel"
+    And the check is "pytest -k answer_is_the_field" run from the repository root
 
   Scenario: a refused value keeps the field open and shows the stored one
     Given the issue "ENG-13" in the state "Todo" with no due date
     When PATCH "/_/issues/ENG-13?view=field" is sent with {"due_date":"not-a-date"} and HX-Request
     Then the status is 422 and the body is the control of "due_date" with the class "is-invalid"
     And the body does not contain "not-a-date"
+    And the check is "pytest -k refusal_keeps_the_field" run from the repository root
 
   Scenario: without JavaScript the page form still edits all seven
-    Given the issue "ENG-13" in the state "Todo"
-    When I execute a POST to "/ENG/issue/ENG-13" with the form {"title":"Fix login","estimate":"5"}
-    Then the status is 303
-    And the title of "ENG-13" is "Fix login" and its estimate is 5
+    Given the issue "ENG-13" in the state "Todo" with title "Fix login" and state "Backlog"
+    When I execute a POST to "/ENG/issue/ENG-13" with the form {"title":"Fix SSO login","description":"**draft**","priority":"high","state":"Todo","assignee":"administrator","due_date":"2026-12-01","estimate":"5"}
+    Then the status is 303, the Location is "/ENG/issue/ENG-13", and each of those seven values is what "ENG-13" holds
+    And the check is "pytest -k no_js_still_edits" run from the repository root
+
+  Scenario: the stylesheet carries the 44 px control, the one column and both carriers
+    Given the stylesheet "src/hifa/web/static/css/app.css"
+    When the file is read as text
+    Then it declares "min-height: 44px" for the field control and one column for the field block inside "@media (max-width: 900px)"
+    And it declares ".no-js [data-js-only]" and ".js [data-no-js-only]", each with "display: none"
+    And the check is "pytest tests/unit/web/test_field_layout.py" run from the repository root
 
   # manual on this host: no Playwright (the drag & drop debt).
   Scenario: the keyboard reaches every field and 320 px does not scroll sideways
     Given a browser at 1280 px with /ENG/issue/ENG-13 open, and a second at 320 px with its panel open
     When each of the seven fields is reached with Tab and saved with Enter
     Then each save replaces the control with the server's value and focus stays on it, and the page does not scroll sideways
+    And the check is by hand in a browser at 1280 px and 320 px, since this host has no Playwright
 
 ```
 
@@ -3430,6 +3451,23 @@ Feature: hifa web dashboard
   §2.6.9; the whole-page floor is T-19.
 
 ## 11. Notes
+
+- spec_revision 35 (2026-11-24): **`description` has one in-place route, and the delta review's three
+  MAJOR and six MINOR close (HIFA-114, D-080).** The first is a cross-spec conflict, not a wording
+  defect: §2.6.3 made the panel's `description` a `?view=panel` textarea with a `Save`, while §2.6.11
+  contracted `?view=field` for all seven on both surfaces, so a regenerated panel rendered two editors
+  for one field. D-080 states the invariant — a field's in-place control is one route, `?view=field`, on
+  both surfaces, for all seven — names §2.6.3's exception and §2.1.3's rationale as the losers, and
+  keeps `?view=panel` as the panel form's own answer. Then: `REQ-F070-25` states the no-JS path once (the
+  page form of §2.1.2, reached from the read control's `href`) instead of two surfaces; §6's trashed
+  `?view=field` row answers with the panel re-rendered, `HX-Retarget: #panel` and a permitted read, and
+  the generic `ISSUE_TRASHED` row points at it; each requirement owns one §7 scenario, and each scenario
+  names its command and directory in its last step; §2.6.6 writes the mirror selector
+  `.js [data-no-js-only] { display: none }` beside its pair and both carriers are pinned by
+  `tests/unit/web/test_field_layout.py`; its capability row, R8's `hx-sync`, `issue_vm.fields`'s
+  `label`/`is_empty` and §6's unknown-field `404` (both methods) are corrected; and `REQ-F070-18`/`-21`'
+  scenarios assert every field and every clearing they claim. `§7` stays at 91 scenarios and five
+  manual, `§8` unchanged; `version` stays 12: no route, view value, field or status of §2 is new here.
 
 - spec_revision 34 (2026-11-24): **the P2 review's thirteen findings close (HIFA-114).** §2.6.11 names
   the two hosts (no card), one route pair for all seven fields with `description` included and
