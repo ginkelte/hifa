@@ -8,6 +8,7 @@
     "HIFA-106",
     "HIFA-107",
     "HIFA-108",
+    "HIFA-112",
     "HIFA-114",
     "HIFA-8",
     "HIFA-9",
@@ -631,6 +632,11 @@
         "17-dashboard-hardening.feature::markdown with script is sanitized before rendering",
         "17-dashboard-hardening.feature::the server does not emit cors headers"
       ]
+    },
+    {
+      "ticket": "HIFA-112",
+      "reason": "the reference autolink is contracted before its code: its eight scenarios in SPEC-070 §7 and 16-dashboard.feature are each @deferred(HIFA-112) until the implementation lands, so the cluster records the owner and holds no accepted keys",
+      "keys": []
     },
     {
       "ticket": "HIFA-114",

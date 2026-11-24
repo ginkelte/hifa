@@ -3,8 +3,8 @@ id: SPEC-070
 title: Web dashboard — Jinja views, htmx fragments, assets and command palette
 component: entry
 status: review
-version: 12
-spec_revision: 44
+version: 13
+spec_revision: 45
 depends_on: [SPEC-000, SPEC-010, SPEC-040, SPEC-060]
 implements:
   - src/hifa/web/**
@@ -13,7 +13,7 @@ implements:
 acceptance: specs/acceptance/001-mvp-v1/16-dashboard.feature
 owner: Ginkelte
 created: 2026-11-08
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # SPEC-070 — Web dashboard
@@ -1110,6 +1110,9 @@ them in every state (R3):
 
 ```python
 # src/hifa/web/markdown.py
+from collections.abc import Mapping
+
+from hifa.domain.identifier import IDENTIFIER_PATTERN
 from markdown_it import MarkdownIt
 
 MD = MarkdownIt("commonmark", {"html": False, "linkify": False, "typographer": False})
@@ -1140,22 +1143,53 @@ ALLOWED_TAGS = {
     "th",
     "td",
 }
-ALLOWED_ATTRS = {("a", "href"), ("th", "style"), ("td", "style")}
+ALLOWED_ATTRS = {("a", "href"), ("a", "class"), ("th", "style"), ("td", "style")}
 ALLOWED_SCHEMES = {"http", "https", "mailto"}
+# One exception to the scheme rule, and the class is what grants it (R30): `("a", "class")` is kept
+# only when the value is exactly `issue-ref`, and a `href` beginning with `/` — the site-relative
+# canonical path — is kept only on an anchor that carries that class. Every other anchor keeps
+# ALLOWED_SCHEMES unchanged and no other tag gains `class`. The class is unreachable from user text
+# (`html=False` escapes an `<a class="issue-ref">` an author writes, commonmark has no attribute
+# syntax and `linkify` stays off), so this module is its only writer.
 # The only `style` the walker keeps, and only on `th`/`td`: an aligned column is the one place
 # markdown-it writes one (`:--`, `:-:`, `--:`). Anything else drops the attribute, keeps the text.
 ALLOWED_STYLES = {"text-align:left", "text-align:center", "text-align:right"}
 
 
-def render_markdown(text: str | None) -> str:
-    """markdown-it-py -> HTML, then allowlist (tags/attrs/styles/schemes). Never returns None."""
+def issue_ref_candidates(text: str | None) -> list[str]:
+    """The folded distinct candidates of one text, in the order they first appear.
+
+    A candidate is a maximal run of `[A-Za-z0-9-]` that `IDENTIFIER_PATTERN.fullmatch` accepts once
+    the run is upper-cased, so `HIFA-1034` is one candidate and never `HIFA-103` plus a `4`, and
+    `XHIFA-103` is one candidate and never `HIFA-103` after an `X`. The run bounds the candidate and
+    the borrowed pattern decides whether it is one; this function adds neither a second pattern nor a
+    second fold.
+
+    `render_markdown` calls it where it rewrites the text it renders, and `_issue_detail_vm`
+    (`src/hifa/web/app.py`) calls it to collect the description's and every comment's candidates
+    before its one statement: one function, so what is linked and what is asked are the same
+    grammar (R30, D-081)."""
+
+
+def render_markdown(
+    text: str | None,
+    links: Mapping[str, tuple[str, str]] | None = None,
+) -> str:
+    """markdown-it-py -> HTML, then allowlist (tags/attrs/styles/schemes). Never returns None.
+
+    `links` maps a candidate as the author wrote it, folded to upper case, to the canonical
+    `(team_key, identifier)` of the issue it names; `None` renders exactly what this function
+    rendered before the parameter existed.
+    """
 ```
 
 - The allowlist is implemented **at the edge** (walking the tree with `html.parser`, or with an
   in-house sanitizer of ~60 lines); neither `bleach` nor `nh3` is added.
 - `a[href]` only with the `http`, `https` or `mailto` scheme; any other one (including
-  `javascript:`, `data:`, `vbscript:`) drops the `href` attribute and keeps the text. `img` is
-  **not** in the allowlist: markdown with an image comes out as text.
+  `javascript:`, `data:`, `vbscript:`) drops the `href` attribute and keeps the text — the one
+  exception is the site-relative `href` of an anchor that carries `class="issue-ref"`, which R30
+  grants below and which no input can write. `img` is **not** in the allowlist: markdown with an
+  image comes out as text.
 - **The table is the one rule enabled on top of the preset** (D-079). `MD.enable("table")` turns on
   the rule the `commonmark` preset ships disabled; `gfm-like` is **not** used, because it would also
   enable strikethrough, linkify and task lists — `s`, `del` and a checkbox `input` the allowlist
@@ -1166,8 +1200,9 @@ def render_markdown(text: str | None) -> str:
   `--:` markdown-it writes `style="text-align:left|center|right"` on the `th` and the `td` of that
   column. `(th, "style")` and `(td, "style")` are accepted when the value, stripped and lowercased,
   is **exactly** one of `text-align:left`, `text-align:center`, `text-align:right`; any other value
-  drops the attribute and keeps the cell text. No other tag carries `style` and no other attribute
-  joins `ALLOWED_ATTRS`. The value is tested by the check its own attribute selects — `href`
+  drops the attribute and keeps the cell text. No other tag carries `style`, and no other attribute
+  joins `ALLOWED_ATTRS` beyond that `class` R30 grants to the one anchor (below). The value is tested
+  by the check its own attribute selects — `href`
   against `ALLOWED_SCHEMES`, `style` against `ALLOWED_STYLES` — so a `style` value never passes
   through the `href` scheme test (`urlparse("text-align:center")` reads `text-align` as the
   scheme, which is not in `ALLOWED_SCHEMES`, and that is why the attribute would be dropped). The
@@ -1196,12 +1231,120 @@ def render_markdown(text: str | None) -> str:
   pinned in `pyproject.toml` and in `uv.lock` like the rest of the dependencies.
 - No `markdown-it` on the client: no JS renderer is vendored, nor a minified `marked`/`markdown-it`.
   The browser receives HTML that is already sanitized.
+- **An issue reference written in the text becomes a link when, and only when, the caller says what
+  it resolves to (R30, D-081).**
+  - **The second parameter is a mapping, never a callable.** `links` maps the candidate the author
+    wrote — folded to upper case, which is the key — to the canonical `(team_key, identifier)` of
+    the issue it names. A callable would cost one lookup per match; a mapping costs the one
+    statement the caller already made for the whole surface (the one-query bullet below, D-081).
+    `None` is the default and it is today's rendering byte for byte: a page that passes no mapping
+    gets the `description_html` and the `body_html` revision 44 served.
+  - **The grammar is `domain/identifier.py`'s, and so is the fold.** The scanner's input is the
+    **maximal run** of characters that can spell an identifier, and `IDENTIFIER_PATTERN.fullmatch`
+    over that run, folded, is the only test: `IDENTIFIER_PATTERN` is the pattern and `parse` is the
+    format, the two entries of SPEC-020 §2.3's published list this rule borrows, and the scan adds
+    neither a second pattern nor a second format. The scan is
+    `issue_ref_candidates(text: str | None) -> list[str]` in
+    **`src/hifa/web/markdown.py`**, beside the renderer: it returns the folded distinct candidates
+    of one text, and **both callers call that one function** — `render_markdown` where it rewrites
+    the text, and the collector in `src/hifa/web/app.py` where `_issue_detail_vm` gathers the
+    description's and every comment's candidates before its one statement — so a single grammar
+    governs what is linked and what is asked. `domain/identifier.py` exports nothing new: its list
+    is closed by SPEC-020 §2.3 and this rule only reads it. `parse` is case-sensitive, so the run is
+    folded with `str.upper()` before that test — the same fold the read path applies (`upper(:ref)`
+    in `issue_id_by_ref` and in `issue_ref_links`, SPEC-030 §2.6, SQL-7 row 1), which is why
+    `hifa-103` resolves and why the mapping's key is the folded spelling.
+  - **The boundary is the maximal run.** `HIFA-1034` is one candidate and not `HIFA-103` followed
+    by `4`; `XHIFA-103` is one candidate and not `HIFA-103` after an `X`. A run delimited by a
+    character outside `[A-Za-z0-9-]` is the whole candidate, and only a candidate the mapping
+    resolves becomes a link, so neither of the two is ever half-linked.
+  - **The anchor is a plain `href` and carries the canonical target.**
+    `<a class="issue-ref" href="/{TEAM}/issue/{CANONICAL}">{as written}</a>` — the team key and the
+    identifier of the mapping's value, never the spelling the author used. A non-canonical spelling
+    is the same page reached by another path: `GET /HIFA/issue/hifa-103` and `GET /ENG/issue/HIFA-103`
+    both answer `303` to `/HIFA/issue/HIFA-103`, because R6's contract — **two URLs never serve the
+    same content with `200`** — leaves a second spelling no way to serve the page, so the canonical
+    `href` is that rule's consequence and a `hifa-103` linked as written would pay a hop per click.
+    The anchor's text is the author's own spelling, escaped as text and
+    otherwise untouched. It is a navigation and not an `hx-get`: an
+    htmx fetch would need a target and would take the middle click, the `Cmd`-click and the page
+    without JS (R4) with it (D-081).
+  - **What is never linked.** The inside of `code_inline`, `fence` and `code_block` — a reference in
+    backticks is a reference to a reference — and the text of an existing markdown link (between
+    `link_open` and `link_close`), nor the `href` of one. The scan rewrites the text of a paragraph,
+    a heading, a list item, a blockquote and a table cell, and nothing else.
+  - **A candidate that resolves to nothing stays exactly the text it is today.** No anchor, no
+    `href`, no 404 — the rule the mapping's existence encodes, and the reason a pattern-only
+    linkify was refused. Measured against `$HIFA_DB` on 2026-11-24 — a snapshot of that file, with a
+    `\b([A-Z][A-Z0-9]{1,9}-\d+)\b` token scan of `issue.title`, `issue.description` and
+    `comment.body` — the corpus holds **308 occurrences of 71 distinct tokens**, of which **42
+    tokens name an existing issue** and **the other 29 do not**; 42 plus 29 is the 71, and 308 is
+    the occurrences of all of them. Twelve of the 29 are named here, with the occurrences that make
+    them expensive — `SPEC-070` (45 occurrences), `SPEC-050` (32), `SPEC-030` (21), `ENG-13` (19),
+    `SPEC-040` (16), `SPEC-001` (11), `SPEC-060` (8), `SQL-7` (8), `SPEC-100` (7), `SPEC-090`,
+    `SPEC-010` and `SPEC-020` (5 each) — because this corpus quotes its own spec ids, one SQL table
+    name, and example identifiers no row carries, against four teams (`HIFA` 117 issues,
+    `PROPERTEA` 5, `ENG` 2, `HERMES` 1). A pattern-only autolink emits one dead link per occurrence
+    of those 29 tokens — 144 of them from the six counted above alone — so the renderer links only a
+    candidate the caller resolved (D-081).
+  - **A trashed issue links like any other.** Its page and panel answer `200` (R29, D-059), so the
+    mapping does not filter on the trash and a reference to it is a live link; the archived issue is
+    the same, its page answering `200` with `Restore` alone.
+  - **One statement per surface, never one per match.** The caller collects the candidates of
+    everything it is about to render — the description **and every comment body**, because the page
+    and the panel print them together (R13) — with `issue_ref_candidates`, folds them in Python, and
+    resolves the whole set with one call to `issue_ref_links(conn, refs)` (SPEC-030 §2.6, D-081):
+    one statement projecting `issue.identifier` and `team.key` and joining `team` on
+    `team.id = issue.team_id`, filtered by `WHERE issue.identifier IN (…)` with literal values, so
+    the join is what makes the answer the canonical `(team_key, identifier)` pair and not an
+    identifier alone. The mapping is then handed to the renderer. The fold is in Python and not in
+    the `WHERE` clause because `upper(issue.identifier)` against the column would turn the statement
+    into `SCAN issue` where a written value stays an index seek on `sqlite_autoindex_issue_2` — the
+    defect SQL-7 row 1 was corrected for. The measurement that makes this a rule: **the corpus's
+    busiest description holds 37 identifier occurrences, 22 of them distinct** (`HIFA-112` itself),
+    then 32 occurrences of 9 distinct (`HIFA-114`) and 29 of 10 (`HIFA-46`) — `$HIFA_DB`,
+    `issue.description`, measured 2026-11-24 — and the panel renders the description and every
+    comment of the issue in one answer. §7 pins the two halves together: a page whose description
+    and comments name **14** references costs **one** statement and prints **14** links, so N
+    references do not cost N statements.
+  - **`build_issue_vm` stays pure.** The mapping arrives as a keyword, built by the caller that
+    already holds the connection (`_issue_detail_vm` in `src/hifa/web/app.py`, beside the detail
+    read), so the builder performs no IO and renders with what it is given:
+    `render_markdown(detail.description, links)` for `description_html` and
+    `render_markdown(comment.body, links)` per comment for `body_html` (§2.3.4) are the two call
+    sites.
+  - **The allowlist's one new permission is the class, and no input can write it.** `a` is already
+    allowed, but the scheme rule takes `http(s):`/`mailto:` only, so a site-relative `href` would be
+    dropped with the anchor's text kept. The walker therefore accepts `("a", "class")` when the
+    value is exactly `issue-ref`, and a `href` beginning with `/` **only** on an anchor that carries
+    that class; every other anchor keeps R15's scheme rule unchanged. The class is unreachable from
+    user text — `html=False` escapes an `<a class="issue-ref">` an author writes, commonmark has no
+    attribute syntax and `linkify` stays off — so the module is the only writer of it.
+  - **CSS contract (`static/css/app.css`).** The global `a` rule already colours a link
+    (`color: var(--accent)`, `var(--accent-hover)` on hover) and carries no underline; `a.issue-ref`
+    adds one — `text-decoration: underline; text-underline-offset: 2px;` — so a reference reads as a
+    link inside a sentence, with no second palette and no new custom property. The selector is not
+    scoped to `.description`, because the same anchor reaches a comment body.
 - Mandatory test: `**bold**` ⇒ `<strong>bold</strong>`; `<script>alert(1)</script>` and
   `[x](javascript:alert(1))` do not survive (REQ-S070-01). A table renders as a `<table>` with its
   `<th>` and `<td>` (`| A | B |` / `|---|:-:|` / `| 1 | 2 |` gives `<th>A</th>` and `<td>1</td>`); the
   `th` and the `td` of a column declared `:-:` keep `text-align:center`; a `style` outside the three
   values (`style="color:red"`) is dropped and the cell text survives; raw HTML inside a cell stays
   escaped (`<b>x</b>` arrives as `&lt;b&gt;x&lt;/b&gt;`).
+- Mandatory tests of the reference autolink (R30): `see ENG-12` ⇒
+  `<a class="issue-ref" href="/ENG/issue/ENG-12">ENG-12</a>`; `see eng-12` ⇒ the same `href` with
+  the text `eng-12`; `SPEC-050` ⇒ no anchor at all and the text unchanged; `` `ENG-12` `` ⇒
+  `<code>ENG-12</code>` and no anchor; `[ENG-12](https://example.com/ENG-12)` ⇒ the link the author
+  wrote, to `https://example.com/ENG-12`, with no anchor inside its text; `[ENG-12](/ENG/list)` ⇒
+  one anchor whose text is `ENG-12` and which carries **no** `href`, because R15's scheme rule drops
+  a site-relative target on every anchor but the one that carries `class="issue-ref"`; a text that
+  names a real `HIFA-103` beside the glued `HIFA-1034` and `XHIFA-103` ⇒ exactly **one** anchor, to
+  `/HIFA/issue/HIFA-103`, and none for either glued token
+  (a scanner that split `HIFA-1034` into `HIFA-103` and `4`, or that fired after the `X`, is the
+  only way to produce a second); an `ENG` page whose description names the existing `HIFA-1` ⇒ the
+  anchor points at `/HIFA/issue/HIFA-1`, because the team comes from the mapping and not from the
+  page; a surface whose description and three comments name 14 issues ⇒ 14 anchors from **one**
+  statement; and `render_markdown("x")` with no mapping returns the bytes revision 44 served.
 
 #### 2.3.7 Template prohibitions
 
@@ -2589,7 +2732,7 @@ reads a counter of the connection and touches no table: there is nothing of it t
 | `base.html` | `team` | SELECT (team list, active team) |
 | `board.html`, `/_/issues?view=board` | `workflow_state`, `v_issue`, `issue_label`, `label`, `member` | SELECT |
 | `list.html`, `/_/issues?view=list` | `v_issue`, `issue_label`, `label`, `member`, `workflow_state` | SELECT (one query with `GROUP_CONCAT` of labels, no N+1: REQ-N008) |
-| `issue_detail.html`, `/_/issues/{id}/panel`, `/_/issues/{id}/history` | `v_issue`, `comment`, `issue_relation`, `issue_history`, `issue_label`, `workflow_state`, `member` | SELECT |
+| `issue_detail.html`, `/_/issues/{id}/panel`, `/_/issues/{id}/history` | `v_issue`, `comment`, `issue_relation`, `issue_history`, `issue_label`, `workflow_state`, `member`, `issue`, `team` | SELECT, plus the one `issue JOIN team ON team.id = issue.team_id` statement of §2.3.6 per render that carries a candidate, resolving the reference candidates of the description and of every comment into their canonical `(team.key, identifier)` (R30) |
 | `search.html`, `/_/palette` | `issue_fts`, `issue`, `workflow_state`, `member`, `team`, `label`, `issue_label` | SELECT — the tables of SPEC-090 §3.2, read by `reads.search` and not by a query issued here |
 | `POST /{team}/issue`, `/_/issues` | `issue`, `issue_history` | INSERT (use case) |
 | `PATCH /_/issues/{id}` | `issue`, `issue_history` | UPDATE |
@@ -2633,7 +2776,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R12** | **Events by header.** Successful mutations emit `HX-Trigger` with `issue-created`, `issue-updated`, `issue-moved`, `issue-archived`, `issue-deleted`, `issue-restored`, `board-reordered`, `comment-created` — this is the complete catalogue, and the row of §2.1.3 that documents the header names the same set; the counters listen for those events (`hx-trigger="issue-moved from:body"`). Polling exists in exactly two places and nowhere else: `/_/counts` every 30 s (counters) and `/_/revision` every `REVISION_POLL` (the change signal of §2.6.8, R26). Neither re-renders the collection it watches. → **REQ-F070-10** |
 | **R13** | **One read model per entity.** The panel and the detail page use the same `issue_vm`; the row and the card share `row_vm`/`card_vm` with the same derived keys (`priority_glyph`, `due_label`, `is_overdue`). → **REQ-F070-03** |
 | **R14** | **Strict CSP without `unsafe-eval`.** `script-src 'self'` forces the Alpine CSP build (`Alpine.data()` registered in `app.js`); `x-data="{…}"` with expressions is forbidden and so is inline `<script>`. → **REQ-S070-02**, **REQ-S070-03** |
-| **R15** | **Own HTML already escaped before `\|safe`.** `description_html` and `body_html` leave the server already escaped and with a tag allowlist (`p, br, strong, em, code, pre, ul, ol, li, a[href], blockquote, h1-h3, table, thead, tbody, tr, th, td`), where `th`/`td` also carry `style` when its value is `text-align:left`, `text-align:center` or `text-align:right`, and a `table` is wrapped in the sanitizer's own `div.table-scroll`, which is not an allowed tag (§2.3.6, D-079); `a[href]` only `http(s):`/`mailto:`. `snippet_html` leaves the server **escaped and with `MARK_START`/`MARK_END`** (R17, SPEC-090 R15). `\|safe` is applied **only** to those three fields. → **REQ-S070-01**, **REQ-S070-04** |
+| **R15** | **Own HTML already escaped before `\|safe`.** `description_html` and `body_html` leave the server already escaped and with a tag allowlist (`p, br, strong, em, code, pre, ul, ol, li, a[href], blockquote, h1-h3, table, thead, tbody, tr, th, td`), where `th`/`td` also carry `style` when its value is `text-align:left`, `text-align:center` or `text-align:right`, and a `table` is wrapped in the sanitizer's own `div.table-scroll`, which is not an allowed tag (§2.3.6, D-079); `a[href]` only `http(s):`/`mailto:`, except the one anchor that carries `class="issue-ref"`, whose `href` may be the site-relative canonical path of R30 and whose class is the only `class` the walker keeps (§2.3.6, D-081). `snippet_html` leaves the server **escaped and with `MARK_START`/`MARK_END`** (R17, SPEC-090 R15). `\|safe` is applied **only** to those three fields. → **REQ-S070-01**, **REQ-S070-04** |
 | **R16** | **No attachment surface in v1.** `issue_vm` carries no `attachments` key, because nothing can write an `attachment` row (`add_attachment` is declared in SPEC-040 §2.2 and implemented nowhere, GAP-07) and a list that can only be `[]` is what D-071 §2 refuses. The URL-scheme rule for `attachments[].url` — `http`, `https`, `file`, any other scheme rendered as text without an `href` — returns with the key, in the revision that lands `AddAttachment`. → (no requirement until then) |
 | **R17** | **Search: escape every piece and keep the marker pair.** The snippet arrives from SPEC-090 already wrapped in `<mark>`/`</mark>` and unescaped (REQ-S090-03): the read model splits it on that pair, escapes **each piece between two markers** and rejoins them around the literal `<mark>`/`</mark>`, so the only markup `snippet_html` carries is the pair that was already there and the text around it is escaped exactly once, here. Escaping the whole string first and marking afterwards cannot be done at this edge — the markers already exist, and escaping before them would have to re-find the terms — and handing the raw snippet to `\|safe` would let an issue title put executable markup in the page. `build_search_vm` is the only producer of `snippet_html` and §2.1.8's page is its only consumer. → **REQ-S070-04** |
 | **R18** | **Read-only is visible.** With `can_write=False` no write `<form>` and no drag control are rendered; only reading remains. A `POST` in that mode ⇒ `403`, with `error.html` from a page route and `partials/fragment_error.html` from a `/_/` route. → **REQ-F070-04** |
@@ -2648,6 +2791,7 @@ transactions and locks, and this connection holds neither between probes.
 | **R27** | **A write names identifiers, asks before it takes the issue out of the listings, and answers with the page's own element.** The **thirteen** page forms of §2.1.2 — the quick add, the **seven** field edits, `move`, the comment and the three layer writes (`archive`, `delete`, `restore`) — each have the `/_/` fragment of §2.1.3 that answers them, and each form on a fragment-bearing surface carries the `hx-*` that points at its fragment, never at the page route (a `303` followed inside an htmx request pastes a document into an element). The edit route is one route and seven forms per surface: every inline control of §2.6.3 is the sole field of its own `POST /{team}/issue/{identifier}`, which is why the seven share one page route and one fragment with a `field=` that names the one wrapper each answers. The bodies carry the fields of the use case and identifiers: `state` is a reference (edit), `state_id` is a column (move and drop), and no body carries `position`, `sort_order`, `board_order` or `rebalance` — neighbours travel as identifiers (`before`/`after`, `null` at the edge) and never as an index or a float, and R9 binds every write, not only the drop. `archive` and `delete` require `confirm=1` and refuse without it with `422` `confirmation_required`; `restore` never asks; `archive` and `restore` are two routes and `undo` is not a field (D-053). The answer is the page's own element: `200` with the row, the card, the panel or **one field wrapper** after an edit (`?view=field&field={name}` answers the single field a control changed, §2.6.3; `?view=panel` answers the aside a layer refusal re-renders), `204` with no body after a move, an archive, a delete or a restore, `200` with the one `<li>` a comment writes (§2.6.10), `303` from a page form, and `422`/`409` with the **same element re-rendered** plus its message — never a JSON body, because the client of this layer is htmx. After a layer write the client closes the panel and re-reads the collection from `page["refresh_url"]`, so the rows are the server's and not a node the client removed by hand (D-054). → **REQ-F013**, **REQ-F015**, **REQ-F019** |
 | **R28** | **A state-changing request from another origin is refused before the route runs, and a request with no origin information is allowed.** Every request whose method is outside `GET`/`HEAD`/`OPTIONS` is answered `403`, `text/plain` `cross-site write refused`, `Cache-Control: no-store` — returned by one middleware installed by `create_app` inside `_headers`, never raised as an exception — when `Sec-Fetch-Site` is `cross-site` or `same-site`, or when that header is absent and `Origin` names another authority or is `null`; `same-origin`, `none`, an `Origin` whose authority is `Host`'s, and a request with neither header are served. The comparison is the authority (host and port, compared case-insensitively, the scheme dropped), so a browser whose `Origin` says `https` behind a plain `http` tunnel still writes, and `Origin: null` — which names no authority — is refused. The guard reads no path, no route table, no table and no body, so it precedes the `HX-Request` `400` (R5), the read-only `403` (R18) and the use case, and a cross-site write to an unknown identifier is `403` rather than `404`. It does not authenticate, does not close the tunnel and does not make a header a credential — a client that sets its own headers can set any, and a same-origin page can write by definition; and it covers no read, because a cross-site read is served and its bytes are unreadable to the other origin (REQ-S005). → **REQ-F070-16** |
 | **R29** | **Exactly two surfaces read through the trash, and nothing else does.** `GET /{team}/issue/{identifier}` and `GET /_/issues/{identifier}/panel` answer `200` for an issue with `trashed = 1`, rendering the issue with `Restore` as its **only** control — no edit form, no `name="state_id"` control, no archive block, no delete block, no comment composer (§2.6.10) — and every write but `restore` refuses it, the comment included — and the `/{team}/issue/{ulid}` alias answers `303` to that same page (R6). Every other surface keeps the read's default and never returns a trashed row: the board, the list, the search page, the palette, the counters, and the `row` and `card` fragments of §2.1.3, so those two fragments answer `404` for exactly the identifier whose page answers `200`. The read behind those surfaces is `issue_detail(..., include_trashed=True)` (SPEC-040 §2.2) and **the four reads of §2.1.4 that pass the keyword are its only consumers**: the page, the panel fragment, the history fragment and the `?view=field` read behind a field refusal — the first two are the two surfaces, the third re-renders the second's own list, and the fourth answers one field of the same issue with `422 ISSUE_TRASHED` instead of `404` (§2.6.3). No other route passes it: the row and the card never do, and the asymmetry — page, panel, history fragment and field wrapper pass it, collection members do not — is the rule and not an implementation detail. **The one route that shares the panel's call is not a third surface**: `GET /_/issues/{identifier}/history` (§2.1.4) re-renders the panel's own timeline with the panel's two `include` names and its keyword, so it answers what the panel already answers and adds no surface over the trash — a `Show all` on a trashed issue's panel is the panel talking, and its `200` is that `200`. What it forbids: a third surface over the trash; any page, count, chip or link that **enumerates** it (enumerating is the CLI's `hifa issue list --trashed`, SPEC-050 §2.5.3); a trashed row inside a collection fragment; and every write but `restore` on a trashed issue — `edit`, `move`, an `assignee` or label write, `archive` and a comment refuse with `ISSUE_TRASHED` (`422`, §6) while `delete` is the no-op row beside it — so the page the trash gets offers the one write it accepts and tells the truth about the rest. `is_trashed` is `True` only on a detail read with the keyword, which is what lets a template gate the action group **once** on `vm.can_write` and pick the branch inside it: an issue in **either** layer — archived or trashed — fills the group with `Restore` alone, and a visible issue fills it with the move control, the archive block and the delete block (§2.3.4, §2.6.9, D-059). → **REQ-F070-17** |
+| **R30** | **A reference written in the text is a link only when the caller says what it resolves to.** `render_markdown(text, links=None)` takes a **mapping** — candidate folded to upper case → canonical `(team_key, identifier)` — and never a callable, so a surface pays the one statement the caller already made instead of one lookup per match; `None` is today's rendering byte for byte. The anchor is a plain `href`, `<a class="issue-ref" href="/{TEAM}/issue/{CANONICAL}">{as written}</a>`, with the canonical team key and identifier and with the author's own spelling as its text, because a non-canonical spelling is the same page reached by another path — `GET /HIFA/issue/hifa-103` and `GET /ENG/issue/HIFA-103` both answer `303` to the canonical path — and R6's rule that two URLs never serve the same content with `200` is what leaves a second spelling no page to serve, which is what makes the canonical `href` mandatory. Nothing inside `code_inline`, `fence`, `code_block` or an existing markdown link is ever linked, and the candidate is the maximal run, so `HIFA-1034` and `XHIFA-103` never fire as `HIFA-103`. A candidate the mapping does not carry — every `SPEC-*` and `SQL-7` — stays the text it is today: never an anchor, never a 404. An issue row that no longer exists cannot occur in v1, because nothing physical-deletes one — `delete` **is** `trash_issue` (D-015, SPEC-050 §2.5.3) — while a **trashed** issue does resolve and does link, its page and panel answering `200` (R29), as does an archived one. The grammar is `domain/identifier.py`'s — `IDENTIFIER_PATTERN` for the pattern and `parse` for the format, the two entries of SPEC-020 §2.3's published list this rule borrows, with the candidate the maximal run that pattern accepts — read by `issue_ref_candidates` in `src/hifa/web/markdown.py`, which both the renderer and the collector call; the fold is `str.upper()`, the same `upper(:ref)` of `issue_id_by_ref` and `issue_ref_links`, applied in Python so each element stays an index seek. The candidates of the description **and of every comment** of a surface are resolved by one call to `issue_ref_links(conn, refs)`, one statement over `issue JOIN team ON team.id = issue.team_id` projecting `identifier` and `team.key` (SPEC-030 §2.6); `build_issue_vm` stays pure and receives the mapping as a keyword, built beside the detail read by `_issue_detail_vm` (§2.3.6, D-081). → **REQ-F070-18** |
 
 Component-specific requirements:
 
@@ -3558,6 +3702,68 @@ Feature: hifa web dashboard
     And the HTML contains a "<td>" with the text "Bolt"
     And the HTML contains "text-align:center"
 
+  # The reference autolink (R30, D-081). The mapping is the caller's, so a token the read did not
+  # resolve is never a link: the steps create the issue a reference names before naming it.
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: an issue reference in a description links to the issue it names
+    Given a team ENG with the issues ENG-12 and ENG-13, ENG-13 describing "follows ENG-12"
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
+    And the link's text is "ENG-12"
+
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: a reference typed in another case links to the canonical URL
+    Given a team ENG with the issues ENG-12 and ENG-13, ENG-13 describing "follows eng-12"
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
+    And the link's text is "eng-12"
+
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: a token that names no issue stays text
+    Given a team ENG with the issue ENG-13 describing "SPEC-050, SQL-7 and SPEC-070"
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains no link of class "issue-ref"
+    And the HTML contains the text "SPEC-050"
+    And the HTML contains the text "SQL-7"
+
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: a reference inside code is not linked
+    Given a team ENG with the issues ENG-12 and ENG-13, ENG-13 describing "`ENG-12` in backticks"
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains "<code>ENG-12</code>"
+    And the HTML contains no link of class "issue-ref"
+
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: a reference glued to other characters does not link
+    Given a team ENG with the issue ENG-13 describing "HIFA-1034, XHIFA-103 and HIFA-103", and the issue HIFA-103 existing on team HIFA
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains a link of class "issue-ref" to "/HIFA/issue/HIFA-103"
+    And the HTML contains exactly 1 link of class "issue-ref"
+    And the HTML contains the text "HIFA-1034"
+    And the HTML contains the text "XHIFA-103"
+
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: a reference in a comment body links to the issue it names
+    Given a team ENG with the issues ENG-12 and ENG-13, and a comment on ENG-13 saying "blocked by ENG-12"
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains a link of class "issue-ref" to "/ENG/issue/ENG-12"
+
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: a reference to another team's issue links to that team's page
+    Given a team ENG with the issue ENG-13 describing "blocked by HIFA-1", and the issue HIFA-1 existing on team HIFA
+    When GET /ENG/issue/ENG-13 is requested
+    Then the HTML contains a link of class "issue-ref" to "/HIFA/issue/HIFA-1"
+    And the link's text is "HIFA-1"
+
+  @REQ-F035 @deferred(HIFA-112)
+  Scenario: the references of a surface are resolved in one statement
+    # 14 references, one statement: the resolution reads the `issue` table joined to `team` once for
+    # all of them, so N references do not cost N statements.
+    Given a team ENG with 14 issues, ENG-13's description naming 12 of them and its 3 comments naming the other 2
+    When GET /ENG/issue/ENG-13 is requested with the statements counted
+    Then exactly 1 statement reads the "issue" table joined to "team" to resolve the references
+    And the HTML contains 14 links of class "issue-ref"
+
   Scenario: read-only renders no write forms
     Given the app created with read_only true
     When GET /ENG/list is requested
@@ -3773,10 +3979,12 @@ Feature: hifa web dashboard
    §2.6.2, `Sortable.init` with the neighbor payload of §2.6.4 and the poller of §2.6.8 (compare,
    adopt `HX-Revision`, honour the four blocking states, one pending value). **No** `fractional()`,
    no position arithmetic, no arithmetic on the revision, no `eval`, no `new Function` (CSP).
-7b. `web/markdown.py`: `render_markdown` with `markdown-it-py` + in-house allowlist (§2.3.6), and
+7b. `web/markdown.py`: `issue_ref_candidates` and `render_markdown(text, links=None)` — the mapping
+   from folded candidate to canonical `(team_key, identifier)`, the anchor, the skip list and the
+   `a.issue-ref` class — with `markdown-it-py` + the in-house allowlist of §2.3.6, and
    `markdown-it-py` declared in the base group of `pyproject.toml` (D-020).
 8. Templates of §2.2 — start with `base.html` with the 5 blocks and the `<noscript>`.
-9. `pytest tests/e2e/web -q` green (91 scenarios of §7). The four scenarios marked manual in §7, the
+9. `pytest tests/e2e/web -q` green (99 scenarios of §7). The four scenarios marked manual in §7, the
    drag & drop and the 32 px row are checked by hand in a browser: this host has no Playwright.
    Then `python scripts/spec_contract_check.py --spec specs/070-web-dashboard.md` (compares
    registered routes against §2.1).
@@ -3829,6 +4037,32 @@ Feature: hifa web dashboard
 
 ## 11. Notes
 
+- spec_revision 45 (2026-11-24): **an identifier written in rendered markdown becomes a link to the
+  issue it names, and only when it names one (HIFA-112, D-081).** `version` 12 → 13 is §2 gaining a
+  parameter, a permission and one read; the corpus moves **251 → 259** scenarios (the seventeen
+  files, `grep -cE '^  (Scenario|Scenario Outline):'`, each outline once) and §7 of this file
+  **91 → 99**, and `DECISIONS.md` gains its **81st** entry. §2.3.6 gains the second parameter of
+  `render_markdown` — a **mapping** from the candidate as written, folded to upper case, to the
+  canonical `(team_key, identifier)`, never a callable — the one scanner
+  `issue_ref_candidates(text: str | None) -> list[str]` that both the renderer and the collector of
+  `src/hifa/web/app.py` call, the anchor
+  `<a class="issue-ref" href="/{TEAM}/issue/{CANONICAL}">{as written}</a>`, the skip list
+  (`code_inline`, `fence`, `code_block`, the text of an existing link), the maximal-run boundary, the
+  resolution rule that leaves `SPEC-*` as text, the one-statement-per-surface rule with its
+  `issue JOIN team ON team.id = issue.team_id` projection, and the `a.issue-ref` CSS contract; R30
+  states the same contract and REQ-F070-18 is the id its arrow mints, since the component table
+  carries `REQ-N`/`REQ-S` rows only; R15's scheme sentence gains the one anchor whose `href` may be
+  site-relative, and §3 records the one `issue`/`team` statement the detail surface now makes.
+  **SPEC-030 §2.6 contracts `issue_ref_links(conn, refs)`**, the batch twin of `issue_id_by_ref`
+  (`spec_revision` 25 → 26, `version` 10 → 11: a function joins §2's closed export list), and that
+  statement is what lets the surface pay one read; D-081's `Touches` names those two files too, and
+  its amendment block below records that correction. The measured reason the link is
+  resolution-checked and not pattern-only: **308 occurrences of 71 distinct tokens**, of which **42**
+  name an existing issue, against four teams (a snapshot of `$HIFA_DB`, measured 2026-11-24).
+  Eight scenarios land in §7 and in `16-dashboard.feature` — the block R30 states plus the cross-team
+  case — each `@deferred(HIFA-112)` until its test exists; the ticket is registered in
+  `scripts/spec_claims_debt.json` with a cluster of **no keys**, because a key for a scenario a
+  `@deferred` already accounts for is stale by construction.
 - spec_revision 44 (2026-11-23): **the round-three quality review's four minors are settled, and none of them
   moves a contract.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
   `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or scenario moves. (a) **The twelve
