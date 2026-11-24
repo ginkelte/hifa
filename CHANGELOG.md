@@ -1,3 +1,10 @@
+# [0.17.0](https://github.com/ginkelte/hifa/compare/v0.16.0...v0.17.0) (2026-11-24)
+
+
+### Features
+
+* **web:** edit each issue field in place on the detail page and the panel (HIFA-114) ([#47](https://github.com/ginkelte/hifa/issues/47)) ([c2f7b33](https://github.com/ginkelte/hifa/commit/c2f7b333edb64bb567044054c8a7527aa1e61544))
+
 # [0.16.0](https://github.com/ginkelte/hifa/compare/v0.15.0...v0.16.0) (2026-11-23)
 
 
