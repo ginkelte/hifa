@@ -20,3 +20,7 @@ GATE     | P1 | G2 | orchestrator | §2.6.11 = 7976/8000 chars, rev 34, ver 12 |
 FIXROUND | P1 | orchestrator          | run/hifa-114/brief-P2-fix.md  | budget corrected: the cap binds the section (7976), not the total diff (13754) which the findings forced
 FIXROUND | G2 | orchestrator          | run/hifa-114/journal.jsonl    | orchestrator measured 31205 by a broken boundary rule and briefly accused both agents of a false measurement; the agents were right, the orchestrator was wrong
 DISPATCH | P2 | roles/spec-reviewer.md | run/hifa-114/review-2.md      | started
+REPORT   | P2 | subagent              | run/hifa-114/review-2.md      | ok
+GATE     | P2 | G3 | orchestrator | run/hifa-114/review-2.md      | class 1 (11/13 closed, 3 MAJOR, 6 MINOR)
+FINDING  | P1 | orchestrator          | specs/DECISIONS.md            | the change contradicts §2.6.3, §2.1.3 and R27: a cross-spec conflict the protocol has no step for; AGENTS.md §3 requires a D-0NN, not a quiet edit
+FIXROUND | P1 | orchestrator          | specs/070-web-dashboard.md    | round 2: D-0NN + 3 MAJOR + 6 MINOR, brief-P2-fix2.md
