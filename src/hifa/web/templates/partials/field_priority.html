@@ -1,0 +1,43 @@
+{#- The priority as one inline field (SPEC-070 §2.6.3): a `<select>` over the priority scale,
+    saved on `change` and on its own `Save` for the reader without JavaScript. -#}
+<div class="field-inline" id="field-priority-{{ vm.identifier }}" data-field="priority">
+  {% if vm.fields["priority"].writable %}
+  <details{% if vm.fields["priority"].open %} open{% endif %}>
+    <summary class="field-value">
+      <span class="field-label">Priority</span>
+      <span class="field-text"><span class="glyph{% if vm.is_urgent %} is-urgent{% endif %}">{{ vm.priority_glyph }}</span><span class="priority-name">{{ vm.priority_label }}</span></span>
+    </summary>
+    <form id="edit-priority-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=field&field=priority"
+          hx-target="closest .field-inline" hx-swap="outerHTML"
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button"
+          hx-disinherit="hx-disabled-elt">
+      <select name="priority"
+              class="inline-input{% if vm.fields['priority'].invalid %} is-invalid{% endif %}"
+              aria-label="Priority of {{ vm.identifier }}"{% if vm.fields['priority'].invalid %} aria-invalid="true"{% endif %}
+              hx-patch="{{ vm.edit_fragment }}?view=field&field=priority"
+              hx-trigger="change"
+              hx-target="closest .field-inline" hx-swap="outerHTML"
+              hx-sync="closest .field-inline:replace">
+        {% for option in vm.priority_options %}<option value="{{ option.value }}"{% if option.is_current %} selected{% endif %}>{{ option.label }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="btn field-save">Save</button>
+      {% if vm.fields["priority"].message %}<p class="form-error" role="alert">{{ vm.fields["priority"].message }}</p>{% endif %}
+    </form>
+  </details>
+  {% elif vm.fields["priority"].open %}
+  <details open>
+    <summary class="field-value" data-readonly data-invalid>
+      <span class="field-label">Priority</span>
+      <span class="field-text"><span class="glyph{% if vm.is_urgent %} is-urgent{% endif %}">{{ vm.priority_glyph }}</span><span class="priority-name">{{ vm.priority_label }}</span></span>
+    </summary>
+    {% if vm.fields["priority"].message %}<p class="form-error" role="alert">{{ vm.fields["priority"].message }}</p>{% endif %}
+  </details>
+  {% else %}
+  <div class="field-value" data-readonly data-invalid>
+    <span class="field-label">Priority</span>
+    <span class="field-text"><span class="glyph{% if vm.is_urgent %} is-urgent{% endif %}">{{ vm.priority_glyph }}</span><span class="priority-name">{{ vm.priority_label }}</span></span>
+  </div>
+  {% if vm.fields["priority"].message %}<p class="form-error" role="alert">{{ vm.fields["priority"].message }}</p>{% endif %}
+  {% endif %}
+</div>

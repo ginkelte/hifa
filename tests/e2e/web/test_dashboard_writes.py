@@ -133,14 +133,16 @@ def test_the_detail_page_and_the_panel_offer_the_team_states(seeded: SimpleNames
 
 
 def test_an_archived_issue_offers_no_edit_form(seeded: SimpleNamespace) -> None:
-    """Pin that an archived issue keeps the edit form off both elements, not only its writes.
+    """Pin that an archived issue keeps every field control off both elements, not only its writes.
 
-    The form used to survive the archive and every submit answered `409`: the reader was offered
-    a control whose only possible outcome is a refusal.
+    The wrappers used to survive the archive as a form whose every submit answered `409`: the
+    reader was offered a control whose only possible outcome is a refusal. Now the seven render
+    their value and no control at all (§2.3.4, §2.6.3).
     """
     detail_url = f"/ENG/issue/{seeded.identifier}"
     panel_url = f"/_/issues/{seeded.identifier}/panel"
-    assert 'class="issue-edit"' in seeded.client.get(detail_url).text, "no form to remove"
+    before = seeded.client.get(detail_url).text
+    assert f'id="edit-title-{seeded.identifier}"' in before, "no field control to remove"
 
     _run("issue", "archive", seeded.identifier, "--yes")
 
@@ -149,15 +151,19 @@ def test_an_archived_issue_offers_no_edit_form(seeded: SimpleNamespace) -> None:
 
     for label, response in {"detail page": detail, "panel": panel}.items():
         assert response.status_code == 200, label
+        assert f'id="edit-title-{seeded.identifier}"' not in response.text, label
         assert 'class="issue-edit"' not in response.text, label
         assert 'name="state"' not in response.text, label
         # The criterion names the Save button of both answers, not only the detail page's.
         assert ">Save</button>" not in response.text, label
+        # The value is still the value: the wrapper prints it and no disclosure at all.
+        assert f'id="field-title-{seeded.identifier}"' in response.text, label
+        assert "data-readonly" in response.text, label
     # The panel is still the panel, and still the issue that was asked for. An empty `<aside>`
     # satisfies every negative above, so "the panel still renders the issue" needs positives.
     assert '<aside id="panel"' in panel.text
     assert f'aria-label="Issue {seeded.identifier}"' in panel.text
-    assert f'<h2 class="panel-title">{STORED_TITLE}</h2>' in panel.text
+    assert f'<span class="field-text">{STORED_TITLE}</span>' in panel.text
 
 
 def test_the_edit_form_saves_the_field_and_redirects_to_the_detail(

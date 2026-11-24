@@ -1,0 +1,43 @@
+{#- The state as one inline field (SPEC-070 §2.6.3): the value is the column's dot and name, the
+    control a `<select>` of state ids saved on `change` and on its own `Save`. -#}
+<div class="field-inline" id="field-state-{{ vm.identifier }}" data-field="state">
+  {% if vm.fields["state"].writable %}
+  <details{% if vm.fields["state"].open %} open{% endif %}>
+    <summary class="field-value">
+      <span class="field-label">State</span>
+      <span class="field-text"><span class="dot" style="background: {{ vm.state_color }}"></span>{{ vm.state_name }}</span>
+    </summary>
+    <form id="edit-state-{{ vm.identifier }}" class="field-edit" method="post" action="{{ vm.edit_action }}"
+          hx-patch="{{ vm.edit_fragment }}?view=field&field=state"
+          hx-target="closest .field-inline" hx-swap="outerHTML"
+          hx-sync="closest .field-inline:replace" hx-disabled-elt="find button"
+          hx-disinherit="hx-disabled-elt">
+      <select name="state"
+              class="inline-input{% if vm.fields['state'].invalid %} is-invalid{% endif %}"
+              aria-label="State of {{ vm.identifier }}"{% if vm.fields['state'].invalid %} aria-invalid="true"{% endif %}
+              hx-patch="{{ vm.edit_fragment }}?view=field&field=state"
+              hx-trigger="change"
+              hx-target="closest .field-inline" hx-swap="outerHTML"
+              hx-sync="closest .field-inline:replace">
+        {% for state in vm.states %}<option value="{{ state.id }}"{% if state.is_current %} selected{% endif %}>{{ state.name }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="btn field-save">Save</button>
+      {% if vm.fields["state"].message %}<p class="form-error" role="alert">{{ vm.fields["state"].message }}</p>{% endif %}
+    </form>
+  </details>
+  {% elif vm.fields["state"].open %}
+  <details open>
+    <summary class="field-value" data-readonly data-invalid>
+      <span class="field-label">State</span>
+      <span class="field-text"><span class="dot" style="background: {{ vm.state_color }}"></span>{{ vm.state_name }}</span>
+    </summary>
+    {% if vm.fields["state"].message %}<p class="form-error" role="alert">{{ vm.fields["state"].message }}</p>{% endif %}
+  </details>
+  {% else %}
+  <div class="field-value" data-readonly data-invalid>
+    <span class="field-label">State</span>
+    <span class="field-text"><span class="dot" style="background: {{ vm.state_color }}"></span>{{ vm.state_name }}</span>
+  </div>
+  {% if vm.fields["state"].message %}<p class="form-error" role="alert">{{ vm.fields["state"].message }}</p>{% endif %}
+  {% endif %}
+</div>

@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from html import escape
-from typing import Any
+from typing import Any, Final
 from urllib.parse import urlencode
 
 from hifa.adapters.sqlite.reads import Board, IssueDetail, IssueListItem, IssuePage
@@ -42,7 +42,7 @@ DEFAULT_STATE_COLOR = "#6B6F76"
 #: The fields the edit form and the `PATCH` of an issue accept, in the order they are rendered.
 #: The key is the name of the form control; the read model uses the same tuple to build the
 #: per-field error slot, so a field without an error and a field that failed differ only in value.
-EDIT_FORM_FIELDS: tuple[str, ...] = (
+EDIT_FORM_FIELDS: Final[tuple[str, ...]] = (
     "title",
     "description",
     "priority",
@@ -54,7 +54,7 @@ EDIT_FORM_FIELDS: tuple[str, ...] = (
 #: The controls of the comment composer. `body` is the only one it renders: the composer is
 #: flat, so a refusal that names `parent_id` belongs to the element and not to a control nobody
 #: can see. Neither name is a field of the issue, so neither is in the edit tuple.
-COMMENT_FORM_FIELDS: tuple[str, ...] = ("body",)
+COMMENT_FORM_FIELDS: Final[tuple[str, ...]] = ("body",)
 
 
 # --- small pure helpers ---------------------------------------------------------------
@@ -239,6 +239,42 @@ def _state_vm(state: WorkflowState, current_id: str) -> dict[str, object]:
     }
 
 
+def _field_states(
+    errors: Mapping[str, str | None], *, writable: bool, is_trashed: bool
+) -> dict[str, dict[str, object]]:
+    """Resolve the four keys of each of the seven inline fields.
+
+    Every wrapper asks these four keys and decides nothing itself. `writable` is the
+    caller's one decision — `can_write` and neither archive layer — and it is the same boolean
+    the action group branches on. `open` is `True` only for the wrapper a refusal
+    brings back in front of the reader: the control it hands back, or the trashed issue's
+    `<details open>`. An archived issue's refusal has no disclosure, so its message arrives with
+    `open` `False`. `invalid` and `message` are that field's entry of `form_errors`, resolved
+    here so no template indexes the dict with a computed key: both derive from the one
+    `has_message` read, so they cannot disagree.
+
+    Args:
+        errors: The per-control refusal messages, `None` where the field is fine.
+        writable: Whether the wrapper offers a control at all.
+        is_trashed: Whether the issue sits in the trash layer, whose refusal stays open.
+
+    Returns:
+        One entry per name of `EDIT_FORM_FIELDS`, always the seven and in that order, each with
+        the keys `writable`, `open`, `invalid` and `message`.
+    """
+    states: dict[str, dict[str, object]] = {}
+    for name in EDIT_FORM_FIELDS:
+        message = errors.get(name)
+        has_message = message is not None
+        states[name] = {
+            "writable": writable,
+            "open": has_message and (writable or is_trashed),
+            "invalid": has_message,
+            "message": message,
+        }
+    return states
+
+
 # --- list / board ---------------------------------------------------------------------
 
 
@@ -391,7 +427,7 @@ def build_issue_vm(
     form_error: str | None = None,
     confirm_open: str | None = None,
 ) -> dict[str, object]:
-    """Template model of one issue detail: `row_vm` plus the detail collections.
+    """Template model of one issue detail: the row's keys, the detail collections and `fields`.
 
     `states`, `is_archived` and `is_trashed` are the detail's own facts: the caller hands over
     `detail.states`, `detail.archived_at is not None` and `detail.trashed`, so this function
@@ -406,6 +442,13 @@ def build_issue_vm(
 
     `confirm_open` says which of the two `<details>` blocks a refusal must re-render **open** —
     the form asked for no confirmation, so the block it refused is the one the reader has to see.
+
+    `fields` is the inline editor's one decision: one entry per name of
+    `EDIT_FORM_FIELDS`, always the seven and in that order, each with the four keys `writable`,
+    `open`, `invalid` and `message`. `writable` is `can_write` and neither archive layer, decided
+    here and not in a template; `open` is the wrapper a refusal hands back in front of the reader;
+    `invalid` and `message` are that control's entry of `form_errors`. A wrapper asks those four
+    keys and never decides for itself whether the issue may be written.
     """
     item = detail.issue
     try:
@@ -494,6 +537,9 @@ def build_issue_vm(
         name: (form_errors or {}).get(name) for name in EDIT_FORM_FIELDS + COMMENT_FORM_FIELDS
     }
     invalid_field = next((name for name, message in errors.items() if message), None)
+    # The seven wrappers render from this one decision, so the page, the panel and a
+    # refusal answer with the same dict for the same issue and no template branches on a layer.
+    field_writable = bool(can_write) and not (is_archived or is_trashed)
     vm = build_row_vm(
         item,
         today=today,
@@ -568,6 +614,9 @@ def build_issue_vm(
             "is_trashed": is_trashed,
             "form_errors": errors,
             "form_error": form_error if form_error is not None else vm["form_error"],
+            # The inline fields: one entry per control, always the seven, in the order
+            # the surfaces render them. `writable` is the one decision that outlives the request.
+            "fields": _field_states(errors, writable=field_writable, is_trashed=is_trashed),
             "edit_action": f"/{item.team_key}/issue/{item.identifier}",
             "edit_fragment": f"/_/issues/{item.identifier}",
             "priority_options": [

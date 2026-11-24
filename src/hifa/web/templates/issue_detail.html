@@ -4,18 +4,21 @@
 <article class="detail" data-identifier="{{ vm.identifier }}">
   <header class="detail-head">
     <a class="identifier" href="{{ vm.url }}">{{ vm.identifier }}</a>
-    <h1 class="detail-title">{{ vm.title }}</h1>
+    {% include "partials/field_title.html" %}
     {% if vm.last_activity %}<p class="dim last-activity"><a href="#event-{{ vm.last_activity.row_id }}">{{ vm.last_activity.text }}</a></p>{% endif %}
     <div class="detail-actions">
-      <span class="dot" style="background: {{ vm.state_color }}"></span>
-      <span class="state-name">{{ vm.state_name }}</span>
-      <span class="glyph{% if vm.is_urgent %} is-urgent{% endif %}">{{ vm.priority_glyph }}</span>
-      <span class="priority-name">{{ vm.priority_label }}</span>
+      {% include "partials/field_state.html" %}
+      {% include "partials/field_priority.html" %}
     </div>
   </header>
   <div class="detail-body">
     <section class="detail-main">
-      <div class="description">{{ vm.description_html | safe }}</div>
+      <div class="detail-fields">
+        {% include "partials/field_assignee.html" %}
+        {% include "partials/field_due_date.html" %}
+        {% include "partials/field_estimate.html" %}
+      </div>
+      {% include "partials/field_description.html" %}
       {% if vm.form_error %}{% if not vm.invalid_field %}<p class="form-error" role="alert">{{ vm.form_error }}</p>{% endif %}{% endif %}
       {% if vm.can_write %}
       <div class="action-group">
@@ -24,11 +27,6 @@
           <button type="submit" class="btn">Restore</button>
         </form>
         {% else %}
-        <form class="issue-edit" method="post" action="{{ vm.edit_action }}">
-          <h2 class="form-title">Edit</h2>
-          {% include "partials/issue_form_fields.html" %}
-          <div class="form-actions"><button type="submit" class="btn">Save</button></div>
-        </form>
         <form class="action-move" method="post" action="/{{ vm.team_key }}/issue/{{ vm.identifier }}/move">
           <label class="visually-hidden" for="move-{{ vm.identifier }}">Move to state</label>
           <select id="move-{{ vm.identifier }}" name="state_id">
@@ -89,9 +87,6 @@
     </section>
     <aside class="detail-side">
       <dl class="meta">
-        <dt>Assignee</dt><dd>{% if vm.has_assignee %}{{ vm.assignee_name }}{% else %}<span class="dim">–</span>{% endif %}</dd>
-        <dt>Due</dt><dd>{% if vm.has_due %}<span class="due{% if vm.is_overdue %} is-overdue{% endif %}">{{ vm.due_label }}</span>{% else %}<span class="dim">–</span>{% endif %}</dd>
-        <dt>Estimate</dt><dd>{{ vm.estimate_label }}</dd>
         <dt>Project</dt><dd>{{ vm.project_label }}</dd>
         <dt>Cycle</dt><dd>{{ vm.cycle_label }}</dd>
         <dt>Parent</dt><dd>{{ vm.parent_label }}</dd>

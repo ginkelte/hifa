@@ -22,6 +22,15 @@
     return panel !== null && panel.children.length > 0;
   }
 
+  // The slot `base.html` prints carries the `#panel` id htmx targets, and the `<aside id="panel">`
+  // the panel route answers lands inside it: the node with the focus destination is the aside.
+  function panelNode() {
+    var slot = document.getElementById("panel");
+    if (!slot) return null;
+    if (slot.tagName === "ASIDE") return slot;
+    return slot.querySelector("aside");
+  }
+
   function closePanel() {
     var panel = document.querySelector(PANEL);
     if (panel) panel.innerHTML = "";
@@ -197,9 +206,14 @@
     flushRevision();
   });
 
-  // htmx does not swap a 4xx by default: enable the swap for 422 so the refused field comes back.
+  // htmx does not swap a 4xx by default: enable the swap for the two statuses whose body
+  // re-renders the element the request named (`422`, `409`) and for a `/_/` 4xx that carries
+  // `HX-Retarget`, which is the `fragment_error` of a failed resolution. A `4xx` that answers
+  // `text/plain` carries no retarget and stays unswapped.
   document.body.addEventListener("htmx:beforeSwap", function (event) {
-    if (event.detail.xhr && event.detail.xhr.status === 422) {
+    var xhr = event.detail.xhr;
+    if (!xhr) return;
+    if (xhr.status === 422 || xhr.status === 409 || xhr.getResponseHeader("HX-Retarget")) {
       event.detail.shouldSwap = true;
       event.detail.isError = false;
     }
@@ -208,9 +222,13 @@
   // No json-enc override: `htmx:configRequest` is not cancelable, so a header swapped to JSON
   // left the body htmx had already encoded as form data — and the fragment route parses exactly
   // that (`_parse_form`). htmx's own encoding is the contract here.
+  //
+  // htmx re-reads `isError` after `htmx:beforeSwap`, so the listener above keeps a `422`, a
+  // `409` and every answer carrying `HX-Retarget` out of this handler: their bodies are swapped
+  // in place, where the sentence already is. Only a fault the swap cannot show arrives here.
   document.body.addEventListener("htmx:responseError", function (event) {
     var status = event.detail.xhr.status;
-    if (status === 409 || status === 500) toast("could not save: the server rejected the change", true);
+    if (status === 500) toast("could not save: the server rejected the change", true);
   });
 
   document.body.addEventListener("issue-created", function () { toast("issue created"); });
@@ -232,12 +250,41 @@
     refreshNow();
   });
 
-  // focus survives a swap (2.6.2): remember the identifier, restore it afterwards.
-  document.body.addEventListener("htmx:beforeSwap", function () {
+  // focus survives a swap (2.6.2): remember the identifier, and the field whose own answer the
+  // swap is — a `PATCH` of a field answers that wrapper and focus goes back into it.
+  document.body.addEventListener("htmx:beforeSwap", function (event) {
     var focused = document.activeElement;
+    var elt = event.detail.elt;
+    var wrapper = elt && elt.closest ? elt.closest(".field-inline") : null;
+    var target = elt && elt.getAttribute ? elt.getAttribute("hx-target") || "" : "";
     document.body.dataset.focusIdentifier = focused && focused.dataset ? focused.dataset.identifier || "" : "";
+    document.body.dataset.focusField = wrapper ? wrapper.getAttribute("data-field") || "" : "";
+    document.body.dataset.focusScope = wrapper && wrapper.closest("#panel") ? "#panel" : "";
+    // A swap that answers the panel request opened the panel, and the panel itself is where
+    // focus goes: the row or the card that asked does not take it back.
+    document.body.dataset.focusPanel = target === PANEL ? "1" : "";
   });
   document.body.addEventListener("htmx:afterSwap", function () {
+    if (document.body.dataset.focusPanel === "1") {
+      document.body.dataset.focusPanel = "";
+      var panel = panelNode();
+      if (panel) {
+        panel.focus();
+        return;
+      }
+    }
+    var field = document.body.dataset.focusField;
+    if (field) {
+      var scope = document.body.dataset.focusScope === "#panel"
+        ? document.getElementById("panel")
+        : document;
+      var wrapper = scope ? scope.querySelector('.field-inline[data-field="' + field + '"]') : null;
+      // The marked control on a `422`, the summary of the value that replaced it on a `200`, and
+      // nothing at all on the archived issue's `409`: that wrapper has no focusable node.
+      var target = wrapper ? wrapper.querySelector(".is-invalid") || wrapper.querySelector("summary") : null;
+      if (target) target.focus();
+      return;
+    }
     var identifier = document.body.dataset.focusIdentifier;
     if (!identifier) return;
     var node = document.querySelector('[data-identifier="' + identifier + '"]');
@@ -266,10 +313,35 @@
     return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable === true;
   }
 
+  // The three scopes `Cmd/Ctrl+Enter` may submit: a field wrapper's, the comment composer's and
+  // the quick-add's. A `<details class="confirm">` of archive/delete is not one of them: its
+  // submit is a different answer, and a shortcut that fired it would be a destructive key.
+  var SUBMIT_SCOPE = ".field-inline, .comment-composer, #quick-add";
+
   document.addEventListener("keydown", function (event) {
     var editable = isEditable(event.target);
 
+    // Cmd/Ctrl+Enter submits the form the focused control belongs to, and it runs before the
+    // editable-target rule returns: `Enter` in a `<textarea>` is a newline, so this is how the
+    // multi-line description field saves. Only the three scopes that rule names are in scope;
+    // every other form keeps its own submit button.
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      var owner = event.target && event.target.form;
+      if (owner && owner.closest && owner.closest(SUBMIT_SCOPE)) {
+        event.preventDefault();
+        owner.requestSubmit();
+      }
+      return;
+    }
+
     if (event.key === "Escape") {
+      // The nearest open field control closes first, so one key never means two things: a field
+      // inside the panel closes the field, and the next `Esc` closes the panel.
+      var field = event.target.closest ? event.target.closest(".field-inline details[open]") : null;
+      if (field) {
+        field.open = false;
+        return;
+      }
       if (panelIsOpen()) closePanel();
       return;
     }
