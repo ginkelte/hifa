@@ -360,6 +360,8 @@ tr.row-empty td { color: var(--text-muted); }
 .children li, .relations li { padding: 3px 0; border-bottom: 1px solid var(--border); }
 .children li:last-child, .relations li:last-child { border-bottom: 0; }
 .relation-type { color: var(--text-muted); margin-right: 6px; }
+.relation-title { color: var(--text); }
+.relation-title:hover { color: var(--accent-hover); text-decoration: underline; }
 
 /* --- activity timeline -------------------------------------------------------------- */
 .history-list { list-style: none; margin: 0; padding: 0; font-size: 12px; }
