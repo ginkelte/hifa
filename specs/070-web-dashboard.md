@@ -654,15 +654,15 @@ a `<section class="relations">` with an `<h2>` and a `<ul>`, and each row carrie
 
 `relation-type` prints the label the read model already resolved (`blocked by` for an incoming `blocks`,
 the type's own name otherwise, §2.3.4). `identifier` is the far end's identifier and `relation-title` its
-title; the two anchors share **one** `href`, `relation.url`, and neither they nor any partial build that
-string (§2.3.4, R2). `relation-title` is also the visual rule that lets a title read as body text until it
-is pointed at: `color: var(--text)` with no underline at rest, `color: var(--accent)` with
-`text-decoration: underline` on `:hover`, declared beside the `.relation-type` rule of
-`static/css/app.css` — without it the file's global `a { color: var(--accent) }` paints a whole title as a
-link and the identifier stops being what the row's link is recognised by. The two anchors are two elements
-on purpose: one anchor around `identifier` and `title` would fold the `.identifier` contract into a new
-class and change the markup of every identifier anchor of this layer, so the identifier keeps its class and
-its treatment and the title gains a second one.
+title; both anchors take their `href` from `relation.url`, the key §2.3.4 declares. `relation-title` is also
+the visual rule that lets a title read as body text until it is pointed at: `color: var(--text)` at rest,
+`color: var(--accent)` with `text-decoration: underline` on `:hover`, declared beside the `.relation-type`
+rule of `static/css/app.css` — without it the file's global
+`a { color: var(--accent); text-decoration: none; }` paints a whole title in the link colour and the
+identifier stops being what the row's link is recognised by. The two anchors are two elements on purpose: one
+anchor around `identifier` and `title` would change this row's markup and break the `.identifier` rule that
+every identifier anchor of this layer shares, so the identifier keeps its class and its treatment and the
+title gains a second one.
 
 ### 2.3 Read models
 
@@ -903,6 +903,7 @@ issue_vm = {
             "id": "…",
             "type": "blocks",
             "direction": "out",
+            "label": "blocks",
             "identifier": "ENG-7",
             "title": "…",
             "state_name": "Todo",
@@ -976,8 +977,9 @@ issue_vm = {
 ```
 
 `direction` in `relations` is `"out"` (`blocks`, `duplicate`, `related`, `similar`) or `"in"`
-(the issue is the target; shown as `blocked_by` when `type == "blocks"`). The read model resolves
-the inverse; the view does not compute it.
+(the issue is the target). The read model resolves the inverse; the view does not compute it. `label`
+is that resolved name — `blocked by` for an incoming `blocks`, the type's own name otherwise — and the
+row prints it as it arrives, so no template spells the inverse itself.
 
 `url` is the target of **both** anchors of a row — the `identifier` anchor and the `relation-title`
 anchor of §2.2 — and the read model builds it as `/{team}/issue/{identifier}` of the far end, so the
@@ -3868,9 +3870,10 @@ Feature: hifa web dashboard
   the paragraph under `direction` says the row's two anchors share it and that no template concatenates one.
   (b) **§2.2 declares the Relations block**: its `relation-type` label, the `identifier` anchor and the
   second `relation-title` anchor to the same `href`, with the visual rule that keeps a title body text at
-  rest and an underline on hover, because the file's global `a { color: var(--accent) }` would otherwise
-  paint a whole title as a link. One anchor around identifier and title was rejected: it would fold the
-  `.identifier` contract into a new class and change the markup of every identifier anchor of this layer.
+  rest and an underline on hover, because the file's global
+  `a { color: var(--accent); text-decoration: none; }` would otherwise paint a whole title in the link
+  colour. One anchor around identifier and title was rejected: it would change this row's markup and break
+  the `.identifier` rule every identifier anchor of this layer shares.
 - spec_revision 44 (2026-11-23): **the round-three quality review's four minors are settled, and none of them
   moves a contract.** `version` stays **12**, the corpus stays **251** scenarios (§7 of this file: **91**) and
   `DECISIONS.md` stays **80** decisions: no route, status, value of `view` or scenario moves. (a) **The twelve
