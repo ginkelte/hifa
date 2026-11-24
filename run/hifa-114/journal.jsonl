@@ -1,0 +1,10 @@
+PART     | P0 | orchestrator          | run/hifa-114                  | open
+DISPATCH | P0 | roles/intent.md       | run/hifa-114/intent.md        | started
+INJECT   | P0 | K-02-every-noun-has-an-owner-or-is-a-non-goal,K-05-failure-path-before-happy-path | 422 chars
+COVER    | P0 | expected 2 | injected 2 | ok
+REPORT   | P0 | subagent              | run/hifa-114/intent.md        | ok
+GATE     | P0 | G1 | orchestrator | run/hifa-114/intent.md        | ok
+DECISION | P0 | Ginkelte              | run/hifa-114/intent.md        | Q1 field set = the 7 the form shows today; reference fields and labels are non-goals
+DECISION | P0 | Ginkelte              | run/hifa-114/intent.md        | Q2 the no-JS form stays as fallback; "no separate form" means no extra form
+DECISION | P0 | Ginkelte              | run/hifa-114/intent.md        | Q3 panel field set = detail field set, per P2 parity
+DISPATCH | P1 | roles/spec-author.md  | specs/070-web-dashboard.md    | started
