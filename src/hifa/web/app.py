@@ -36,7 +36,7 @@ from hifa import __version__
 from hifa.adapters.clock import SystemClock
 from hifa.adapters.idgen import UlidGen
 from hifa.adapters.sqlite.connection import Database, RevisionWatch
-from hifa.adapters.sqlite.reads import IssueDetail, ListFilters
+from hifa.adapters.sqlite.reads import IssueDetail, ListFilters, issue_ref_links
 from hifa.adapters.sqlite.uow import UnitOfWork
 from hifa.app import boards, members
 from hifa.app.commands import (
@@ -70,6 +70,7 @@ from hifa.domain.entities import Comment, Issue, Team, WorkflowState
 from hifa.domain.errors import Conflict, HifaError, InvalidTransition, NotFound, Validation
 from hifa.domain.ranking import UNIT_GAP, between
 from hifa.web import readmodels
+from hifa.web.markdown import issue_ref_candidates
 
 WEB_DIR = Path(__file__).resolve().parent
 STATIC_DIR = WEB_DIR / "static"
@@ -1099,7 +1100,8 @@ def history_fragment(request: Request, identifier: str, limit: str = "100") -> H
     detail = boards.issue_detail(
         _database(request), identifier, include=boards.RENDERED_INCLUDE, include_trashed=True
     )
-    vm = _issue_detail_vm(request, detail)
+    # `history_list.html` prints no markdown, so this surface pays no reference statement.
+    vm = _issue_detail_vm(request, detail, renders_text=False)
     return _render(
         request,
         "partials/history_list.html",
@@ -1667,6 +1669,45 @@ def _comment_item_vm(vm: Mapping[str, object], comment_id: str) -> dict[str, obj
     return next(item for item in comments if item["id"] == comment_id)
 
 
+def _resolved_refs(request: Request, detail: IssueDetail) -> dict[str, tuple[str, str]]:
+    """The canonical target of every issue reference the detail's text names, in one statement.
+
+    The candidates of the description **and of every comment** are collected first, because the
+    page and the panel print them together, and the whole set is resolved by one call to
+    `issue_ref_links` on one connection (SPEC-070 §2.3.6, R30, D-081): N references cost one
+    statement and not N. An empty set opens no connection and issues no statement, so a detail
+    that names nothing pays nothing.
+
+    Args:
+        request: The request whose app carries the database.
+        detail: The detail read the caller already holds; this adds no second read of the issue.
+
+    Returns:
+        Candidate folded to upper case → canonical `(team_key, identifier)`, empty when the text
+        names no issue.
+    """
+    # SPEC-070 §2.3.6 puts these candidates and their statement here, not in hifa/app/boards.py.
+    candidates = list(
+        dict.fromkeys(
+            [
+                *issue_ref_candidates(detail.description),
+                *(
+                    candidate
+                    for comment in detail.comments
+                    for candidate in issue_ref_candidates(comment.body)
+                ),
+            ]
+        )
+    )
+    if not candidates:
+        return {}
+    conn = _database(request).ro_connection()
+    try:
+        return issue_ref_links(conn, candidates)
+    finally:
+        conn.close()
+
+
 def _issue_detail_vm(
     request: Request,
     detail: IssueDetail,
@@ -1676,13 +1717,16 @@ def _issue_detail_vm(
     confirm_open: str | None = None,
     surface: str = "page",
     draft: str | None = None,
+    renders_text: bool = True,
 ) -> dict[str, object]:
     """Build the model of the detail page, the panel and a refused write: the single builder.
 
     The team's states and the archive flags come from the detail itself, so every render of an
-    issue — page, panel or refusal — is composed from the one read the route already made and no
-    render opens a second one. A refused write arrives as `form_errors`/`form_error` and is
-    carried into the model; both stay absent otherwise.
+    issue — page, panel or refusal — is composed from the one read the route already made: the
+    detail read is the first statement, and the resolved reference map is the second, paid only
+    when the surface renders text (`renders_text`) and the text carries a candidate. A refused
+    write arrives as `form_errors`/`form_error` and is carried into the model; both stay absent
+    otherwise.
 
     `surface` is the one thing the model cannot read from the issue: it is `page`, `panel` or
     `field`. The composer exists on the page and the panel, and the two copies must not share an
@@ -1692,6 +1736,13 @@ def _issue_detail_vm(
     own route and the browser follows the redirect; the panel's posts the fragment and the client
     appends. Deciding it here keeps the template free of the conditional that would otherwise
     have to know which page it is in.
+
+    `renders_text` is the caller's answer to what its template prints, because only the caller
+    knows the template: the page, the panel, the comment list and the description wrapper render
+    markdown and take the default, while the history fragment and the six field wrappers that
+    carry no `description_html` pass `False` and pay no reference statement at all. It is handed
+    in like `surface` and `draft` instead of guessed here, so the builder holds no table of which
+    template prints what.
 
     The same one decision gives the timeline its cut: `history_panel` is the panel's eight rows
     and `history` the whole window, so only the panel has anything to expand and only the panel
@@ -1709,6 +1760,7 @@ def _issue_detail_vm(
         form_errors=form_errors,
         form_error=form_error,
         confirm_open=confirm_open,
+        links=_resolved_refs(request, detail) if renders_text else None,
     )
     panel = surface == "panel"
     # One decision, one local: only the panel shortens the timeline to eight rows, so only the panel
@@ -1852,6 +1904,9 @@ def _issue_edit_fragment(
             form_errors=form_errors,
             form_error=form_error,
             surface="field",
+            # Only `field_description.html` prints `description_html`; the other six wrappers
+            # carry no text, so they pay no reference statement.
+            renders_text=field == "description",
         )
         return _render(
             request,

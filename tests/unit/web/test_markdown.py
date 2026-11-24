@@ -11,7 +11,14 @@ import re
 
 import pytest
 
-from hifa.web.markdown import ALLOWED_TAGS, _Allowlist, _safe_href, render_markdown
+from hifa.web.markdown import (
+    ALLOWED_TAGS,
+    _Allowlist,
+    _safe_href,
+    _site_relative,
+    issue_ref_candidates,
+    render_markdown,
+)
 
 ON_ATTRIBUTE = 'onerror="'
 
@@ -169,3 +176,179 @@ def test_the_wrapper_is_the_walkers_own_so_div_is_not_an_allowed_tag() -> None:
     html = render_markdown("before <div>x</div> after")
     assert "<div>x</div>" not in html
     assert "&lt;div&gt;x&lt;/div&gt;" in html
+
+
+# --- the reference autolink (SPEC-070 §2.3.6, R30, D-081) --------------------------------
+
+ENG12 = {"ENG-12": ("ENG", "ENG-12")}
+ENG1 = {"ENG-1": ("ENG", "ENG-1")}
+
+
+def test_the_candidates_of_a_text_are_folded_distinct_and_in_order() -> None:
+    """`issue_ref_candidates` folds with `str.upper()` and answers each candidate once."""
+    assert issue_ref_candidates("see ENG-12, hifa-103 and ENG-12") == ["ENG-12", "HIFA-103"]
+    assert issue_ref_candidates("") == []
+    assert issue_ref_candidates(None) == []
+
+
+def test_the_maximal_run_is_the_candidate_so_a_glued_token_is_one_unresolvable_word() -> None:
+    """`HIFA-1034` and `XHIFA-103` are each one candidate and never `HIFA-103` beside a digit."""
+    assert issue_ref_candidates("HIFA-1034, XHIFA-103 and HIFA-103") == [
+        "HIFA-1034",
+        "XHIFA-103",
+        "HIFA-103",
+    ]
+    # `SPEC-050` is not even a candidate: `IDENTIFIER_PATTERN` refuses a number with a leading
+    # zero, so the spec's own id never reaches the mapping; `SQL-7` is one and resolves to nothing.
+    assert issue_ref_candidates("SPEC-050, SQL-7") == ["SQL-7"]
+
+
+def test_no_mapping_renders_what_the_function_rendered_before_the_parameter() -> None:
+    """`links=None` is revision 44 byte for byte: the candidate stays the text it was."""
+    assert render_markdown("x") == "<p>x</p>\n"
+    assert render_markdown("see ENG-12") == "<p>see ENG-12</p>\n"
+    assert render_markdown("see ENG-12", None) == render_markdown("see ENG-12")
+    assert render_markdown("see ENG-12", {}) == render_markdown("see ENG-12")
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "a & b < c > d",
+        "&amp; ENG-12 &copy;",
+        "**bold** and *it*",
+        "> quote\n> more",
+        "1. one\n2. two",
+        "# h\n\npara",
+        "```\ncode ENG-1\n```",
+        "| A | B |\n|:-:|---|\n| x | y |",
+        "[x](https://e.com) and `c`",
+    ],
+)
+def test_a_mapping_that_resolves_nothing_changes_nothing(markdown: str) -> None:
+    """The rewriting path is invisible: a mapping with no match renders revision 44's bytes."""
+    assert render_markdown(markdown, {"ENG-999": ("ENG", "ENG-999")}) == render_markdown(markdown)
+
+
+def test_a_resolved_reference_becomes_an_anchor_of_the_issue_it_names() -> None:
+    """`see ENG-12` ⇒ the class, the canonical path, and the author's spelling as the text."""
+    assert '<a class="issue-ref" href="/ENG/issue/ENG-12">ENG-12</a>' in render_markdown(
+        "see ENG-12", ENG12
+    )
+
+
+def test_another_case_resolves_through_the_fold_and_links_the_canonical_href() -> None:
+    """`hifa-103` links `/HIFA/issue/HIFA-103`, and the anchor prints `hifa-103`."""
+    html = render_markdown("follows hifa-103", {"HIFA-103": ("HIFA", "HIFA-103")})
+    assert '<a class="issue-ref" href="/HIFA/issue/HIFA-103">hifa-103</a>' in html
+
+
+def test_a_candidate_the_mapping_does_not_carry_stays_the_text_it_is() -> None:
+    """No anchor, no `href`, no 404: the mapping's absence is the rule, not a 404 to serve."""
+    html = render_markdown("blocked by ENG-12 and SPEC-050", ENG12)
+    assert '<a class="issue-ref" href="/ENG/issue/ENG-12">ENG-12</a>' in html
+    assert "SPEC-050" in html
+    assert html.count('class="issue-ref"') == 1
+
+
+def test_a_reference_glued_to_other_characters_is_never_half_linked() -> None:
+    """A scanner that split `HIFA-1034` or fired after the `X` is the only way to add an anchor."""
+    html = render_markdown("HIFA-1034, XHIFA-103 and HIFA-103", {"HIFA-103": ("HIFA", "HIFA-103")})
+    assert html.count('class="issue-ref"') == 1
+    assert '<a class="issue-ref" href="/HIFA/issue/HIFA-103">HIFA-103</a>' in html
+    assert "HIFA-1034" in html
+    assert "XHIFA-103" in html
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    ["`ENG-12` and ENG-1", "    ENG-12\n\nENG-1\n", "```\nENG-12\n```\n\nENG-1\n"],
+    ids=["code_inline", "code_block", "fence"],
+)
+def test_nothing_inside_code_is_linked(markdown: str) -> None:
+    """§2.3.6: the code keeps its text, and the reference beside it is the only anchor rendered."""
+    html = render_markdown(markdown, {**ENG12, **ENG1})
+    assert html.count('class="issue-ref"') == 1
+    assert '<a class="issue-ref" href="/ENG/issue/ENG-1">ENG-1</a>' in html
+    assert "ENG-12" in html
+
+
+def test_the_text_of_a_link_the_author_wrote_is_not_linked() -> None:
+    """`[ENG-12](https://…)` stays the author's link: the reference beside it is the only anchor."""
+    html = render_markdown("[ENG-12](https://example.com/ENG-12) and ENG-1", {**ENG12, **ENG1})
+    assert '<a href="https://example.com/ENG-12">ENG-12</a>' in html
+    assert html.count('class="issue-ref"') == 1
+    assert '<a class="issue-ref" href="/ENG/issue/ENG-1">ENG-1</a>' in html
+
+
+def test_a_site_relative_link_keeps_its_anchor_and_loses_the_href() -> None:
+    """R15's scheme rule drops `/ENG/list` on every anchor but the one carrying the class."""
+    html = render_markdown("[ENG-12](/ENG/list) and ENG-1", {**ENG12, **ENG1})
+    assert "<a>ENG-12</a>" in html
+    assert html.count('class="issue-ref"') == 1
+    assert '<a class="issue-ref" href="/ENG/issue/ENG-1">ENG-1</a>' in html
+
+
+def test_a_reference_renders_in_every_text_container_of_the_document() -> None:
+    """The scan rewrites a paragraph, a heading, a list item, a blockquote and a table cell."""
+    html = render_markdown(
+        "# ENG-1\n\na paragraph names ENG-1\n\n- ENG-1\n\n> ## ENG-1\n\n| A |\n|---|\n| ENG-1 |\n",
+        ENG1,
+    )
+    assert html.count('class="issue-ref"') == 5
+    assert '<h1><a class="issue-ref" href="/ENG/issue/ENG-1">ENG-1</a></h1>' in html
+    assert '<p>a paragraph names <a class="issue-ref" href="/ENG/issue/ENG-1">ENG-1</a></p>' in html
+    assert '<blockquote>\n<h2><a class="issue-ref" href="/ENG/issue/ENG-1">ENG-1</a></h2>' in html
+    assert '<td><a class="issue-ref" href="/ENG/issue/ENG-1">ENG-1</a></td>' in html
+
+
+def test_the_class_is_unreachable_from_user_text() -> None:
+    """`html=False` escapes an `<a class="issue-ref">` an author writes, so no input grants it."""
+    html = render_markdown('<a class="issue-ref" href="/evil">x</a>', ENG12)
+    assert 'class="issue-ref"' not in html
+    assert "&lt;a" in html
+
+
+def test_the_walker_keeps_the_class_only_on_an_anchor_and_only_that_literal() -> None:
+    """The one new permission: `("a", "class")` with the exact value, and the `href` it grants."""
+    html = _sanitize('<a class="issue-ref" href="/ENG/issue/ENG-12">ENG-12</a>')
+    assert html == '<a class="issue-ref" href="/ENG/issue/ENG-12">ENG-12</a>'
+    other = _sanitize('<a class="evil" href="/ENG/issue/ENG-12">x</a>')
+    assert "class=" not in other
+    assert "href=" not in other
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "//evil.example/x",
+        "/\\evil.example/x",
+        "/\t/evil.example/x",
+        "/\r/x",
+        "/\n/x",
+        "/ /x",
+        "/\x00/x",
+        "/\x7f/x",
+    ],
+    ids=[
+        "protocol-relative",
+        "backslash",
+        "tab",
+        "carriage-return",
+        "line-feed",
+        "space",
+        "nul",
+        "delete",
+    ],
+)
+def test_the_class_never_grants_a_path_of_another_host(hostile: str) -> None:
+    """`//host/x`, `/\\host/x` and a stripped TAB/CR/LF/space before the host are another host."""
+    assert _site_relative(hostile) is False
+    assert _sanitize(f'<a class="issue-ref" href="{hostile}">x</a>') == '<a class="issue-ref">x</a>'
+
+
+def test_the_class_grants_the_canonical_path_a_mapping_resolved() -> None:
+    """The path the renderer writes carries nothing stripped, so the tightened rule keeps it."""
+    assert _site_relative("/ENG/issue/ENG-12") is True
+    html = render_markdown("see ENG-12", ENG12)
+    assert '<a class="issue-ref" href="/ENG/issue/ENG-12">ENG-12</a>' in html

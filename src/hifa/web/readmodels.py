@@ -426,6 +426,7 @@ def build_issue_vm(
     form_errors: Mapping[str, str] | None = None,
     form_error: str | None = None,
     confirm_open: str | None = None,
+    links: Mapping[str, tuple[str, str]] | None = None,
 ) -> dict[str, object]:
     """Template model of one issue detail: the row's keys, the detail collections and `fields`.
 
@@ -442,6 +443,12 @@ def build_issue_vm(
 
     `confirm_open` says which of the two `<details>` blocks a refusal must re-render **open** —
     the form asked for no confirmation, so the block it refused is the one the reader has to see.
+
+    `links` is the reference autolink's mapping, candidate folded to upper case → canonical
+    `(team_key, identifier)`, and it is handed to `render_markdown` for `description_html` and for
+    every comment's `body_html` (SPEC-070 §2.3.6, R30). It arrives as a keyword because this
+    method performs no IO: the caller that holds the connection builds it, and `None` renders
+    exactly what revision 44 served.
 
     `fields` is the inline editor's one decision: one entry per name of
     `EDIT_FORM_FIELDS`, always the seven and in that order, each with the four keys `writable`,
@@ -472,7 +479,7 @@ def build_issue_vm(
             "id": comment.id,
             "author_name": author_name(detail.members, comment.author_id),
             "author_initials": initials(author_name(detail.members, comment.author_id)),
-            "body_html": render_markdown(comment.body),
+            "body_html": render_markdown(comment.body, links),
             "created_label": _relative(comment.created_at, now),
             "is_edited": comment.edited_at is not None,
             "resolved": comment.is_resolved,
@@ -550,7 +557,7 @@ def build_issue_vm(
     vm.update(
         {
             "number": number,
-            "description_html": render_markdown(detail.description),
+            "description_html": render_markdown(detail.description, links),
             "description_raw": detail.description or "",
             "estimate": item.estimate,
             "project": None
