@@ -73,7 +73,8 @@
         <ul>
           {% for relation in vm.relations %}
           <li><span class="relation-type">{{ relation.label }}</span>
-            <a class="identifier" href="{{ relation.url }}">{{ relation.identifier }}</a> {{ relation.title }}</li>
+            <a class="identifier" href="{{ relation.url }}">{{ relation.identifier }}</a>
+            <a class="relation-title" href="{{ relation.url }}">{{ relation.title }}</a></li>
           {% endfor %}
         </ul>
       </section>
